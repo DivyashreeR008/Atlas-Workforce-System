@@ -1,0 +1,165 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: ems-postgres
+    environment:
+      POSTGRES_USER: ems_user
+      POSTGRES_PASSWORD: ems_password
+      POSTGRES_DB: ems_payroll
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ems-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ems_user -d ems_payroll"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb:
+    image: mongo:6
+    container_name: ems-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: REDACTED_DATABASE_PASSWORD
+      MONGO_INITDB_DATABASE: ems_employee
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - ems-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: ems-redis
+    ports:
+      - "6380:6379"
+    networks:
+      - ems-network
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: ems-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672" # AMQP protocol port
+      - "15672:15672" # HTTP management UI
+    networks:
+      - ems-network
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
+    container_name: ems-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elastic_data:/usr/share/elasticsearch/data
+    networks:
+      - ems-network
+
+  api-gateway:
+    build: ./services/api-gateway-node
+    container_name: ems-api-gateway
+    ports:
+      - "8081:8080"
+    environment:
+      - EMPLOYEE_SERVICE_URL=http://employee-service:8001
+      - PAYROLL_SERVICE_URL=http://payroll-service:8002
+      - ANALYTICS_SERVICE_URL=http://analytics-service:8003
+      - NOTIFICATION_SERVICE_URL=http://notification-service:8004
+    networks:
+      - ems-network
+    depends_on:
+      - employee-service
+      - payroll-service
+      - analytics-service
+      - notification-service
+
+  employee-service:
+    build: ./services/employee-python-service
+    container_name: ems-employee-service
+    ports:
+      - "8001:8001"
+    environment:
+      - MONGO_URL=mongodb://admin:REDACTED_DATABASE_PASSWORD@mongodb:27017/ems_employee?authSource=admin
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+    networks:
+      - ems-network
+    depends_on:
+      - mongodb
+      - rabbitmq
+
+  payroll-service:
+    build: ./services/payroll-java-service
+    container_name: ems-payroll-service
+    ports:
+      - "8002:8002"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ems_payroll
+      - SPRING_DATASOURCE_USERNAME=ems_user
+      - SPRING_DATASOURCE_PASSWORD=ems_password
+      - SPRING_RABBITMQ_HOST=rabbitmq
+      - SPRING_RABBITMQ_PORT=5672
+      - SPRING_RABBITMQ_USERNAME=guest
+      - SPRING_RABBITMQ_PASSWORD=guest
+    networks:
+      - ems-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+
+  analytics-service:
+    build: ./services/analytics-python-service
+    container_name: ems-analytics-service
+    ports:
+      - "8003:8003"
+    environment:
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+    networks:
+      - ems-network
+    depends_on:
+      - elasticsearch
+
+  notification-service:
+    build: ./services/notification-go-service
+    container_name: ems-notification-service
+    ports:
+      - "8004:8004"
+    environment:
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+    networks:
+      - ems-network
+    depends_on:
+      - rabbitmq
+
+  frontend:
+    build: ./frontend
+    container_name: ems-frontend
+    ports:
+      - "3000:3000"
+    networks:
+      - ems-network
+    depends_on:
+      - api-gateway
+
+networks:
+  ems-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  mongo_data:
+  elastic_data:
