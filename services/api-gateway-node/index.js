@@ -11,38 +11,21 @@ const PORT = process.env.PORT || 8080;
 app.use(helmet());
 app.use(cors());
 app.use(morgan('dev'));
-app.use(express.json());
-
-// Routes
-app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'API Gateway is running' });
-});
-
 // Proxy logic - Routes to Microservices
-// In a real environment, URLs would come from env vars
 const services = {
-    employee: process.env.EMPLOYEE_SERVICE_URL || 'http://localhost:8001',
-    payroll: process.env.PAYROLL_SERVICE_URL || 'http://localhost:8002',
-    analytics: process.env.ANALYTICS_SERVICE_URL || 'http://localhost:8003',
-    notification: process.env.NOTIFICATION_SERVICE_URL || 'http://localhost:8004'
+    auth: process.env.AUTH_SERVICE_URL || 'http://auth-service:8010',
+    employee: process.env.EMPLOYEE_SERVICE_URL || 'http://employee-service:8001',
+    payroll: process.env.PAYROLL_SERVICE_URL || 'http://payroll-service:8002',
+    analytics: process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8003',
+    notification: process.env.NOTIFICATION_SERVICE_URL || 'http://notification-service:8004'
 };
 
-// Mock Auth endpoint
-app.post('/api/auth/login', (req, res) => {
-    // Dummy login endpoint
-    const { email, password } = req.body;
-    if (email && password) {
-        // Return a mock JWT
-        res.status(200).json({ 
-            token: 'mock-jwt-token-12345',
-            user: { id: 1, name: 'Admin User', email } 
-        });
-    } else {
-        res.status(401).json({ message: 'Invalid credentials' });
-    }
-});
-
-// Simple Gateway Proxy setup
+// Proxies must be defined before body-parsers to avoid stream consumption issues
+app.use('/api/auth', createProxyMiddleware({ 
+    target: services.auth, 
+    changeOrigin: true,
+    pathRewrite: { '^/api/auth': '' }
+}));
 app.use('/api/employee', createProxyMiddleware({ 
     target: services.employee, 
     changeOrigin: true,
@@ -63,6 +46,14 @@ app.use('/api/notification', createProxyMiddleware({
     changeOrigin: true,
     pathRewrite: { '^/api/notification': '' }
 }));
+
+// Body parsers
+app.use(express.json());
+
+// Routes
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'API Gateway is running' });
+});
 
 app.listen(PORT, () => {
     console.log(`API Gateway listening on port ${PORT}`);

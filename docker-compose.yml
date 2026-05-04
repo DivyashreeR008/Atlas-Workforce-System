@@ -3,60 +3,60 @@ version: '3.8'
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: ems-postgres
+    container_name: atlas-postgres
     environment:
-      POSTGRES_USER: ems_user
-      POSTGRES_PASSWORD: ems_password
-      POSTGRES_DB: ems_payroll
+      POSTGRES_USER: atlas_user
+      POSTGRES_PASSWORD: REDACTED_DATABASE_PASSWORD
+      POSTGRES_DB: atlas_db
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - atlas_postgres_data:/var/lib/postgresql/data
     networks:
-      - ems-network
+      - atlas-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ems_user -d ems_payroll"]
+      test: ["CMD-SHELL", "pg_isready -U atlas_user -d atlas_db"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   mongodb:
     image: mongo:6
-    container_name: ems-mongodb
+    container_name: atlas-mongodb
     environment:
       MONGO_INITDB_ROOT_USERNAME: admin
       MONGO_INITDB_ROOT_PASSWORD: REDACTED_DATABASE_PASSWORD
-      MONGO_INITDB_DATABASE: ems_employee
+      MONGO_INITDB_DATABASE: atlas_db
     ports:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
     networks:
-      - ems-network
+      - atlas-network
 
   redis:
     image: redis:7-alpine
-    container_name: ems-redis
+    container_name: atlas-redis
     ports:
-      - "6380:6379"
+      - "6379:6379"
     networks:
-      - ems-network
+      - atlas-network
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
-    container_name: ems-rabbitmq
+    container_name: atlas-rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
     ports:
-      - "5672:5672" # AMQP protocol port
-      - "15672:15672" # HTTP management UI
+      - "5672:5672"
+      - "15672:15672"
     networks:
-      - ems-network
+      - atlas-network
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
-    container_name: ems-elasticsearch
+    container_name: atlas-elasticsearch
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -66,100 +66,113 @@ services:
     volumes:
       - elastic_data:/usr/share/elasticsearch/data
     networks:
-      - ems-network
+      - atlas-network
 
   api-gateway:
     build: ./services/api-gateway-node
-    container_name: ems-api-gateway
+    container_name: atlas-api-gateway
     ports:
-      - "8081:8080"
+      - "8080:8080"
     environment:
+      - AUTH_SERVICE_URL=http://auth-service:8010
       - EMPLOYEE_SERVICE_URL=http://employee-service:8001
       - PAYROLL_SERVICE_URL=http://payroll-service:8002
       - ANALYTICS_SERVICE_URL=http://analytics-service:8003
       - NOTIFICATION_SERVICE_URL=http://notification-service:8004
     networks:
-      - ems-network
+      - atlas-network
     depends_on:
+      - auth-service
       - employee-service
       - payroll-service
-      - analytics-service
-      - notification-service
+
+  auth-service:
+    build: ./services/auth-service
+    container_name: atlas-auth-service
+    ports:
+      - "8010:8010"
+    environment:
+      - JWT_SECRET=REDACTED_JWT_SECRET
+      - POSTGRES_URL=postgresql://atlas_user:REDACTED_DATABASE_PASSWORD@postgres:5432/atlas_db
+    networks:
+      - atlas-network
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   employee-service:
     build: ./services/employee-python-service
-    container_name: ems-employee-service
+    container_name: atlas-employee-service
     ports:
       - "8001:8001"
     environment:
-      - MONGO_URL=mongodb://admin:REDACTED_DATABASE_PASSWORD@mongodb:27017/ems_employee?authSource=admin
+      - MONGO_URL=mongodb://admin:REDACTED_DATABASE_PASSWORD@mongodb:27017/atlas_db?authSource=admin
       - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
     networks:
-      - ems-network
+      - atlas-network
     depends_on:
       - mongodb
       - rabbitmq
 
   payroll-service:
     build: ./services/payroll-java-service
-    container_name: ems-payroll-service
+    container_name: atlas-payroll-service
     ports:
       - "8002:8002"
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ems_payroll
-      - SPRING_DATASOURCE_USERNAME=ems_user
-      - SPRING_DATASOURCE_PASSWORD=ems_password
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/atlas_db
+      - SPRING_DATASOURCE_USERNAME=atlas_user
+      - SPRING_DATASOURCE_PASSWORD=REDACTED_DATABASE_PASSWORD
       - SPRING_RABBITMQ_HOST=rabbitmq
       - SPRING_RABBITMQ_PORT=5672
-      - SPRING_RABBITMQ_USERNAME=guest
-      - SPRING_RABBITMQ_PASSWORD=guest
     networks:
-      - ems-network
+      - atlas-network
     depends_on:
       postgres:
         condition: service_healthy
-      rabbitmq:
-        condition: service_started
 
   analytics-service:
     build: ./services/analytics-python-service
-    container_name: ems-analytics-service
+    container_name: atlas-analytics-service
     ports:
       - "8003:8003"
     environment:
       - ELASTICSEARCH_URL=http://elasticsearch:9200
     networks:
-      - ems-network
+      - atlas-network
     depends_on:
       - elasticsearch
 
   notification-service:
     build: ./services/notification-go-service
-    container_name: ems-notification-service
+    container_name: atlas-notification-service
     ports:
       - "8004:8004"
     environment:
       - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
     networks:
-      - ems-network
+      - atlas-network
     depends_on:
       - rabbitmq
 
   frontend:
     build: ./frontend
-    container_name: ems-frontend
+    container_name: atlas-frontend
     ports:
       - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080/api
     networks:
-      - ems-network
+      - atlas-network
     depends_on:
       - api-gateway
 
 networks:
-  ems-network:
+  atlas-network:
     driver: bridge
 
 volumes:
-  postgres_data:
+  atlas_postgres_data:
   mongo_data:
   elastic_data:
+
