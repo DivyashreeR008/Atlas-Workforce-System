@@ -1,0 +1,222 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  labels:
+    app: api-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      containers:
+      - name: api-gateway
+        image: atlas/api-gateway:latest
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - secretRef:
+            name: atlas-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: atlas/frontend:latest
+        ports:
+        - containerPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  labels:
+    app: auth-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+    spec:
+      containers:
+      - name: auth-service
+        image: atlas/auth-service:latest
+        ports:
+        - containerPort: 8010
+        envFrom:
+        - secretRef:
+            name: atlas-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payroll-service
+  labels:
+    app: payroll-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payroll-service
+  template:
+    metadata:
+      labels:
+        app: payroll-service
+    spec:
+      containers:
+      - name: payroll-service
+        image: atlas/payroll-service:latest
+        ports:
+        - containerPort: 8002
+        envFrom:
+        - secretRef:
+            name: atlas-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-service
+  labels:
+    app: analytics-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analytics-service
+  template:
+    metadata:
+      labels:
+        app: analytics-service
+    spec:
+      containers:
+      - name: analytics-service
+        image: atlas/analytics-service:latest
+        ports:
+        - containerPort: 8003
+        envFrom:
+        - secretRef:
+            name: atlas-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  labels:
+    app: notification-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      containers:
+      - name: notification-service
+        image: atlas/notification-service:latest
+        ports:
+        - containerPort: 8004
+        envFrom:
+        - secretRef:
+            name: atlas-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: employee-service
+  labels:
+    app: employee-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: employee-service
+  template:
+    metadata:
+      labels:
+        app: employee-service
+    spec:
+      containers:
+      - name: employee-service
+        image: atlas/employee-service:latest
+        ports:
+        - containerPort: 8001
+        envFrom:
+        - secretRef:
+            name: atlas-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: attendance-service
+  labels:
+    app: attendance-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: attendance-service
+  template:
+    metadata:
+      labels:
+        app: attendance-service
+    spec:
+      containers:
+      - name: attendance-service
+        image: atlas/attendance-service:latest
+        ports:
+        - containerPort: 8005
+        envFrom:
+        - secretRef:
+            name: atlas-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leave-service
+  labels:
+    app: leave-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: leave-service
+  template:
+    metadata:
+      labels:
+        app: leave-service
+    spec:
+      containers:
+      - name: leave-service
+        image: atlas/leave-service:latest
+        ports:
+        - containerPort: 8006
+        envFrom:
+        - secretRef:
+            name: atlas-secrets
+

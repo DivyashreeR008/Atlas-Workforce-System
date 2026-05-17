@@ -1,14 +1,35 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const app = express();
+app.use(helmet());
+app.use(cookieParser());
 app.use(express.json());
-app.use(cors());
+
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true,
+  })
+);
 
 const PORT = process.env.PORT || 8010;
 const NODE_ENV = process.env.NODE_ENV || 'development';
@@ -26,10 +47,15 @@ if (!JWT_SECRET && NODE_ENV === 'production') {
 
 const jwtSecret = JWT_SECRET || 'dev-only-secret-change-in-production';
 
+const sslConfig = process.env.POSTGRES_SSL === 'true' || NODE_ENV === 'production' 
+  ? { rejectUnauthorized: false } 
+  : false;
+
 const pool = new Pool({
   connectionString:
     process.env.POSTGRES_URL ||
     'postgresql://atlas_user:REDACTED_DATABASE_PASSWORD@postgres:5432/atlas_db',
+  ssl: sslConfig,
 });
 
 function validatePassword(password) {
@@ -287,6 +313,13 @@ app.post('/login', async (req, res) => {
     const token = signAccessToken(user);
     const refreshToken = await createRefreshToken(user.id);
 
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: REFRESH_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
+    });
+
     res.status(200).json({
       message: 'Logged in successfully',
       token,
@@ -300,7 +333,7 @@ app.post('/login', async (req, res) => {
 });
 
 app.post('/refresh', async (req, res) => {
-  const { refreshToken } = req.body;
+  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
   if (!refreshToken) {
     return res.status(400).json({ message: 'Refresh token is required' });
   }
@@ -321,6 +354,13 @@ app.post('/refresh', async (req, res) => {
     const token = signAccessToken(user);
     const newRefreshToken = await createRefreshToken(row.user_id);
 
+    res.cookie('refreshToken', newRefreshToken, {
+      httpOnly: true,
+      secure: NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: REFRESH_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
+    });
+
     res.status(200).json({
       message: 'Token refreshed',
       token,
@@ -334,9 +374,10 @@ app.post('/refresh', async (req, res) => {
 });
 
 app.post('/logout', async (req, res) => {
-  const { refreshToken } = req.body;
+  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
   try {
     await revokeRefreshToken(refreshToken);
+    res.clearCookie('refreshToken');
     res.status(200).json({ message: 'Logged out successfully' });
   } catch (error) {
     console.error(error);

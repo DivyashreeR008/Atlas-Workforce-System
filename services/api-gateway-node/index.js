@@ -5,7 +5,81 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
-const { createProxyMiddleware } = require('http-proxy-middleware');
+const { createProxyMiddleware, responseInterceptor } = require('http-proxy-middleware');
+const redis = require('redis');
+
+const REDIS_URL = process.env.REDIS_URL || 'redis://redis:6379';
+const redisClient = redis.createClient({ url: REDIS_URL });
+
+redisClient.on('error', (err) => console.log('Redis Client Error', err));
+redisClient.on('connect', () => console.log('Connected to Redis successfully'));
+
+(async () => {
+  try {
+    await redisClient.connect();
+  } catch (err) {
+    console.error('Failed to connect to Redis, caching disabled:', err);
+  }
+})();
+
+async function checkCache(req, res, next) {
+  if (req.method !== 'GET') {
+    return next();
+  }
+  
+  if (!redisClient.isOpen) {
+    return next();
+  }
+
+  const key = `cache:${req.originalUrl}`;
+  try {
+    const cachedData = await redisClient.get(key);
+    if (cachedData) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Content-Type', 'application/json');
+      return res.send(cachedData);
+    }
+  } catch (err) {
+    console.error('Cache read error:', err);
+  }
+  next();
+}
+
+const cacheInterceptor = responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
+  const response = responseBuffer.toString('utf8');
+  if (req.method === 'GET' && proxyRes.statusCode === 200 && redisClient.isOpen) {
+    const key = `cache:${req.originalUrl}`;
+    try {
+      await redisClient.setEx(key, 15, response);
+    } catch (err) {
+      console.error('Failed to write to cache:', err);
+    }
+  }
+  return responseBuffer;
+});
+
+function getProxyOptions(target, prefix) {
+  return {
+    target,
+    changeOrigin: true,
+    pathRewrite: { [`^${prefix}`]: '' },
+    selfHandleResponse: true,
+    onProxyReq(proxyReq, req, res) {
+      if (req.user) {
+        proxyReq.setHeader('X-User-Id', String(req.user.id));
+        proxyReq.setHeader('X-User-Role', String(req.user.role));
+        proxyReq.setHeader('X-User-Email', String(req.user.email));
+      }
+      if (req.body && Object.keys(req.body).length) {
+        const bodyData = JSON.stringify(req.body);
+        proxyReq.setHeader('Content-Type', 'application/json');
+        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
+        proxyReq.write(bodyData);
+      }
+    },
+    onProxyRes: cacheInterceptor,
+  };
+}
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -63,6 +137,10 @@ const services = {
   analytics: process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8003',
   notification:
     process.env.NOTIFICATION_SERVICE_URL || 'http://notification-service:8004',
+  attendance:
+    process.env.ATTENDANCE_SERVICE_URL || 'http://attendance-service:8005',
+  leave:
+    process.env.LEAVE_SERVICE_URL || 'http://leave-service:8006',
 };
 
 const PUBLIC_AUTH_PATHS = ['/api/auth/login', '/api/auth/register'];
@@ -82,6 +160,8 @@ function authMiddleware(req, res, next) {
     '/api/payroll',
     '/api/analytics',
     '/api/notification',
+    '/api/attendance',
+    '/api/leave',
   ];
 
   const needsAuth = protectedPrefixes.some(
@@ -120,38 +200,38 @@ app.use(
 
 app.use(
   '/api/employee',
-  createProxyMiddleware({
-    target: services.employee,
-    changeOrigin: true,
-    pathRewrite: { '^/api/employee': '' },
-  })
+  checkCache,
+  createProxyMiddleware(getProxyOptions(services.employee, '/api/employee'))
 );
 
 app.use(
   '/api/payroll',
-  createProxyMiddleware({
-    target: services.payroll,
-    changeOrigin: true,
-    pathRewrite: { '^/api/payroll': '' },
-  })
+  checkCache,
+  createProxyMiddleware(getProxyOptions(services.payroll, '/api/payroll'))
 );
 
 app.use(
   '/api/analytics',
-  createProxyMiddleware({
-    target: services.analytics,
-    changeOrigin: true,
-    pathRewrite: { '^/api/analytics': '' },
-  })
+  checkCache,
+  createProxyMiddleware(getProxyOptions(services.analytics, '/api/analytics'))
 );
 
 app.use(
   '/api/notification',
-  createProxyMiddleware({
-    target: services.notification,
-    changeOrigin: true,
-    pathRewrite: { '^/api/notification': '' },
-  })
+  checkCache,
+  createProxyMiddleware(getProxyOptions(services.notification, '/api/notification'))
+);
+
+app.use(
+  '/api/attendance',
+  checkCache,
+  createProxyMiddleware(getProxyOptions(services.attendance, '/api/attendance'))
+);
+
+app.use(
+  '/api/leave',
+  checkCache,
+  createProxyMiddleware(getProxyOptions(services.leave, '/api/leave'))
 );
 
 app.get('/health', (req, res) => {

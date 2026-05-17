@@ -81,12 +81,18 @@ services:
       - PAYROLL_SERVICE_URL=http://payroll-service:8002
       - ANALYTICS_SERVICE_URL=http://analytics-service:8003
       - NOTIFICATION_SERVICE_URL=http://notification-service:8004
+      - ATTENDANCE_SERVICE_URL=http://attendance-service:8005
+      - LEAVE_SERVICE_URL=http://leave-service:8006
+      - REDIS_URL=redis://redis:6379
     networks:
       - atlas-network
     depends_on:
       - auth-service
       - employee-service
       - payroll-service
+      - attendance-service
+      - leave-service
+      - redis
 
   auth-service:
     build: ./services/auth-service
@@ -157,6 +163,34 @@ services:
       - atlas-network
     depends_on:
       - rabbitmq
+
+  attendance-service:
+    build: ./services/attendance-service
+    container_name: atlas-attendance-service
+    ports:
+      - "8005:8005"
+    environment:
+      - POSTGRES_URL=host=postgres user=atlas_user password=REDACTED_DATABASE_PASSWORD dbname=atlas_db port=5432 sslmode=disable
+    networks:
+      - atlas-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  leave-service:
+    build: ./services/leave-service
+    container_name: atlas-leave-service
+    ports:
+      - "8006:8006"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/atlas_db
+      - SPRING_DATASOURCE_USERNAME=atlas_user
+      - SPRING_DATASOURCE_PASSWORD=REDACTED_DATABASE_PASSWORD
+    networks:
+      - atlas-network
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   frontend:
     build: ./frontend

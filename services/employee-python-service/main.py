@@ -22,6 +22,13 @@ employees_collection = db["employees"]
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print(f"Connecting to MongoDB at {MONGO_URL}")
+    try:
+        await employees_collection.create_index("email", unique=True)
+        await employees_collection.create_index("name")
+        await employees_collection.create_index("department")
+        print("MongoDB indexes created successfully")
+    except Exception as e:
+        print(f"Warning: Failed to create MongoDB indexes: {e}")
     yield
     client.close()
 
