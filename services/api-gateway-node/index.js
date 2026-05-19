@@ -112,7 +112,6 @@ app.use(
   })
 );
 app.use(morgan('dev'));
-app.use(express.json());
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
