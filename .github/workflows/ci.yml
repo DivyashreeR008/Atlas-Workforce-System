@@ -91,7 +91,7 @@ jobs:
         working-directory: services/${{ matrix.service }}
       - name: Install linting tools
         run: |
-          pip install flake8
+          pip install flake8 pytest
         working-directory: services/${{ matrix.service }}
       - name: Lint Python
         run: flake8 .
