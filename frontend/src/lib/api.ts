@@ -112,3 +112,7 @@ export const analyticsApi = {
   dashboard: () => api.get("/analytics/dashboard"),
   trends: () => api.get("/analytics/trends"),
 };
+
+export const billingApi = {
+  createCheckout: () => api.post("/billing/create-checkout-session"),
+};

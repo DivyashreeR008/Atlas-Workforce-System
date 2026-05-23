@@ -7,6 +7,7 @@ const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const { createProxyMiddleware, responseInterceptor } = require('http-proxy-middleware');
 const redis = require('redis');
+const axios = require('axios');
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://redis:6379';
 const redisClient = redis.createClient({ url: REDIS_URL });
@@ -217,6 +218,69 @@ function rbacMiddleware(req, res, next) {
 }
 
 app.use(rbacMiddleware);
+
+// Local webhook and integration endpoints
+app.post('/api/webhooks/slack', express.urlencoded({ extended: true }), async (req, res) => {
+  try {
+    const { text, user_name } = req.body;
+    
+    const employeeId = user_name || 'slack_user';
+    const tenantId = 'default';
+    
+    const parts = text ? text.split(' ') : [];
+    if (parts.length < 3) {
+      return res.json({
+        response_type: "ephemeral",
+        text: "Please use format: `/atlas-leave YYYY-MM-DD to YYYY-MM-DD Reason`"
+      });
+    }
+    
+    const startDate = parts[0];
+    const endDate = parts[2];
+    const leaveType = 'VACATION';
+    const reason = parts.slice(3).join(' ') || 'Slack request';
+
+    const leaveServiceUrl = `${services.leave}/request`;
+    const response = await axios.post(leaveServiceUrl, {
+      employeeId, startDate, endDate, leaveType, reason
+    }, {
+      headers: { 'X-Tenant-Id': tenantId }
+    });
+
+    return res.json({
+      response_type: "in_channel",
+      text: `✅ Leave request submitted for ${startDate} to ${endDate}`
+    });
+  } catch (err) {
+    console.error('Slack Webhook Error:', err.response?.data || err.message);
+    res.json({ response_type: "ephemeral", text: `❌ Failed to submit leave: ${err.response?.data?.message || 'Error'}` });
+  }
+});
+
+app.post('/api/billing/create-checkout-session', express.json(), async (req, res) => {
+  try {
+    const tenantId = req.user?.tenant_id || 'default';
+    
+    const employeeServiceUrl = `${services.employee}/employees`;
+    const response = await axios.get(employeeServiceUrl, {
+      headers: { 'X-Tenant-Id': tenantId }
+    });
+    
+    const headcount = response.data?.total || 1;
+    const perSeatPrice = 10;
+    const totalAmount = headcount * perSeatPrice;
+    
+    return res.json({
+      checkoutUrl: `https://mock-stripe.atlas.io/checkout/${tenantId}?amount=${totalAmount}`,
+      headcount,
+      totalAmount,
+      currency: 'USD'
+    });
+  } catch (err) {
+    console.error('Billing Error:', err.message);
+    res.status(500).json({ message: 'Internal error generating checkout session' });
+  }
+});
 
 app.use(
   '/api/auth',
