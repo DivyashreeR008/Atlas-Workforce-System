@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import os
 import uvicorn
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from openai import OpenAI
 import json
 
@@ -27,7 +27,8 @@ except Exception as e:
     print(f"Error creating engine: {e}")
     engine = None
 
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", "dummy_key_for_now"))
+api_key = os.environ.get("OPENAI_API_KEY")
+client = OpenAI(api_key=api_key) if api_key and api_key != "dummy_key_for_now" else None
 
 
 @app.get("/health")
@@ -44,7 +45,7 @@ def get_department_analytics():
         query = (
             "SELECT department, count(id) as headcount FROM users GROUP BY department"
         )
-        df = pd.read_sql_query(query, engine)
+        df = pd.read_sql_query(text(query), engine)
         return df.to_dict(orient="records")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -62,7 +63,7 @@ def get_payroll_analytics():
         GROUP BY period
         ORDER BY period ASC
         """
-        df = pd.read_sql_query(query, engine)
+        df = pd.read_sql_query(text(query), engine)
         return df.to_dict(orient="records")
     except Exception:
         return []
@@ -99,7 +100,7 @@ def get_ai_insights():
         context = f"Department Headcounts: {json.dumps(dept_data)}. Payroll Trends: {json.dumps(payroll_data)}."
 
         # If no real API key is set, return a mock response to avoid failing in local dev
-        if os.environ.get("OPENAI_API_KEY") in [None, "", "dummy_key_for_now"]:
+        if not client:
             return {
                 "insight": (
                     "AI Insights (Mock): Your engineering department is growing rapidly, "

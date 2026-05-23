@@ -100,7 +100,11 @@ async def get_employees(
             ]
         }
 
-    total = await employees_collection.count_documents(query)
+    if not query:
+        total = await employees_collection.estimated_document_count()
+    else:
+        total = await employees_collection.count_documents(query)
+
     skip = (page - 1) * page_size
     total_pages = max(1, math.ceil(total / page_size)) if total else 1
 

@@ -46,7 +46,12 @@ public class LeaveService {
         LeaveRecord record = repository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Leave request not found"));
         
-        record.setStatus(status.toUpperCase());
+        String upperStatus = status.toUpperCase();
+        if (!upperStatus.equals("PENDING") && !upperStatus.equals("APPROVED") && !upperStatus.equals("REJECTED")) {
+            throw new IllegalArgumentException("Invalid status. Must be PENDING, APPROVED, or REJECTED");
+        }
+        
+        record.setStatus(upperStatus);
         return repository.save(record);
     }
 }

@@ -54,19 +54,7 @@ services:
     networks:
       - atlas-network
 
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
-    container_name: atlas-elasticsearch
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-    ports:
-      - "9200:9200"
-    volumes:
-      - elastic_data:/usr/share/elasticsearch/data
-    networks:
-      - atlas-network
+
 
   api-gateway:
     build: ./services/api-gateway-node
@@ -146,11 +134,12 @@ services:
     ports:
       - "8003:8003"
     environment:
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - POSTGRES_URL=postgresql://atlas_user:REDACTED_DATABASE_PASSWORD@postgres:5432/atlas_db
     networks:
       - atlas-network
     depends_on:
-      - elasticsearch
+      postgres:
+        condition: service_healthy
 
   notification-service:
     build: ./services/notification-go-service
@@ -211,5 +200,4 @@ networks:
 volumes:
   atlas_postgres_data:
   mongo_data:
-  elastic_data:
 

@@ -51,13 +51,17 @@ func main() {
 	api.Post("/clock-in", func(c *fiber.Ctx) error {
 		type ClockInReq struct {
 			EmployeeID string `json:"employeeId"`
+			LocalDate  string `json:"localDate"`
 		}
 		var req ClockInReq
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 		}
 
-		today := time.Now().Format("2006-01-02")
+		today := req.LocalDate
+		if today == "" {
+			today = time.Now().UTC().Format("2006-01-02")
+		}
 		var existing AttendanceRecord
 		if db != nil {
 			err := db.Where("employee_id = ? AND date = ?", req.EmployeeID, today).First(&existing).Error
@@ -81,13 +85,17 @@ func main() {
 	api.Post("/clock-out", func(c *fiber.Ctx) error {
 		type ClockOutReq struct {
 			EmployeeID string `json:"employeeId"`
+			LocalDate  string `json:"localDate"`
 		}
 		var req ClockOutReq
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 		}
 
-		today := time.Now().Format("2006-01-02")
+		today := req.LocalDate
+		if today == "" {
+			today = time.Now().UTC().Format("2006-01-02")
+		}
 		if db != nil {
 			var record AttendanceRecord
 			err := db.Where("employee_id = ? AND date = ?", req.EmployeeID, today).First(&record).Error

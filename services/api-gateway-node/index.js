@@ -31,7 +31,8 @@ async function checkCache(req, res, next) {
     return next();
   }
 
-  const key = `cache:${req.originalUrl}`;
+  const userScope = req.user ? req.user.id : 'public';
+  const key = `cache:${userScope}:${req.originalUrl}`;
   try {
     const cachedData = await redisClient.get(key);
     if (cachedData) {
@@ -48,7 +49,8 @@ async function checkCache(req, res, next) {
 const cacheInterceptor = responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
   const response = responseBuffer.toString('utf8');
   if (req.method === 'GET' && proxyRes.statusCode === 200 && redisClient.isOpen) {
-    const key = `cache:${req.originalUrl}`;
+    const userScope = req.user ? req.user.id : 'public';
+    const key = `cache:${userScope}:${req.originalUrl}`;
     try {
       await redisClient.setEx(key, 15, response);
     } catch (err) {
