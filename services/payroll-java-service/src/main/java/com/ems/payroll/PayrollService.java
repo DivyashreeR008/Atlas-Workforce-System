@@ -15,18 +15,18 @@ public class PayrollService {
         this.repository = repository;
     }
 
-    public List<PayrollRecord> getAllPayrolls() {
-        return repository.findAll();
+    public List<PayrollRecord> getAllPayrolls(String tenantId) {
+        return repository.findByTenantId(tenantId);
     }
 
-    public List<PayrollRecord> getPayrollsByEmployeeId(String employeeId) {
-        return repository.findByEmployeeId(employeeId);
+    public List<PayrollRecord> getPayrollsByEmployeeId(String tenantId, String employeeId) {
+        return repository.findByTenantIdAndEmployeeId(tenantId, employeeId);
     }
 
     @Transactional
-    public PayrollRecord runPayroll(String employeeId, String period, Double baseSalary, Double allowances, Double deductions) {
+    public PayrollRecord runPayroll(String tenantId, String employeeId, String period, Double baseSalary, Double allowances, Double deductions) {
         // Check if payroll already exists for this period
-        List<PayrollRecord> existing = repository.findByEmployeeIdAndPeriod(employeeId, period);
+        List<PayrollRecord> existing = repository.findByTenantIdAndEmployeeIdAndPeriod(tenantId, employeeId, period);
         if (!existing.isEmpty()) {
             throw new IllegalArgumentException("Payroll already processed for this period");
         }
@@ -36,6 +36,7 @@ public class PayrollService {
         double netSalary = grossSalary - tax;
 
         PayrollRecord record = new PayrollRecord();
+        record.setTenantId(tenantId);
         record.setEmployeeId(employeeId);
         record.setPeriod(period);
         record.setBaseSalary(baseSalary);

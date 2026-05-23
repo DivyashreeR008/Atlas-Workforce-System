@@ -16,21 +16,22 @@ public class LeaveService {
         this.repository = repository;
     }
 
-    public List<LeaveRecord> getAllLeaveRequests() {
-        return repository.findAll();
+    public List<LeaveRecord> getAllLeaveRequests(String tenantId) {
+        return repository.findByTenantId(tenantId);
     }
 
-    public List<LeaveRecord> getLeaveByEmployeeId(String employeeId) {
-        return repository.findByEmployeeId(employeeId);
+    public List<LeaveRecord> getLeaveByEmployeeId(String tenantId, String employeeId) {
+        return repository.findByTenantIdAndEmployeeId(tenantId, employeeId);
     }
 
     @Transactional
-    public LeaveRecord requestLeave(String employeeId, LocalDate startDate, LocalDate endDate, String leaveType, String reason) {
+    public LeaveRecord requestLeave(String tenantId, String employeeId, LocalDate startDate, LocalDate endDate, String leaveType, String reason) {
         if (startDate.isAfter(endDate)) {
             throw new IllegalArgumentException("Start date must be before or equal to end date");
         }
 
         LeaveRecord record = new LeaveRecord();
+        record.setTenantId(tenantId);
         record.setEmployeeId(employeeId);
         record.setStartDate(startDate);
         record.setEndDate(endDate);
@@ -42,8 +43,8 @@ public class LeaveService {
     }
 
     @Transactional
-    public LeaveRecord updateLeaveStatus(Long id, String status) {
-        LeaveRecord record = repository.findById(id)
+    public LeaveRecord updateLeaveStatus(String tenantId, Long id, String status) {
+        LeaveRecord record = repository.findByIdAndTenantId(id, tenantId)
                 .orElseThrow(() -> new IllegalArgumentException("Leave request not found"));
         
         String upperStatus = status.toUpperCase();

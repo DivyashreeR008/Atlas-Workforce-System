@@ -77,7 +77,7 @@ function hashToken(token) {
 
 function signAccessToken(user) {
   return jwt.sign(
-    { id: user.id, email: user.email, role: user.role },
+    { id: user.id, email: user.email, role: user.role, tenant_id: user.tenant_id || 'default' },
     jwtSecret,
     { expiresIn: ACCESS_EXPIRY }
   );
@@ -106,7 +106,7 @@ async function revokeRefreshToken(refreshToken) {
 async function verifyRefreshToken(refreshToken) {
   const tokenHash = hashToken(refreshToken);
   const result = await pool.query(
-    `SELECT rt.*, u.id, u.email, u.name, u.role, u.department, u.position
+    `SELECT rt.*, u.id, u.email, u.name, u.role, u.department, u.position, u.tenant_id
      FROM refresh_tokens rt
      JOIN users u ON u.id = rt.user_id
      WHERE rt.token_hash = $1 AND rt.expires_at > NOW()`,
@@ -161,6 +161,7 @@ function sanitizeUser(user) {
     role: user.role,
     department: user.department,
     position: user.position,
+    tenant_id: user.tenant_id || 'default',
   };
 }
 
@@ -193,9 +194,16 @@ async function initDB() {
       name VARCHAR(255) NOT NULL,
       role VARCHAR(50) DEFAULT 'employee',
       department VARCHAR(100),
-      position VARCHAR(100)
+      position VARCHAR(100),
+      tenant_id VARCHAR(50) DEFAULT 'default'
     );
   `);
+
+  try {
+    await pool.query("ALTER TABLE users ADD COLUMN tenant_id VARCHAR(50) DEFAULT 'default';");
+  } catch (err) {
+    // Column might already exist
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS refresh_tokens (
@@ -221,7 +229,7 @@ async function initDB() {
   if (adminCheck.rows.length === 0) {
     const hashedPass = await bcrypt.hash(ADMIN_DEFAULT_PASSWORD, 10);
     await pool.query(
-      'INSERT INTO users (email, password, name, role, department, position) VALUES ($1, $2, $3, $4, $5, $6)',
+      'INSERT INTO users (email, password, name, role, department, position, tenant_id) VALUES ($1, $2, $3, $4, $5, $6, $7)',
       [
         'REDACTED_EMAIL',
         hashedPass,
@@ -229,6 +237,7 @@ async function initDB() {
         'admin',
         'Global',
         'System Administrator',
+        'default'
       ]
     );
     console.log('Default admin user created (REDACTED_EMAIL)');
@@ -242,7 +251,7 @@ initDB().catch((err) => {
 });
 
 app.post('/register', async (req, res) => {
-  const { email, password, name, role, department, position } = req.body;
+  const { email, password, name, role, department, position, tenant_id } = req.body;
   if (!email || !password || !name) {
     return res.status(400).json({ message: 'Email, password, and name are required' });
   }
@@ -260,7 +269,7 @@ app.post('/register', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const result = await pool.query(
-      'INSERT INTO users (email, password, name, role, department, position) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, name, role, department, position',
+      'INSERT INTO users (email, password, name, role, department, position, tenant_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, email, name, role, department, position, tenant_id',
       [
         email,
         hashedPassword,
@@ -268,6 +277,7 @@ app.post('/register', async (req, res) => {
         role || 'employee',
         department || 'General',
         position || 'Staff',
+        tenant_id || 'default'
       ]
     );
 

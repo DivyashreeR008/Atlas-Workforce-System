@@ -13,11 +13,20 @@ import (
 type AttendanceRecord struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
 	EmployeeID string    `gorm:"index;not null" json:"employeeId"`
+	TenantID   string    `gorm:"index;default:'default'" json:"tenantId"`
 	Date       string    `gorm:"index;not null" json:"date"`
 	ClockIn    time.Time `json:"clockIn"`
 	ClockOut   *time.Time `json:"clockOut"`
 	Status     string    `json:"status"`
 	Overtime   float64   `json:"overtime"` // hours
+}
+
+func getTenant(c *fiber.Ctx) string {
+	tenant := c.Get("X-Tenant-Id")
+	if tenant == "" {
+		return "default"
+	}
+	return tenant
 }
 
 var db *gorm.DB
@@ -62,14 +71,16 @@ func main() {
 		if today == "" {
 			today = time.Now().UTC().Format("2006-01-02")
 		}
+		tenantId := getTenant(c)
 		var existing AttendanceRecord
 		if db != nil {
-			err := db.Where("employee_id = ? AND date = ?", req.EmployeeID, today).First(&existing).Error
+			err := db.Where("tenant_id = ? AND employee_id = ? AND date = ?", tenantId, req.EmployeeID, today).First(&existing).Error
 			if err == nil {
 				return c.Status(400).JSON(fiber.Map{"error": "Already clocked in today"})
 			}
 			
 			record := AttendanceRecord{
+				TenantID:   tenantId,
 				EmployeeID: req.EmployeeID,
 				Date:       today,
 				ClockIn:    time.Now(),
@@ -96,9 +107,10 @@ func main() {
 		if today == "" {
 			today = time.Now().UTC().Format("2006-01-02")
 		}
+		tenantId := getTenant(c)
 		if db != nil {
 			var record AttendanceRecord
-			err := db.Where("employee_id = ? AND date = ?", req.EmployeeID, today).First(&record).Error
+			err := db.Where("tenant_id = ? AND employee_id = ? AND date = ?", tenantId, req.EmployeeID, today).First(&record).Error
 			if err != nil {
 				return c.Status(404).JSON(fiber.Map{"error": "No clock in found for today"})
 			}

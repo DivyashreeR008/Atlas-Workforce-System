@@ -37,22 +37,22 @@ def health_check():
 
 
 @app.get("/analytics/department")
-def get_department_analytics():
+def get_department_analytics(x_tenant_id: str = Header("default")):
     if not engine:
         raise HTTPException(status_code=500, detail="Database connection failed")
 
     try:
         query = (
-            "SELECT department, count(id) as headcount FROM users GROUP BY department"
+            "SELECT department, count(id) as headcount FROM users WHERE tenant_id = :tenant_id GROUP BY department"
         )
-        df = pd.read_sql_query(text(query), engine)
+        df = pd.read_sql_query(text(query).bindparams(tenant_id=x_tenant_id), engine)
         return df.to_dict(orient="records")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/analytics/payroll")
-def get_payroll_analytics():
+def get_payroll_analytics(x_tenant_id: str = Header("default")):
     if not engine:
         raise HTTPException(status_code=500, detail="Database connection failed")
 
@@ -60,10 +60,11 @@ def get_payroll_analytics():
         query = """
         SELECT period, sum(base_salary) as total_base, sum(tax) as total_tax, sum(net_salary) as total_net
         FROM payroll_records
+        WHERE tenant_id = :tenant_id
         GROUP BY period
         ORDER BY period ASC
         """
-        df = pd.read_sql_query(text(query), engine)
+        df = pd.read_sql_query(text(query).bindparams(tenant_id=x_tenant_id), engine)
         return df.to_dict(orient="records")
     except Exception:
         return []
@@ -91,11 +92,11 @@ def get_performance_prediction():
 
 
 @app.post("/analytics/ai-insights")
-def get_ai_insights():
+def get_ai_insights(x_tenant_id: str = Header("default")):
     try:
         # Fetch some high level stats to feed to OpenAI
-        dept_data = get_department_analytics()
-        payroll_data = get_payroll_analytics()
+        dept_data = get_department_analytics(x_tenant_id=x_tenant_id)
+        payroll_data = get_payroll_analytics(x_tenant_id=x_tenant_id)
 
         context = f"Department Headcounts: {json.dumps(dept_data)}. Payroll Trends: {json.dumps(payroll_data)}."
 

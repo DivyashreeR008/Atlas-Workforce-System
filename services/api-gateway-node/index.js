@@ -71,6 +71,9 @@ function getProxyOptions(target, prefix) {
         proxyReq.setHeader('X-User-Id', String(req.user.id));
         proxyReq.setHeader('X-User-Role', String(req.user.role));
         proxyReq.setHeader('X-User-Email', String(req.user.email));
+        if (req.user.tenant_id) {
+          proxyReq.setHeader('X-Tenant-Id', String(req.user.tenant_id));
+        }
       }
       if (req.body && Object.keys(req.body).length) {
         const bodyData = JSON.stringify(req.body);

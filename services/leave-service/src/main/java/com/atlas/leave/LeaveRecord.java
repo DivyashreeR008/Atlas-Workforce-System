@@ -17,6 +17,9 @@ public class LeaveRecord {
     @Column(nullable = false)
     private String employeeId;
 
+    @Column(name = "tenant_id", nullable = false)
+    private String tenantId;
+
     @Column(nullable = false)
     private LocalDate startDate;
 
@@ -37,6 +40,8 @@ public class LeaveRecord {
     public void setId(Long id) { this.id = id; }
     public String getEmployeeId() { return employeeId; }
     public void setEmployeeId(String employeeId) { this.employeeId = employeeId; }
+    public String getTenantId() { return tenantId; }
+    public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public LocalDate getStartDate() { return startDate; }
     public void setStartDate(LocalDate startDate) { this.startDate = startDate; }
     public LocalDate getEndDate() { return endDate; }

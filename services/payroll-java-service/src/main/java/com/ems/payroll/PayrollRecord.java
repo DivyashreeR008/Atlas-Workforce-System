@@ -17,6 +17,9 @@ public class PayrollRecord {
     @Column(nullable = false)
     private String employeeId;
 
+    @Column(name = "tenant_id", nullable = false)
+    private String tenantId;
+
     @Column(nullable = false)
     private String period;
 
@@ -35,6 +38,8 @@ public class PayrollRecord {
     public void setId(Long id) { this.id = id; }
     public String getEmployeeId() { return employeeId; }
     public void setEmployeeId(String employeeId) { this.employeeId = employeeId; }
+    public String getTenantId() { return tenantId; }
+    public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public String getPeriod() { return period; }
     public void setPeriod(String period) { this.period = period; }
     public Double getBaseSalary() { return baseSalary; }

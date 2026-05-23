@@ -7,7 +7,8 @@ import java.util.List;
 
 @Repository
 public interface PayrollRepository extends JpaRepository<PayrollRecord, Long> {
-    List<PayrollRecord> findByEmployeeId(String employeeId);
-    List<PayrollRecord> findByPeriod(String period);
-    List<PayrollRecord> findByEmployeeIdAndPeriod(String employeeId, String period);
+    List<PayrollRecord> findByTenantId(String tenantId);
+    List<PayrollRecord> findByTenantIdAndEmployeeId(String tenantId, String employeeId);
+    List<PayrollRecord> findByTenantIdAndPeriod(String tenantId, String period);
+    List<PayrollRecord> findByTenantIdAndEmployeeIdAndPeriod(String tenantId, String employeeId, String period);
 }

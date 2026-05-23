@@ -7,6 +7,9 @@ import java.util.List;
 
 @Repository
 public interface LeaveRepository extends JpaRepository<LeaveRecord, Long> {
-    List<LeaveRecord> findByEmployeeId(String employeeId);
-    List<LeaveRecord> findByStatus(String status);
+    List<LeaveRecord> findByTenantId(String tenantId);
+    List<LeaveRecord> findByTenantIdAndEmployeeId(String tenantId, String employeeId);
+    List<LeaveRecord> findByTenantIdAndStatus(String tenantId, String status);
+    // Needed for updateLeaveStatus logic
+    java.util.Optional<LeaveRecord> findByIdAndTenantId(Long id, String tenantId);
 }

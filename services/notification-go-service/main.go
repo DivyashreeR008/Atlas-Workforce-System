@@ -21,13 +21,19 @@ var upgrader = websocket.Upgrader{
 
 // Client represents a connected WebSocket client
 type Client struct {
-	conn *websocket.Conn
-	send chan []byte
+	conn     *websocket.Conn
+	send     chan []byte
+	tenantID string
+}
+
+type BroadcastMessage struct {
+	TenantID string
+	Payload  []byte
 }
 
 var (
 	clients   = make(map[*Client]bool)
-	broadcast = make(chan []byte)
+	broadcast = make(chan BroadcastMessage)
 	mutex     = &sync.Mutex{}
 )
 
@@ -43,7 +49,12 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 
-	client := &Client{conn: ws, send: make(chan []byte, 256)}
+	tenantID := r.URL.Query().Get("tenant_id")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	client := &Client{conn: ws, send: make(chan []byte, 256), tenantID: tenantID}
 	
 	mutex.Lock()
 	clients[client] = true
@@ -73,11 +84,13 @@ func handleMessages() {
 		
 		mutex.Lock()
 		for client := range clients {
-			err := client.conn.WriteMessage(websocket.TextMessage, msg)
-			if err != nil {
-				log.Printf("WebSocket Write Error: %v", err)
-				client.conn.Close()
-				delete(clients, client)
+			if client.tenantID == msg.TenantID {
+				err := client.conn.WriteMessage(websocket.TextMessage, msg.Payload)
+				if err != nil {
+					log.Printf("WebSocket Write Error: %v", err)
+					client.conn.Close()
+					delete(clients, client)
+				}
 			}
 		}
 		mutex.Unlock()
@@ -173,13 +186,21 @@ func setupRabbitMQConsumer() {
 		log.Printf("Received a message: %s", d.Body)
 		
 		// Send to WebSocket connected clients
+		var rawData map[string]interface{}
+		json.Unmarshal(d.Body, &rawData)
+		
+		tenantID := "default"
+		if val, ok := rawData["tenant_id"].(string); ok {
+			tenantID = val
+		}
+
 		msgWrapper := map[string]interface{}{
 			"type": "notification",
 			"data": string(d.Body),
 			"timestamp": time.Now().Format(time.RFC3339),
 		}
 		jsonMsg, _ := json.Marshal(msgWrapper)
-		broadcast <- jsonMsg
+		broadcast <- BroadcastMessage{TenantID: tenantID, Payload: jsonMsg}
 	}
 }
 

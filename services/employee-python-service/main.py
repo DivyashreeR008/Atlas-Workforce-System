@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Body, Query
+from fastapi import FastAPI, HTTPException, Body, Query, Header
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import os
@@ -43,6 +43,7 @@ class EmployeeSchema(BaseModel):
     department: str
     position: str
     email: str
+    tenant_id: Optional[str] = None
 
     class Config:
         populate_by_name = True
@@ -87,23 +88,19 @@ async def get_employees(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
     search: Optional[str] = Query(None),
+    x_tenant_id: str = Header("default"),
 ):
-    query = {}
+    query = {"tenant_id": x_tenant_id}
     if search:
         pattern = re.compile(re.escape(search), re.IGNORECASE)
-        query = {
-            "$or": [
-                {"name": pattern},
-                {"email": pattern},
-                {"department": pattern},
-                {"position": pattern},
-            ]
-        }
+        query["$or"] = [
+            {"name": pattern},
+            {"email": pattern},
+            {"department": pattern},
+            {"position": pattern},
+        ]
 
-    if not query:
-        total = await employees_collection.estimated_document_count()
-    else:
-        total = await employees_collection.count_documents(query)
+    total = await employees_collection.count_documents(query)
 
     skip = (page - 1) * page_size
     total_pages = max(1, math.ceil(total / page_size)) if total else 1
@@ -123,18 +120,22 @@ async def get_employees(
 
 
 @app.get("/employees/{email}", response_model=EmployeeSchema)
-async def get_employee(email: str):
-    employee = await employees_collection.find_one({"email": email})
+async def get_employee(email: str, x_tenant_id: str = Header("default")):
+    employee = await employees_collection.find_one({"email": email, "tenant_id": x_tenant_id})
     if employee:
         return serialize_employee(employee)
     raise HTTPException(status_code=404, detail="Employee not found")
 
 
 @app.post("/employees", response_model=EmployeeSchema)
-async def create_employee(employee: EmployeeSchema = Body(...)):
+async def create_employee(
+    employee: EmployeeSchema = Body(...),
+    x_tenant_id: str = Header("default")
+):
     employee_dict = employee.model_dump(by_alias=True, exclude_none=True)
+    employee_dict["tenant_id"] = x_tenant_id
 
-    existing = await employees_collection.find_one({"email": employee.email})
+    existing = await employees_collection.find_one({"email": employee.email, "tenant_id": x_tenant_id})
     if existing:
         raise HTTPException(
             status_code=400, detail="Employee with this email already exists"
