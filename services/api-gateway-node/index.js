@@ -190,6 +190,31 @@ function authMiddleware(req, res, next) {
 
 app.use(authMiddleware);
 
+function rbacMiddleware(req, res, next) {
+  if (isPublicPath(req.path)) {
+    return next();
+  }
+  
+  const role = req.user?.role || 'employee';
+  const path = req.path;
+
+  if (path.startsWith('/api/payroll') && !['admin', 'hr'].includes(role)) {
+    return res.status(403).json({ message: 'Forbidden: Insufficient privileges for payroll' });
+  }
+
+  if (path.startsWith('/api/analytics') && !['admin', 'manager', 'hr'].includes(role)) {
+    return res.status(403).json({ message: 'Forbidden: Insufficient privileges for analytics' });
+  }
+
+  if (path.startsWith('/api/employee') && req.method !== 'GET' && !['admin', 'hr'].includes(role)) {
+    return res.status(403).json({ message: 'Forbidden: Insufficient privileges to modify employees' });
+  }
+
+  next();
+}
+
+app.use(rbacMiddleware);
+
 app.use(
   '/api/auth',
   createProxyMiddleware({

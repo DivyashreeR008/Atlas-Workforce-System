@@ -115,16 +115,42 @@ func setupRabbitMQConsumer() {
 		return
 	}
 
+	err = ch.ExchangeDeclare(
+		"notifications_exchange", // name
+		"fanout",                 // type
+		true,                     // durable
+		false,                    // auto-deleted
+		false,                    // internal
+		false,                    // no-wait
+		nil,                      // arguments
+	)
+	if err != nil {
+		log.Printf("Failed to declare an exchange: %v", err)
+		return
+	}
+
 	q, err := ch.QueueDeclare(
-		"notifications", // name
-		true,            // durable
-		false,           // delete when unused
-		false,           // exclusive
-		false,           // no-wait
-		nil,             // arguments
+		"",    // empty name generates a unique temporary queue name
+		false, // non-durable
+		false, // delete when unused
+		true,  // exclusive
+		false, // no-wait
+		nil,   // arguments
 	)
 	if err != nil {
 		log.Printf("Failed to declare a queue: %v", err)
+		return
+	}
+
+	err = ch.QueueBind(
+		q.Name,
+		"", // routing key
+		"notifications_exchange",
+		false,
+		nil,
+	)
+	if err != nil {
+		log.Printf("Failed to bind queue: %v", err)
 		return
 	}
 
