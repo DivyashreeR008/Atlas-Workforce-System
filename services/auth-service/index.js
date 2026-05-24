@@ -224,14 +224,14 @@ async function initDB() {
   `);
 
   const adminCheck = await pool.query('SELECT * FROM users WHERE email = $1', [
-    'REDACTED_EMAIL',
+    'admin@atlas.io',
   ]);
   if (adminCheck.rows.length === 0) {
     const hashedPass = await bcrypt.hash(ADMIN_DEFAULT_PASSWORD, 10);
     await pool.query(
       'INSERT INTO users (email, password, name, role, department, position, tenant_id) VALUES ($1, $2, $3, $4, $5, $6, $7)',
       [
-        'REDACTED_EMAIL',
+        'admin@atlas.io',
         hashedPass,
         'Super Admin',
         'admin',
@@ -240,7 +240,7 @@ async function initDB() {
         'default'
       ]
     );
-    console.log('Default admin user created (REDACTED_EMAIL)');
+    console.log('Default admin user created (admin@atlas.io)');
   }
 
   console.log('Database initialized successfully.');

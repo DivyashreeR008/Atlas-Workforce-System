@@ -60,7 +60,7 @@ export default function LoginPage() {
             <Input
               id="email"
               type="email"
-              placeholder="REDACTED_EMAIL"
+              placeholder="admin@atlas.io"
               className="border-white/20 bg-white/10 text-white placeholder:text-slate-400"
               {...register("email")}
             />
@@ -93,7 +93,7 @@ export default function LoginPage() {
           </Link>
         </p>
         <p className="mt-2 text-center text-xs text-slate-500">
-          Demo: REDACTED_EMAIL / ChangeMe123!
+          Demo: admin@atlas.io / ChangeMe123!
         </p>
       </CardContent>
     </Card>
