@@ -106,6 +106,10 @@ export const employeeApi = {
     }),
   get: (email: string) => api.get(`/employee/employees/${email}`),
   create: (employee: object) => api.post("/employee/employees", employee),
+  update: (email: string, employee: object) =>
+    api.put(`/employee/employees/${email}`, employee),
+  delete: (email: string) =>
+    api.delete(`/employee/employees/${email}`),
 };
 
 export const analyticsApi = {
@@ -113,6 +117,45 @@ export const analyticsApi = {
   payroll: () => api.get("/analytics/payroll"),
   performance: () => api.get("/analytics/performance"),
   aiInsights: () => api.post("/analytics/ai-insights"),
+};
+
+export const leaveApi = {
+  list: () => api.get("/leave"),
+  getByEmployee: (employeeId: string) =>
+    api.get(`/leave/employee/${employeeId}`),
+  request: (data: {
+    employeeId: string;
+    startDate: string;
+    endDate: string;
+    leaveType: string;
+    reason?: string;
+  }) => api.post("/leave/request", data),
+  updateStatus: (id: number, status: string) =>
+    api.put(`/leave/${id}/status`, { status }),
+};
+
+export const payrollApi = {
+  list: () => api.get("/payroll"),
+  getByEmployee: (employeeId: string) =>
+    api.get(`/payroll/employee/${employeeId}`),
+  run: (data: {
+    employeeId: string;
+    period: string;
+    baseSalary: number;
+    allowances?: number;
+    deductions?: number;
+  }) => api.post("/payroll/run", data),
+};
+
+export const attendanceApi = {
+  list: () => api.get("/attendance"),
+  get: (id: string) => api.get(`/attendance/${id}`),
+  getByEmployee: (employeeId: string) =>
+    api.get(`/attendance/employee/${employeeId}`),
+  clockIn: (employeeId: string, localDate?: string) =>
+    api.post("/attendance/clock-in", { employeeId, localDate }),
+  clockOut: (employeeId: string, localDate?: string) =>
+    api.post("/attendance/clock-out", { employeeId, localDate }),
 };
 
 export const billingApi = {

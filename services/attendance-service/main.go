@@ -69,6 +69,50 @@ func main() {
 
 	api := app.Group("/api/attendance")
 
+	// List attendance records for a tenant
+	api.Get("/", func(c *fiber.Ctx) error {
+		tenantId := getTenant(c)
+		if db != nil {
+			var records []AttendanceRecord
+			db.Where("tenant_id = ?", tenantId).Order("date DESC, clock_in DESC").Find(&records)
+			if records == nil {
+				records = []AttendanceRecord{}
+			}
+			return c.JSON(records)
+		}
+		return c.JSON([]AttendanceRecord{})
+	})
+
+	// Get single attendance record
+	api.Get("/:id", func(c *fiber.Ctx) error {
+		tenantId := getTenant(c)
+		id := c.Params("id")
+		if db != nil {
+			var record AttendanceRecord
+			err := db.Where("id = ? AND tenant_id = ?", id, tenantId).First(&record).Error
+			if err != nil {
+				return c.Status(404).JSON(fiber.Map{"error": "Attendance record not found"})
+			}
+			return c.JSON(record)
+		}
+		return c.Status(404).JSON(fiber.Map{"error": "Attendance record not found"})
+	})
+
+	// Get attendance by employee
+	api.Get("/employee/:employeeId", func(c *fiber.Ctx) error {
+		tenantId := getTenant(c)
+		employeeId := c.Params("employeeId")
+		if db != nil {
+			var records []AttendanceRecord
+			db.Where("tenant_id = ? AND employee_id = ?", tenantId, employeeId).Order("date DESC").Find(&records)
+			if records == nil {
+				records = []AttendanceRecord{}
+			}
+			return c.JSON(records)
+		}
+		return c.JSON([]AttendanceRecord{})
+	})
+
 	// Clock In
 	api.Post("/clock-in", func(c *fiber.Ctx) error {
 		type ClockInReq struct {

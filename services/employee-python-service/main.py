@@ -42,7 +42,7 @@ app = FastAPI(title="Employee Service API", version="1.0.0", lifespan=lifespan)
 
 
 class EmployeeSchema(BaseModel):
-    id: Optional[int] = Field(None, alias="_id")
+    id: Optional[str] = Field(None, alias="_id")
     name: str
     department: str
     position: str
@@ -72,6 +72,13 @@ class PaginatedEmployees(BaseModel):
 def serialize_employee(employee: dict) -> dict:
     employee["_id"] = str(employee["_id"])
     return employee
+
+
+class EmployeeUpdateSchema(BaseModel):
+    name: Optional[str] = None
+    department: Optional[str] = None
+    position: Optional[str] = None
+    email: Optional[str] = None
 
 
 @app.get("/health")
@@ -148,6 +155,44 @@ async def create_employee(
     result = await employees_collection.insert_one(employee_dict)
     employee_dict["_id"] = str(result.inserted_id)
     return employee_dict
+
+
+@app.put("/employees/{email}", response_model=EmployeeSchema)
+async def update_employee(
+    email: str,
+    employee: EmployeeUpdateSchema = Body(...),
+    x_tenant_id: str = Header("default")
+):
+    existing = await employees_collection.find_one({"email": email, "tenant_id": x_tenant_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    update_data = employee.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    if "email" in update_data and update_data["email"] != email:
+        duplicate = await employees_collection.find_one(
+            {"email": update_data["email"], "tenant_id": x_tenant_id}
+        )
+        if duplicate:
+            raise HTTPException(status_code=400, detail="Email already in use")
+
+    await employees_collection.update_one(
+        {"email": email, "tenant_id": x_tenant_id},
+        {"$set": update_data}
+    )
+
+    updated = await employees_collection.find_one({"email": update_data.get("email", email), "tenant_id": x_tenant_id})
+    return serialize_employee(updated)
+
+
+@app.delete("/employees/{email}")
+async def delete_employee(email: str, x_tenant_id: str = Header("default")):
+    result = await employees_collection.delete_one({"email": email, "tenant_id": x_tenant_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return {"message": "Employee deleted successfully"}
 
 
 if __name__ == "__main__":
