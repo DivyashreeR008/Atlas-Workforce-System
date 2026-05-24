@@ -109,8 +109,10 @@ export const employeeApi = {
 };
 
 export const analyticsApi = {
-  dashboard: () => api.get("/analytics/dashboard"),
-  trends: () => api.get("/analytics/trends"),
+  department: () => api.get("/analytics/department"),
+  payroll: () => api.get("/analytics/payroll"),
+  performance: () => api.get("/analytics/performance"),
+  aiInsights: () => api.post("/analytics/ai-insights"),
 };
 
 export const billingApi = {

@@ -9,7 +9,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/leave")
-@CrossOrigin(origins = "*")
+@CrossOrigin(origins = "${ALLOWED_ORIGINS:http://localhost:3000}")
 public class LeaveController {
 
     private final LeaveService service;

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,7 +16,17 @@ import (
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for demo
+		origin := r.Header.Get("Origin")
+		allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
+		if allowedOrigins == "" {
+			allowedOrigins = "http://localhost:3000"
+		}
+		for _, o := range strings.Split(allowedOrigins, ",") {
+			if strings.TrimSpace(o) == origin {
+				return true
+			}
+		}
+		return origin == ""
 	},
 }
 

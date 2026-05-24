@@ -54,7 +54,7 @@ const sslConfig = process.env.POSTGRES_SSL === 'true' || NODE_ENV === 'productio
 const pool = new Pool({
   connectionString:
     process.env.POSTGRES_URL ||
-    'postgresql://atlas_user:REDACTED_DATABASE_PASSWORD@postgres:5432/atlas_db',
+    `postgresql://${process.env.POSTGRES_USER || 'atlas_user'}:${process.env.POSTGRES_PASSWORD || 'atlas_password'}@${process.env.POSTGRES_HOST || 'postgres'}:5432/${process.env.POSTGRES_DB || 'atlas_db'}`,
   ssl: sslConfig,
 });
 

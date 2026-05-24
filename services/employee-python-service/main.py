@@ -9,9 +9,13 @@ import uvicorn
 from motor.motor_asyncio import AsyncIOMotorClient
 from contextlib import asynccontextmanager
 
+MONGO_USER = os.environ.get("MONGO_USER", "admin")
+MONGO_PASSWORD = os.environ.get("MONGO_PASSWORD", "admin_password")
+MONGO_HOST = os.environ.get("MONGO_HOST", "localhost")
+MONGO_DB = os.environ.get("MONGO_DB", "atlas_db")
 MONGO_URL = os.environ.get(
     "MONGO_URL",
-    "mongodb://admin:REDACTED_DATABASE_PASSWORD@localhost:27017/atlas_db?authSource=admin",
+    f"mongodb://{MONGO_USER}:{MONGO_PASSWORD}@{MONGO_HOST}:27017/{MONGO_DB}?authSource=admin",
 )
 DB_NAME = "atlas_db"
 

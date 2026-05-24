@@ -9,16 +9,23 @@ import json
 
 app = FastAPI(title="Analytics Service API", version="1.0.0")
 
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+POSTGRES_USER = os.environ.get("POSTGRES_USER", "atlas_user")
+POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "atlas_password")
+POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "postgres")
+POSTGRES_DB = os.environ.get("POSTGRES_DB", "atlas_db")
 DATABASE_URL = os.environ.get(
-    "POSTGRES_URL", "postgresql://atlas_user:REDACTED_DATABASE_PASSWORD@postgres:5432/atlas_db"
+    "POSTGRES_URL",
+    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:5432/{POSTGRES_DB}",
 )
 
 try:
@@ -42,11 +49,18 @@ def get_department_analytics(x_tenant_id: str = Header("default")):
         raise HTTPException(status_code=500, detail="Database connection failed")
 
     try:
-        query = (
-            "SELECT department, count(id) as headcount FROM users WHERE tenant_id = :tenant_id GROUP BY department"
-        )
-        df = pd.read_sql_query(text(query).bindparams(tenant_id=x_tenant_id), engine)
-        return df.to_dict(orient="records")
+        # Try common table names for employee/department data
+        for tbl in ["users", "employees", "employee_records"]:
+            try:
+                query = text(
+                    "SELECT department, count(id) as headcount FROM {} WHERE tenant_id = :tenant_id GROUP BY department".format(tbl)
+                )
+                df = pd.read_sql_query(query.bindparams(tenant_id=x_tenant_id), engine)
+                if not df.empty:
+                    return df.to_dict(orient="records")
+            except Exception:
+                continue
+        return []
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

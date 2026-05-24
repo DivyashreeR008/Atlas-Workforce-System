@@ -1,13 +1,11 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:15-alpine
     container_name: atlas-postgres
     environment:
-      POSTGRES_USER: atlas_user
-      POSTGRES_PASSWORD: REDACTED_DATABASE_PASSWORD
-      POSTGRES_DB: atlas_db
+      POSTGRES_USER: ${POSTGRES_USER:-atlas_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-atlas_password}
+      POSTGRES_DB: ${POSTGRES_DB:-atlas_db}
     ports:
       - "5432:5432"
     volumes:
@@ -15,7 +13,7 @@ services:
     networks:
       - atlas-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U atlas_user -d atlas_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-atlas_user} -d ${POSTGRES_DB:-atlas_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -24,9 +22,9 @@ services:
     image: mongo:6
     container_name: atlas-mongodb
     environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: REDACTED_DATABASE_PASSWORD
-      MONGO_INITDB_DATABASE: atlas_db
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-admin_password}
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-atlas_db}
     ports:
       - "27017:27017"
     volumes:
@@ -46,15 +44,13 @@ services:
     image: rabbitmq:3-management-alpine
     container_name: atlas-rabbitmq
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
     ports:
       - "5672:5672"
       - "15672:15672"
     networks:
       - atlas-network
-
-
 
   api-gateway:
     build: ./services/api-gateway-node
@@ -62,8 +58,8 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - JWT_SECRET=${JWT_SECRET:-REDACTED_JWT_SECRET}
-      - ALLOWED_ORIGINS=http://localhost:3000
+      - JWT_SECRET=${JWT_SECRET:-change-me-to-a-long-random-string}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
       - AUTH_SERVICE_URL=http://auth-service:8010
       - EMPLOYEE_SERVICE_URL=http://employee-service:8001
       - PAYROLL_SERVICE_URL=http://payroll-service:8002
@@ -88,9 +84,11 @@ services:
     ports:
       - "8010:8010"
     environment:
-      - JWT_SECRET=${JWT_SECRET:-REDACTED_JWT_SECRET}
+      - JWT_SECRET=${JWT_SECRET:-change-me-to-a-long-random-string}
       - ADMIN_DEFAULT_PASSWORD=${ADMIN_DEFAULT_PASSWORD:-ChangeMe123!}
-      - POSTGRES_URL=postgresql://atlas_user:REDACTED_DATABASE_PASSWORD@postgres:5432/atlas_db
+      - POSTGRES_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+      - NODE_ENV=${NODE_ENV:-development}
     networks:
       - atlas-network
     depends_on:
@@ -103,8 +101,8 @@ services:
     ports:
       - "8001:8001"
     environment:
-      - MONGO_URL=mongodb://admin:REDACTED_DATABASE_PASSWORD@mongodb:27017/atlas_db?authSource=admin
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - MONGO_URL=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-admin_password}@mongodb:27017/${MONGO_DB:-atlas_db}?authSource=admin
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
     networks:
       - atlas-network
     depends_on:
@@ -117,9 +115,9 @@ services:
     ports:
       - "8002:8002"
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/atlas_db
-      - SPRING_DATASOURCE_USERNAME=atlas_user
-      - SPRING_DATASOURCE_PASSWORD=REDACTED_DATABASE_PASSWORD
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-atlas_db}
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-atlas_user}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-atlas_password}
       - SPRING_RABBITMQ_HOST=rabbitmq
       - SPRING_RABBITMQ_PORT=5672
     networks:
@@ -134,7 +132,8 @@ services:
     ports:
       - "8003:8003"
     environment:
-      - POSTGRES_URL=postgresql://atlas_user:REDACTED_DATABASE_PASSWORD@postgres:5432/atlas_db
+      - POSTGRES_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
     networks:
       - atlas-network
     depends_on:
@@ -147,7 +146,7 @@ services:
     ports:
       - "8004:8004"
     environment:
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
     networks:
       - atlas-network
     depends_on:
@@ -159,7 +158,7 @@ services:
     ports:
       - "8005:8005"
     environment:
-      - POSTGRES_URL=host=postgres user=atlas_user password=REDACTED_DATABASE_PASSWORD dbname=atlas_db port=5432 sslmode=disable
+      - POSTGRES_URL=host=postgres user=${POSTGRES_USER:-atlas_user} password=${POSTGRES_PASSWORD:-atlas_password} dbname=${POSTGRES_DB:-atlas_db} port=5432 sslmode=disable
     networks:
       - atlas-network
     depends_on:
@@ -172,9 +171,9 @@ services:
     ports:
       - "8006:8006"
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/atlas_db
-      - SPRING_DATASOURCE_USERNAME=atlas_user
-      - SPRING_DATASOURCE_PASSWORD=REDACTED_DATABASE_PASSWORD
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-atlas_db}
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-atlas_user}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-atlas_password}
     networks:
       - atlas-network
     depends_on:
@@ -187,7 +186,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8080/api
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8080/api}
     networks:
       - atlas-network
     depends_on:
@@ -200,4 +199,3 @@ networks:
 volumes:
   atlas_postgres_data:
   mongo_data:
-

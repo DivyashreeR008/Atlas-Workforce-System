@@ -8,7 +8,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/payroll")
-@CrossOrigin(origins = "*")
+@CrossOrigin(origins = "${ALLOWED_ORIGINS:http://localhost:3000}")
 public class PayrollController {
 
     private final PayrollService service;

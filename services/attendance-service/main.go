@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -31,10 +32,22 @@ func getTenant(c *fiber.Ctx) string {
 
 var db *gorm.DB
 
+func getEnv(key, fallback string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return fallback
+}
+
 func initDatabase() {
 	dsn := os.Getenv("POSTGRES_URL")
 	if dsn == "" {
-		dsn = "host=postgres user=atlas_user password=REDACTED_DATABASE_PASSWORD dbname=atlas_db port=5432 sslmode=disable"
+		dsn = fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=5432 sslmode=disable",
+			getEnv("POSTGRES_HOST", "postgres"),
+			getEnv("POSTGRES_USER", "atlas_user"),
+			getEnv("POSTGRES_PASSWORD", "atlas_password"),
+			getEnv("POSTGRES_DB", "atlas_db"),
+		)
 	}
 	var err error
 	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
