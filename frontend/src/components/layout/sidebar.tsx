@@ -22,6 +22,8 @@ import {
   LayoutGrid,
   Cable,
   Orbit,
+  LineChart,
+  Workflow,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -37,6 +39,13 @@ const navItems: ({ href: string; label: string; icon: React.ComponentType<{ clas
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/dashboard/employees", label: "Employees", icon: Users },
   { href: "/dashboard/lifecycle", label: "Lifecycle", icon: Orbit },
+  {
+    label: "Workforce Planning",
+    icon: LineChart,
+    children: [
+      { href: "/dashboard/workforce-planning", label: "Dashboard" },
+    ],
+  },
   { href: "/dashboard/attendance", label: "Attendance", icon: Clock },
   {
     label: "ATS",

@@ -1445,3 +1445,284 @@ export interface PayrollDashboardSummary {
   unresolvedAnomalies: number;
   pendingBonuses: number;
 }
+
+// === Module 6 — Workforce Planning Types ===
+
+export interface WorkforceDashboard {
+  total_headcount: number;
+  total_capacity: number;
+  total_allocated: number;
+  bench_count: number;
+  open_requirements: number;
+  attrition_rate: number;
+  utilization_rate: number;
+  skill_gap_count: number;
+  hiring_urgent: number;
+  department_summary: WorkforceDeptSummary[];
+  trends: Record<string, unknown>;
+}
+
+export interface WorkforceDeptSummary {
+  department: string;
+  total_capacity: number;
+  allocated: number;
+  open_roles: number;
+}
+
+export interface WorkforceDemandForecast {
+  id: string;
+  tenant_id: string;
+  department: string;
+  role: string;
+  current_headcount: number;
+  projected_headcount: number;
+  gap: number;
+  period: string;
+  confidence_level: number;
+  factors: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CapacityPlan {
+  id: string;
+  tenant_id: string;
+  department: string;
+  role: string;
+  total_capacity: number;
+  allocated: number;
+  available: number;
+  utilization_rate: number;
+  period: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkforceAllocation {
+  id: string;
+  tenant_id: string;
+  employee_id: string;
+  employee_name: string;
+  department: string;
+  role: string;
+  project_name: string;
+  allocation_percentage: number;
+  start_date: string;
+  end_date: string;
+  status: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectStaffing {
+  id: string;
+  tenant_id: string;
+  project_name: string;
+  project_code: string;
+  department: string;
+  required_roles: { role: string; count: number; skills: string[] }[];
+  actual_staffing: { role: string; count: number; employees: string[] }[];
+  budget: number;
+  actual_cost: number;
+  status: string;
+  start_date: string;
+  end_date: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SkillGapAnalysis {
+  id: string;
+  tenant_id: string;
+  department: string;
+  role: string;
+  skill_name: string;
+  required_level: number;
+  current_avg_level: number;
+  gap_score: number;
+  employee_count: number;
+  priority: string;
+  period: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResourceForecast {
+  id: string;
+  tenant_id: string;
+  department: string;
+  role: string;
+  current_headcount: number;
+  projected_hires: number;
+  projected_attrition: number;
+  net_headcount: number;
+  period: string;
+  confidence: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BenchManagement {
+  id: string;
+  tenant_id: string;
+  employee_id: string;
+  employee_name: string;
+  department: string;
+  role: string;
+  skills: { skill: string; level: number }[];
+  bench_start_date: string;
+  bench_duration_days: number;
+  billable_status: string;
+  status: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TalentForecast {
+  id: string;
+  tenant_id: string;
+  department: string;
+  role: string;
+  current_talent_pool: number;
+  projected_needs: number;
+  gap: number;
+  period: string;
+  risk_level: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AttritionForecast {
+  id: string;
+  tenant_id: string;
+  department: string;
+  role: string;
+  current_headcount: number;
+  projected_attrition_rate: number;
+  projected_attrition_count: number;
+  confidence: number;
+  risk_factors: Record<string, unknown>;
+  period: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RetirementForecast {
+  id: string;
+  tenant_id: string;
+  department: string;
+  role: string;
+  eligible_count: number;
+  projected_retirements: number;
+  avg_age: number;
+  risk_level: string;
+  period: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HiringRecommendation {
+  id: string;
+  tenant_id: string;
+  department: string;
+  role: string;
+  priority: string;
+  recommended_count: number;
+  current_gap: number;
+  urgency: string;
+  business_impact: string;
+  justification: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkforceSimulation {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description: string;
+  simulation_type: string;
+  parameters: Record<string, unknown>;
+  results: Record<string, unknown>;
+  status: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SimulationRunResult {
+  simulation_id: string;
+  results: Record<string, unknown>;
+  summary: string;
+}
+
+export interface WhatIfAnalysis {
+  id: string;
+  tenant_id: string;
+  simulation_id: string;
+  scenario_name: string;
+  assumptions: Record<string, unknown>;
+  projected_impact: Record<string, unknown>;
+  confidence: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrgRedesignSimulator {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description: string;
+  current_structure: Record<string, unknown>;
+  proposed_structure: Record<string, unknown>;
+  impact_analysis: Record<string, unknown>;
+  status: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StrategicPlan {
+  id: string;
+  tenant_id: string;
+  name: string;
+  period: string;
+  objectives: StrategicObjective[];
+  kpis: StrategicKPI[];
+  initiatives: StrategicInitiative[];
+  status: string;
+  progress: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StrategicObjective {
+  title: string;
+  description: string;
+  target_date: string;
+  status: string;
+  progress: number;
+}
+
+export interface StrategicKPI {
+  name: string;
+  current_value: number;
+  target_value: number;
+  unit: string;
+  trend: string;
+}
+
+export interface StrategicInitiative {
+  name: string;
+  description: string;
+  owner: string;
+  budget: number;
+  start_date: string;
+  end_date: string;
+  status: string;
+  progress: number;
+}

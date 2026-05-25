@@ -752,6 +752,167 @@ export const lifecycleApi = {
   },
 };
 
+export const workforcePlanningApi = {
+  dashboard: () => api.get("/workforce/dashboard"),
+
+  // Demand Forecasting
+  forecasts: {
+    list: (params?: { page?: number; page_size?: number; period?: string; department?: string }) =>
+      api.get("/workforce/forecasts", { params }),
+    get: (id: string) => api.get(`/workforce/forecasts/${id}`),
+    create: (data: Partial<import("@/types").WorkforceDemandForecast>) => api.post("/workforce/forecasts", data),
+    update: (id: string, data: Partial<import("@/types").WorkforceDemandForecast>) => api.put(`/workforce/forecasts/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/forecasts/${id}`),
+  },
+
+  // Resource Forecasting
+  resourceForecasts: {
+    list: (params?: { page?: number; page_size?: number; department?: string; period?: string }) =>
+      api.get("/workforce/resource-forecasts", { params }),
+    get: (id: string) => api.get(`/workforce/resource-forecasts/${id}`),
+    create: (data: Partial<import("@/types").ResourceForecast>) => api.post("/workforce/resource-forecasts", data),
+    update: (id: string, data: Partial<import("@/types").ResourceForecast>) => api.put(`/workforce/resource-forecasts/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/resource-forecasts/${id}`),
+  },
+
+  // Talent Forecasting
+  talentForecasts: {
+    list: (params?: { page?: number; page_size?: number; role?: string; period?: string }) =>
+      api.get("/workforce/talent-forecasts", { params }),
+    get: (id: string) => api.get(`/workforce/talent-forecasts/${id}`),
+    create: (data: Partial<import("@/types").TalentForecast>) => api.post("/workforce/talent-forecasts", data),
+    update: (id: string, data: Partial<import("@/types").TalentForecast>) => api.put(`/workforce/talent-forecasts/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/talent-forecasts/${id}`),
+  },
+
+  // Attrition Forecasting
+  attritionForecasts: {
+    list: (params?: { page?: number; page_size?: number; department?: string; period?: string }) =>
+      api.get("/workforce/attrition-forecasts", { params }),
+    get: (id: string) => api.get(`/workforce/attrition-forecasts/${id}`),
+    create: (data: Partial<import("@/types").AttritionForecast>) => api.post("/workforce/attrition-forecasts", data),
+    update: (id: string, data: Partial<import("@/types").AttritionForecast>) => api.put(`/workforce/attrition-forecasts/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/attrition-forecasts/${id}`),
+  },
+
+  // Retirement Forecasting
+  retirementForecasts: {
+    list: (params?: { page?: number; page_size?: number; department?: string; period?: string }) =>
+      api.get("/workforce/retirement-forecasts", { params }),
+    get: (id: string) => api.get(`/workforce/retirement-forecasts/${id}`),
+    create: (data: Partial<import("@/types").RetirementForecast>) => api.post("/workforce/retirement-forecasts", data),
+    update: (id: string, data: Partial<import("@/types").RetirementForecast>) => api.put(`/workforce/retirement-forecasts/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/retirement-forecasts/${id}`),
+  },
+
+  // Capacity Planning
+  capacityPlans: {
+    list: (params?: { page?: number; page_size?: number; period?: string; department?: string }) =>
+      api.get("/workforce/capacity-plans", { params }),
+    get: (id: string) => api.get(`/workforce/capacity-plans/${id}`),
+    create: (data: Partial<import("@/types").CapacityPlan>) => api.post("/workforce/capacity-plans", data),
+    update: (id: string, data: Partial<import("@/types").CapacityPlan>) => api.put(`/workforce/capacity-plans/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/capacity-plans/${id}`),
+  },
+
+  // Workforce Allocation
+  allocations: {
+    list: (params?: { page?: number; page_size?: number; department?: string; status?: string }) =>
+      api.get("/workforce/allocations", { params }),
+    get: (id: string) => api.get(`/workforce/allocations/${id}`),
+    create: (data: Partial<import("@/types").WorkforceAllocation>) => api.post("/workforce/allocations", data),
+    update: (id: string, data: Partial<import("@/types").WorkforceAllocation>) => api.put(`/workforce/allocations/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/allocations/${id}`),
+  },
+
+  // Project Staffing
+  projectStaffing: {
+    list: (params?: { page?: number; page_size?: number; department?: string; status?: string }) =>
+      api.get("/workforce/project-staffing", { params }),
+    get: (id: string) => api.get(`/workforce/project-staffing/${id}`),
+    create: (data: Partial<import("@/types").ProjectStaffing>) => api.post("/workforce/project-staffing", data),
+    update: (id: string, data: Partial<import("@/types").ProjectStaffing>) =>
+      api.put(`/workforce/project-staffing/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/project-staffing/${id}`),
+  },
+
+  // Skills Gap
+  skillGaps: {
+    list: (params?: { page?: number; page_size?: number; role?: string; period?: string }) =>
+      api.get("/workforce/skill-gaps", { params }),
+    get: (id: string) => api.get(`/workforce/skill-gaps/${id}`),
+    create: (data: Partial<import("@/types").SkillGapAnalysis>) => api.post("/workforce/skill-gaps", data),
+    update: (id: string, data: Partial<import("@/types").SkillGapAnalysis>) => api.put(`/workforce/skill-gaps/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/skill-gaps/${id}`),
+  },
+
+  // Bench Management
+  bench: {
+    list: (params?: { page?: number; page_size?: number; department?: string; status?: string }) =>
+      api.get("/workforce/bench", { params }),
+    get: (id: string) => api.get(`/workforce/bench/${id}`),
+    create: (data: Partial<import("@/types").BenchManagement>) => api.post("/workforce/bench", data),
+    update: (id: string, data: Partial<import("@/types").BenchManagement>) => api.put(`/workforce/bench/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/bench/${id}`),
+  },
+
+  // Hiring Recommendations
+  hiringRecommendations: {
+    list: (params?: { page?: number; page_size?: number; department?: string; urgency?: string; status?: string }) =>
+      api.get("/workforce/hiring-recommendations", { params }),
+    get: (id: string) => api.get(`/workforce/hiring-recommendations/${id}`),
+    create: (data: Partial<import("@/types").HiringRecommendation>) => api.post("/workforce/hiring-recommendations", data),
+    update: (id: string, data: Partial<import("@/types").HiringRecommendation>) =>
+      api.put(`/workforce/hiring-recommendations/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/hiring-recommendations/${id}`),
+  },
+
+  // Simulations
+  simulations: {
+    list: (params?: { page?: number; page_size?: number; sim_type?: string }) =>
+      api.get("/workforce/simulations", { params }),
+    get: (id: string) => api.get(`/workforce/simulations/${id}`),
+    create: (data: Partial<import("@/types").WorkforceSimulation>) => api.post("/workforce/simulations", data),
+    update: (id: string, data: Partial<import("@/types").WorkforceSimulation>) =>
+      api.put(`/workforce/simulations/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/simulations/${id}`),
+    run: (data: { simulation_type: string; parameters: Record<string, unknown> }) =>
+      api.post("/workforce/simulations/run", data),
+  },
+
+  // What-If Analysis
+  whatIfAnalyses: {
+    list: (params?: { page?: number; page_size?: number; simulation_id?: string }) =>
+      api.get("/workforce/what-if-analyses", { params }),
+    get: (id: string) => api.get(`/workforce/what-if-analyses/${id}`),
+    create: (data: Partial<import("@/types").WhatIfAnalysis>) => api.post("/workforce/what-if-analyses", data),
+    update: (id: string, data: Partial<import("@/types").WhatIfAnalysis>) =>
+      api.put(`/workforce/what-if-analyses/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/what-if-analyses/${id}`),
+  },
+
+  // Org Redesign
+  orgRedesigns: {
+    list: (params?: { page?: number; page_size?: number; status?: string }) =>
+      api.get("/workforce/org-redesigns", { params }),
+    get: (id: string) => api.get(`/workforce/org-redesigns/${id}`),
+    create: (data: Partial<import("@/types").OrgRedesignSimulator>) => api.post("/workforce/org-redesigns", data),
+    update: (id: string, data: Partial<import("@/types").OrgRedesignSimulator>) =>
+      api.put(`/workforce/org-redesigns/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/org-redesigns/${id}`),
+  },
+
+  // Strategic Plans
+  strategicPlans: {
+    list: (params?: { page?: number; page_size?: number; status?: string }) =>
+      api.get("/workforce/strategic-plans", { params }),
+    create: (data: Partial<import("@/types").StrategicPlan>) => api.post("/workforce/strategic-plans", data),
+    update: (id: string, data: Partial<import("@/types").StrategicPlan>) =>
+      api.put(`/workforce/strategic-plans/${id}`, data),
+    delete: (id: string) => api.delete(`/workforce/strategic-plans/${id}`),
+  },
+};
+
 export const lmsApi = {
   dashboard: () => api.get("/lms/dashboard"),
   courses: {
