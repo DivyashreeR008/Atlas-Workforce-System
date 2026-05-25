@@ -4,31 +4,12 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
-
-type AttendanceRecord struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`
-	EmployeeID string    `gorm:"index;not null" json:"employeeId"`
-	TenantID   string    `gorm:"index;default:'default'" json:"tenantId"`
-	Date       string    `gorm:"index;not null" json:"date"`
-	ClockIn    time.Time `json:"clockIn"`
-	ClockOut   *time.Time `json:"clockOut"`
-	Status     string    `json:"status"`
-	Overtime   float64   `json:"overtime"` // hours
-}
-
-func getTenant(c *fiber.Ctx) string {
-	tenant := c.Get("X-Tenant-Id")
-	if tenant == "" {
-		return "default"
-	}
-	return tenant
-}
 
 var db *gorm.DB
 
@@ -55,146 +36,127 @@ func initDatabase() {
 		log.Printf("Warning: Could not connect to database (%v)", err)
 		return
 	}
-	db.AutoMigrate(&AttendanceRecord{})
+	migrateDB(db)
 }
 
 func main() {
 	initDatabase()
 
-	app := fiber.New()
+	app := fiber.New(fiber.Config{
+		AppName: "Atlas Attendance Service",
+	})
+
+	app.Use(cors.New(cors.Config{
+		AllowOrigins: "*",
+		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
+		AllowHeaders: "Origin,Content-Type,Accept,Authorization,X-Tenant-Id,X-Employee-Id",
+	}))
 
 	app.Get("/health", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"status": "Attendance Service is running"})
+		return c.JSON(fiber.Map{"status": "Attendance Service is running", "version": "2.0.0"})
 	})
 
 	api := app.Group("/api/attendance")
 
-	// List attendance records for a tenant
-	api.Get("/", func(c *fiber.Ctx) error {
-		tenantId := getTenant(c)
-		if db != nil {
-			var records []AttendanceRecord
-			db.Where("tenant_id = ?", tenantId).Order("date DESC, clock_in DESC").Find(&records)
-			if records == nil {
-				records = []AttendanceRecord{}
-			}
-			return c.JSON(records)
-		}
-		return c.JSON([]AttendanceRecord{})
-	})
+	// ============================================================
+	// Core attendance CRUD
+	// ============================================================
+	api.Get("/", listAttendance)
+	api.Get("/:id", getAttendance)
+	api.Get("/employee/:employeeId", getEmployeeAttendance)
 
-	// Get single attendance record
-	api.Get("/:id", func(c *fiber.Ctx) error {
-		tenantId := getTenant(c)
-		id := c.Params("id")
-		if db != nil {
-			var record AttendanceRecord
-			err := db.Where("id = ? AND tenant_id = ?", id, tenantId).First(&record).Error
-			if err != nil {
-				return c.Status(404).JSON(fiber.Map{"error": "Attendance record not found"})
-			}
-			return c.JSON(record)
-		}
-		return c.Status(404).JSON(fiber.Map{"error": "Attendance record not found"})
-	})
+	// Clock in/out
+	api.Post("/clock-in", clockIn)
+	api.Post("/clock-out", clockOut)
 
-	// Get attendance by employee
-	api.Get("/employee/:employeeId", func(c *fiber.Ctx) error {
-		tenantId := getTenant(c)
-		employeeId := c.Params("employeeId")
-		if db != nil {
-			var records []AttendanceRecord
-			db.Where("tenant_id = ? AND employee_id = ?", tenantId, employeeId).Order("date DESC").Find(&records)
-			if records == nil {
-				records = []AttendanceRecord{}
-			}
-			return c.JSON(records)
-		}
-		return c.JSON([]AttendanceRecord{})
-	})
+	// Dashboard
+	api.Get("/dashboard/summary", getDashboardSummary)
 
-	// Clock In
-	api.Post("/clock-in", func(c *fiber.Ctx) error {
-		type ClockInReq struct {
-			EmployeeID string `json:"employeeId"`
-			LocalDate  string `json:"localDate"`
-		}
-		var req ClockInReq
-		if err := c.BodyParser(&req); err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
-		}
+	// ============================================================
+	// Geo-fence management
+	// ============================================================
+	api.Get("/geo-fences", listGeoFences)
+	api.Post("/geo-fences", createGeoFence)
+	api.Put("/geo-fences/:id", updateGeoFence)
+	api.Delete("/geo-fences/:id", deleteGeoFence)
+	api.Post("/geo-fences/verify", verifyGeoLocation)
 
-		today := req.LocalDate
-		if today == "" {
-			today = time.Now().UTC().Format("2006-01-02")
-		}
-		tenantId := getTenant(c)
-		var existing AttendanceRecord
-		if db != nil {
-			err := db.Where("tenant_id = ? AND employee_id = ? AND date = ?", tenantId, req.EmployeeID, today).First(&existing).Error
-			if err == nil {
-				return c.Status(400).JSON(fiber.Map{"error": "Already clocked in today"})
-			}
-			
-			record := AttendanceRecord{
-				TenantID:   tenantId,
-				EmployeeID: req.EmployeeID,
-				Date:       today,
-				ClockIn:    time.Now(),
-				Status:     "PRESENT",
-			}
-			db.Create(&record)
-			return c.JSON(record)
-		}
-		return c.JSON(fiber.Map{"status": "Mock clocked in for " + req.EmployeeID})
-	})
+	// ============================================================
+	// Shift management
+	// ============================================================
+	api.Get("/shifts", listShifts)
+	api.Post("/shifts", createShift)
+	api.Put("/shifts/:id", updateShift)
+	api.Delete("/shifts/:id", deleteShift)
 
-	// Clock Out
-	api.Post("/clock-out", func(c *fiber.Ctx) error {
-		type ClockOutReq struct {
-			EmployeeID string `json:"employeeId"`
-			LocalDate  string `json:"localDate"`
-		}
-		var req ClockOutReq
-		if err := c.BodyParser(&req); err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
-		}
+	// Employee shift assignments
+	api.Post("/employee-shifts", assignEmployeeShift)
+	api.Get("/employee-shifts/:employeeId", getEmployeeShift)
 
-		today := req.LocalDate
-		if today == "" {
-			today = time.Now().UTC().Format("2006-01-02")
-		}
-		tenantId := getTenant(c)
-		if db != nil {
-			var record AttendanceRecord
-			err := db.Where("tenant_id = ? AND employee_id = ? AND date = ?", tenantId, req.EmployeeID, today).First(&record).Error
-			if err != nil {
-				return c.Status(404).JSON(fiber.Map{"error": "No clock in found for today"})
-			}
-			if record.ClockOut != nil {
-				return c.Status(400).JSON(fiber.Map{"error": "Already clocked out"})
-			}
+	// ============================================================
+	// Dynamic rostering
+	// ============================================================
+	api.Get("/rosters", listRosters)
+	api.Post("/rosters", createRoster)
+	api.Post("/rosters/bulk", bulkCreateRoster)
+	api.Post("/rosters/:id/publish", publishRoster)
 
-			now := time.Now()
-			record.ClockOut = &now
-			
-			// Calculate overtime (assuming 8 hours is standard)
-			duration := now.Sub(record.ClockIn).Hours()
-			if duration > 8.0 {
-				record.Overtime = duration - 8.0
-			}
+	// ============================================================
+	// QR attendance
+	// ============================================================
+	api.Post("/qr/generate", generateQRToken)
+	api.Post("/qr/validate", validateQRToken)
+	api.Post("/qr/use", markQRUsed)
 
-			db.Save(&record)
-			return c.JSON(record)
-		}
-		return c.JSON(fiber.Map{"status": "Mock clocked out for " + req.EmployeeID})
-	})
+	// ============================================================
+	// NFC attendance
+	// ============================================================
+	api.Post("/nfc/register", registerNFCCard)
+	api.Get("/nfc/list", listNFCRegistrations)
+	api.Post("/nfc/validate", validateNFC)
+
+	// ============================================================
+	// Face recognition
+	// ============================================================
+	api.Post("/face/enroll", enrollFace)
+	api.Get("/face/enrollment/:employeeId", getFaceEnrollment)
+	api.Post("/face/verify", verifyFaceAPI)
+
+	// ============================================================
+	// Biometric integration
+	// ============================================================
+	api.Post("/biometric/register", registerBiometric)
+	api.Get("/biometric/devices", listBiometricDevices)
+	api.Post("/biometric/verify", verifyBiometric)
+
+	// ============================================================
+	// Anomaly detection
+	// ============================================================
+	api.Get("/anomalies", listAnomalies)
+	api.Post("/anomalies/:id/resolve", resolveAnomaly)
+
+	// ============================================================
+	// WFH / Remote tracking
+	// ============================================================
+	api.Post("/wfh", createWFHEntry)
+	api.Get("/wfh", listWFHEntries)
+
+	// ============================================================
+	// Heatmap
+	// ============================================================
+	api.Get("/heatmap", getHeatmapData)
+
+	// ============================================================
+	// Predictions & AI insights
+	// ============================================================
+	api.Post("/predict/late-arrival", predictLateArrival)
+	api.Get("/ai/insights", attendanceAIInsights)
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8005" // Assuming 8005 for attendance
+		port = "8005"
 	}
-	
-	log.Printf("Attendance Service listening on port %s", port)
+
+	log.Printf("Atlas Attendance Service v2.0 listening on port %s", port)
 	app.Listen(":" + port)
 }

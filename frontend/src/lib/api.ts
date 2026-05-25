@@ -160,14 +160,107 @@ export const payrollApi = {
 };
 
 export const attendanceApi = {
-  list: () => api.get("/attendance"),
+  list: (params?: { employeeId?: string; status?: string; date?: string; startDate?: string; endDate?: string }) =>
+    api.get("/attendance", { params }),
   get: (id: string) => api.get(`/attendance/${id}`),
   getByEmployee: (employeeId: string) =>
     api.get(`/attendance/employee/${employeeId}`),
-  clockIn: (employeeId: string, localDate?: string) =>
-    api.post("/attendance/clock-in", { employeeId, localDate }),
-  clockOut: (employeeId: string, localDate?: string) =>
-    api.post("/attendance/clock-out", { employeeId, localDate }),
+  clockIn: (employeeId: string, localDate?: string, options?: {
+    latitude?: number; longitude?: number; method?: string; deviceId?: string;
+    qrToken?: string; nfcUid?: string; faceImage?: string; biometricHash?: string;
+    isRemote?: boolean; isWfh?: boolean; ipAddress?: string; userAgent?: string;
+  }) =>
+    api.post("/attendance/clock-in", { employeeId, localDate, ...options }),
+  clockOut: (employeeId: string, localDate?: string, options?: {
+    latitude?: number; longitude?: number; method?: string;
+  }) =>
+    api.post("/attendance/clock-out", { employeeId, localDate, ...options }),
+  dashboard: () => api.get("/attendance/dashboard/summary"),
+
+  // Geo-fence
+  geoFences: {
+    list: () => api.get("/attendance/geo-fences"),
+    create: (data: Partial<import("@/types").GeoFence>) => api.post("/attendance/geo-fences", data),
+    update: (id: number, data: Partial<import("@/types").GeoFence>) => api.put(`/attendance/geo-fences/${id}`, data),
+    delete: (id: number) => api.delete(`/attendance/geo-fences/${id}`),
+    verify: (latitude: number, longitude: number) =>
+      api.post("/attendance/geo-fences/verify", { latitude, longitude }),
+  },
+
+  // Shifts
+  shifts: {
+    list: () => api.get("/attendance/shifts"),
+    create: (data: Partial<import("@/types").Shift>) => api.post("/attendance/shifts", data),
+    update: (id: number, data: Partial<import("@/types").Shift>) => api.put(`/attendance/shifts/${id}`, data),
+    delete: (id: number) => api.delete(`/attendance/shifts/${id}`),
+  },
+
+  // Employee shifts
+  employeeShifts: {
+    assign: (data: Partial<import("@/types").EmployeeShift>) => api.post("/attendance/employee-shifts", data),
+    getByEmployee: (employeeId: string) => api.get(`/attendance/employee-shifts/${employeeId}`),
+  },
+
+  // Rosters
+  rosters: {
+    list: (params?: { date?: string; employeeId?: string }) => api.get("/attendance/rosters", { params }),
+    create: (data: Partial<import("@/types").Roster>) => api.post("/attendance/rosters", data),
+    bulk: (employeeIds: string[], date: string, shiftId: number) =>
+      api.post("/attendance/rosters/bulk", { employeeIds, date, shiftId }),
+    publish: (id: number) => api.post(`/attendance/rosters/${id}/publish`),
+  },
+
+  // QR
+  qr: {
+    generate: () => api.post("/attendance/qr/generate"),
+    validate: (token: string) => api.post("/attendance/qr/validate", { token }),
+    use: (token: string) => api.post("/attendance/qr/use", { token }),
+  },
+
+  // NFC
+  nfc: {
+    register: (data: Partial<import("@/types").NFCRegistration>) => api.post("/attendance/nfc/register", data),
+    list: () => api.get("/attendance/nfc/list"),
+    validate: (nfcUid: string) => api.post("/attendance/nfc/validate", { nfcUid }),
+  },
+
+  // Face recognition
+  face: {
+    enroll: (employeeId: string, imageUrl: string, faceVector?: string) =>
+      api.post("/attendance/face/enroll", { employeeId, imageUrl, faceVector }),
+    getEnrollment: (employeeId: string) => api.get(`/attendance/face/enrollment/${employeeId}`),
+    verify: (employeeId: string, faceImage: string) =>
+      api.post("/attendance/face/verify", { employeeId, faceImage }),
+  },
+
+  // Biometric
+  biometric: {
+    register: (data: Partial<import("@/types").BiometricDevice>) => api.post("/attendance/biometric/register", data),
+    devices: () => api.get("/attendance/biometric/devices"),
+    verify: (employeeId: string, hash: string) =>
+      api.post("/attendance/biometric/verify", { employeeId, hash }),
+  },
+
+  // Anomalies
+  anomalies: {
+    list: (params?: { employeeId?: string; type?: string; resolved?: string }) =>
+      api.get("/attendance/anomalies", { params }),
+    resolve: (id: number) => api.post(`/attendance/anomalies/${id}/resolve`),
+  },
+
+  // WFH
+  wfh: {
+    create: (data: Partial<import("@/types").WFHTracking>) => api.post("/attendance/wfh", data),
+    list: (params?: { employeeId?: string; date?: string }) => api.get("/attendance/wfh", { params }),
+  },
+
+  // Heatmap
+  heatmap: (period?: string) => api.get("/attendance/heatmap", { params: { period } }),
+
+  // Predictions & AI
+  predictLateArrival: (employeeId: string) =>
+    api.post("/attendance/predict/late-arrival", { employeeId }),
+  aiInsights: () => api.get("/attendance/ai/insights"),
 };
 
 export const atsApi = {

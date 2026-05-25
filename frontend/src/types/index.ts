@@ -52,6 +52,207 @@ export interface AttendanceRecord {
   hours: number;
 }
 
+// === Module 4 — Advanced Attendance Types ===
+
+export interface AttendanceRecordV2 {
+  id: number;
+  employeeId: string;
+  tenantId: string;
+  date: string;
+  clockIn: string;
+  clockOut: string | null;
+  status: string;
+  overtime: number;
+  method: string;
+  shiftId: number | null;
+  latitude: number | null;
+  longitude: number | null;
+  geoVerified: boolean;
+  geoFenceId: number | null;
+  faceVerified: boolean;
+  biometricHash: string;
+  nfcUid: string;
+  qrToken: string;
+  deviceId: string;
+  ipAddress: string;
+  userAgent: string;
+  isRemote: boolean;
+  isWfh: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GeoFence {
+  id: number;
+  tenantId: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  radiusMeters: number;
+  address: string;
+  isActive: boolean;
+}
+
+export interface GeoVerifyResult {
+  verified: boolean;
+  distance: number;
+  fenceName: string;
+  fenceLatitude: number;
+  fenceLongitude: number;
+  radiusMeters: number;
+}
+
+export interface Shift {
+  id: number;
+  tenantId: string;
+  name: string;
+  startTime: string;
+  endTime: string;
+  graceMinutes: number;
+  maxOvertime: number;
+  isNightShift: boolean;
+  isActive: boolean;
+  daysOfWeek: string;
+}
+
+export interface EmployeeShift {
+  id: number;
+  tenantId: string;
+  employeeId: string;
+  shiftId: number;
+  shift?: Shift;
+  startDate: string;
+  endDate?: string;
+  isActive: boolean;
+}
+
+export interface Roster {
+  id: number;
+  tenantId: string;
+  employeeId: string;
+  date: string;
+  shiftId: number;
+  shift?: Shift;
+  isPublished: boolean;
+  notes?: string;
+}
+
+export interface QRAttendance {
+  id: number;
+  tenantId: string;
+  token: string;
+  geoFenceId: number | null;
+  createdBy: string;
+  expiresAt: string;
+  isUsed: boolean;
+}
+
+export interface NFCRegistration {
+  id: number;
+  tenantId: string;
+  employeeId: string;
+  nfcUid: string;
+  deviceName: string;
+  isActive: boolean;
+  lastUsedAt: string | null;
+}
+
+export interface BiometricDevice {
+  id: number;
+  tenantId: string;
+  employeeId: string;
+  deviceType: string;
+  deviceUid: string;
+  isActive: boolean;
+  lastUsedAt: string | null;
+}
+
+export interface FaceEnrollment {
+  id: number;
+  tenantId: string;
+  employeeId: string;
+  imageUrl: string;
+  isActive: boolean;
+}
+
+export interface AnomalyLog {
+  id: number;
+  tenantId: string;
+  employeeId: string;
+  recordId: number | null;
+  anomalyType: string;
+  severity: string;
+  description: string;
+  isResolved: boolean;
+  detectedAt: string;
+  resolvedAt: string | null;
+}
+
+export interface WFHTracking {
+  id: number;
+  tenantId: string;
+  employeeId: string;
+  date: string;
+  isWfh: boolean;
+  isRemote: boolean;
+  location: string;
+  productivityScore: number;
+  approvedBy: string;
+  notes: string;
+}
+
+export interface HeatmapDay {
+  date: string;
+  statuses: Record<string, number>;
+  total: number;
+  overtime: number;
+}
+
+export interface HeatmapData {
+  data: HeatmapDay[];
+  period: string;
+}
+
+export interface LateArrivalPrediction {
+  prediction: boolean;
+  confidence: number;
+  lateRate: number;
+  avgClockIn: string;
+  totalDays: number;
+  lateDays: number;
+  reason: string;
+}
+
+export interface AttendanceAIInsight {
+  type: string;
+  value?: number;
+  description: string;
+  severity?: string;
+  avgOvertime?: number;
+  maxOvertime?: number;
+  totalOvertime?: number;
+  remoteRate?: number;
+  wfhRate?: number;
+}
+
+export interface AttendanceAIChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+}
+
+export interface AttendanceDashboardSummary {
+  presentToday: number;
+  lateToday: number;
+  absentToday: number;
+  wfhToday: number;
+  remoteToday: number;
+  totalToday: number;
+  avgOvertime: number;
+  anomaliesCount: number;
+}
+
 export interface LeaveRequest {
   id: string;
   employeeName: string;
