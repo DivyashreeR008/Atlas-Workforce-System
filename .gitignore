@@ -1,50 +1,30 @@
-# Dependencies
-node_modules/
-.pnp
-.pnp.js
-
-# Testing
-coverage/
-
-# Next.js
-.next/
-out/
-
-# Production
-build/
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
 dist/
+build/
 
-# Env
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+# Go binaries
+*.exe
+*.test
+*.out
 
-# Docker
-docker-compose.override.yml
-volumes/
+# Node
+node_modules/
+npm-debug.log*
 
-# OS
-.DS_Store
-Thumbs.db
+# TypeScript build cache
+*.tsbuildinfo
+.next/
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-.venv
-venv/
-ENV/
-
-# Java
-target/
-*.class
-*.jar
-*.war
-*.ear
-.mvn/
+# OS
+.DS_Store
+Thumbs.db
