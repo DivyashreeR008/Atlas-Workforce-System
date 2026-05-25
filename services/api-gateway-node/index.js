@@ -148,6 +148,8 @@ const services = {
     process.env.INTEGRATION_SERVICE_URL || 'http://integration-service:8016',
   lifecycle:
     process.env.EMPLOYEE_LIFECYCLE_SERVICE_URL || 'http://employee-lifecycle-service:8020',
+  security:
+    process.env.SECURITY_SERVICE_URL || 'http://security-service:8050',
 };
 
 const PUBLIC_AUTH_PATHS = ['/api/auth/login', '/api/auth/register'];
@@ -271,6 +273,11 @@ const PUBLIC_PREFIXES = [
   '/saml/login',
   '/saml/metadata',
   '/api/webhooks',
+  '/api/auth/webauthn/authenticate/begin',
+  '/api/auth/webauthn/authenticate/complete',
+  '/api/auth/oauth/login',
+  '/api/auth/oauth/callback',
+  '/api/auth/oauth/providers',
 ];
 
 function isPublicOrAuthPath(path) {
@@ -297,6 +304,7 @@ function authMiddleware(req, res, next) {
     '/api/compliance',
     '/api/integration',
     '/api/lifecycle',
+    '/api/security',
   ];
 
   const needsAuth = protectedPrefixes.some(
@@ -350,6 +358,10 @@ function rbacMiddleware(req, res, next) {
 
   if (path.startsWith('/api/compliance') && !['admin', 'compliance', 'hr'].includes(role)) {
     return res.status(403).json({ message: 'Forbidden: Insufficient privileges for compliance' });
+  }
+
+  if (path.startsWith('/api/security') && !['admin', 'compliance', 'auditor'].includes(role)) {
+    return res.status(403).json({ message: 'Forbidden: Insufficient privileges for security' });
   }
 
   next();
@@ -474,6 +486,7 @@ app.use('/api/compliance', proxyService(services.compliance, '/api/compliance', 
 
 app.use('/api/integration', proxyService(services.integration, '/api/integration', { '^/api/integration': '/api/v1/integration' }));
 app.use('/api/lifecycle', proxyService(services.lifecycle, '/api/lifecycle', { '^/api/lifecycle': '/api/v1/lifecycle' }));
+app.use('/api/security', proxyService(services.security, '/api/security', { '^/api/security': '/api/v1/security' }));
 
 const server = app.listen(PORT, () => {
   console.log(`API Gateway listening on port ${PORT}`);

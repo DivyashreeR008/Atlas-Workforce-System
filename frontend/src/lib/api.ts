@@ -1129,6 +1129,104 @@ export const ldApi = {
   competencyMatrix: () => api.get("/learning/analytics/competency-matrix"),
 };
 
+export const securityApi = {
+  dashboard: (tenant_id?: string) => api.get("/security/dashboard", { params: { tenant_id: tenant_id || "default" } }),
+
+  zeroTrust: {
+    list: (params?: { tenant_id?: string; enabled?: boolean; page?: number; page_size?: number }) =>
+      api.get("/security/zero-trust", { params }),
+    get: (id: string) => api.get(`/security/zero-trust/${id}`),
+    create: (data: Partial<import("@/types").ZeroTrustPolicy>) => api.post("/security/zero-trust", data),
+    update: (id: string, data: Partial<import("@/types").ZeroTrustPolicy>) => api.put(`/security/zero-trust/${id}`, data),
+    delete: (id: string) => api.delete(`/security/zero-trust/${id}`),
+    evaluate: (id: string, context: Record<string, unknown>) =>
+      api.post(`/security/zero-trust/${id}/evaluate`, context),
+  },
+
+  conditionalAccess: {
+    list: (params?: { tenant_id?: string; enabled?: boolean; page?: number; page_size?: number }) =>
+      api.get("/security/conditional-access", { params }),
+    get: (id: string) => api.get(`/security/conditional-access/${id}`),
+    create: (data: Partial<import("@/types").ConditionalAccessPolicy>) => api.post("/security/conditional-access", data),
+    update: (id: string, data: Partial<import("@/types").ConditionalAccessPolicy>) =>
+      api.put(`/security/conditional-access/${id}`, data),
+    delete: (id: string) => api.delete(`/security/conditional-access/${id}`),
+    evaluate: (context: Record<string, unknown>, tenant_id?: string) =>
+      api.post("/security/conditional-access/evaluate", context, { params: { tenant_id: tenant_id || "default" } }),
+  },
+
+  risk: {
+    assess: (data: Partial<import("@/types").RiskAssessment>) => api.post("/security/risk/assess", data),
+    list: (params?: { tenant_id?: string; user_id?: string; page?: number; page_size?: number }) =>
+      api.get("/security/risk/assessments", { params }),
+  },
+
+  pam: {
+    roles: {
+      list: (tenant_id?: string) => api.get("/security/pam/roles", { params: { tenant_id } }),
+      get: (id: string) => api.get(`/security/pam/roles/${id}`),
+      create: (data: Partial<import("@/types").PrivilegedRole>) => api.post("/security/pam/roles", data),
+    },
+    requests: {
+      list: (params?: { tenant_id?: string; user_id?: string; status?: string; page?: number; page_size?: number }) =>
+        api.get("/security/pam/requests", { params }),
+      create: (data: Partial<import("@/types").PrivilegedAccess>) => api.post("/security/pam/requests", data),
+      approve: (id: string, approved_by: string) =>
+        api.post(`/security/pam/requests/${id}/approve`, null, { params: { approved_by } }),
+      revoke: (id: string) => api.post(`/security/pam/requests/${id}/revoke`),
+    },
+  },
+
+  dataClassification: {
+    list: (params?: { tenant_id?: string; classification_level?: string }) =>
+      api.get("/security/data-classification", { params }),
+    get: (id: string) => api.get(`/security/data-classification/${id}`),
+    create: (data: Partial<import("@/types").DataClassification>) => api.post("/security/data-classification", data),
+    classify: (id: string, resource_data: Record<string, unknown>) =>
+      api.post(`/security/data-classification/${id}/classify`, resource_data),
+  },
+
+  dlp: {
+    policies: {
+      list: (params?: { tenant_id?: string; enabled?: boolean }) =>
+        api.get("/security/dlp/policies", { params }),
+      get: (id: string) => api.get(`/security/dlp/policies/${id}`),
+      create: (data: Partial<import("@/types").DLPPolicy>) => api.post("/security/dlp/policies", data),
+    },
+    incidents: {
+      list: (params?: { tenant_id?: string; status?: string; severity?: string; page?: number; page_size?: number }) =>
+        api.get("/security/dlp/incidents", { params }),
+      report: (data: Partial<import("@/types").DLPIncident>) => api.post("/security/dlp/incidents", data),
+      updateStatus: (id: string, status: string) =>
+        api.put(`/security/dlp/incidents/${id}/status`, null, { params: { status } }),
+    },
+  },
+
+  encryptionKeys: {
+    list: (params?: { tenant_id?: string; status?: string }) =>
+      api.get("/security/encryption-keys", { params }),
+    create: (data: Partial<import("@/types").EncryptionKey>) => api.post("/security/encryption-keys", data),
+    rotate: (key_id: string, data?: Record<string, unknown>) =>
+      api.post(`/security/encryption-keys/${key_id}/rotate`, data || {}),
+  },
+
+  dataResidency: {
+    list: (tenant_id?: string) => api.get("/security/data-residency", { params: { tenant_id } }),
+    create: (data: Partial<import("@/types").DataResidencyPolicy>) => api.post("/security/data-residency", data),
+    check: (policy_id: string, target_region: string) =>
+      api.post(`/security/data-residency/${policy_id}/check`, null, { params: { target_region } }),
+  },
+
+  sessionRecordings: {
+    start: (data: Record<string, unknown>) => api.post("/security/session-recordings/start", data),
+    stop: (id: string) => api.post(`/security/session-recordings/${id}/stop`),
+    addEvent: (id: string, event: Record<string, unknown>) =>
+      api.post(`/security/session-recordings/${id}/events`, event),
+    list: (params?: { tenant_id?: string; user_id?: string; status?: string; page?: number; page_size?: number }) =>
+      api.get("/security/session-recordings", { params }),
+  },
+};
+
 export const lmsApi = {
   dashboard: () => api.get("/lms/dashboard"),
   courses: {

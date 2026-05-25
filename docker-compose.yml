@@ -139,6 +139,7 @@ services:
       - AUDIT_COMPLIANCE_SERVICE_URL=http://audit-compliance-service:8011
       - INTEGRATION_SERVICE_URL=http://integration-service:8016
       - EMPLOYEE_LIFECYCLE_SERVICE_URL=http://employee-lifecycle-service:8020
+      - SECURITY_SERVICE_URL=http://security-service:8050
       - AUDIT_INTERNAL_KEY=${AUDIT_INTERNAL_KEY:-atlas-internal-key-change-me}
     networks:
       - atlas-network
@@ -154,6 +155,7 @@ services:
       - lms-service
       - performance-service
       - ai-copilot-service
+      - security-service
       - employee-lifecycle-service
 
   auth-service:
@@ -314,6 +316,21 @@ services:
       - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-atlas_db}
       - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-atlas_user}
       - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-atlas_password}
+    networks:
+      - atlas-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  security-service:
+    build: ./services/security-service
+    container_name: atlas-security-service
+    ports:
+      - "8050:8050"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+      - INTERNAL_API_KEY=${SECURITY_INTERNAL_KEY:-atlas-security-key-change-me}
     networks:
       - atlas-network
     depends_on:

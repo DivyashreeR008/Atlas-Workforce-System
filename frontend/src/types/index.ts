@@ -1997,6 +1997,229 @@ export interface PerformanceCalibration {
   completedAt?: string;
 }
 
+// === NASA-Level Security Types (121-145) ===
+
+export interface ZeroTrustPolicy {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  priority: number;
+  conditions: Record<string, unknown>;
+  actions: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConditionalAccessPolicy {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  conditions: Record<string, unknown>;
+  grant_controls: Record<string, unknown>;
+  session_controls: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RiskAssessment {
+  id: string;
+  tenant_id: string;
+  user_id: string;
+  session_id?: string;
+  risk_score: number;
+  risk_level: "low" | "medium" | "high" | "critical";
+  factors: Record<string, unknown>;
+  ip_address?: string;
+  user_agent?: string;
+  device_id?: string;
+  location?: Record<string, unknown>;
+  assessed_at: string;
+}
+
+export interface PrivilegedRole {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description?: string;
+  permissions: string[];
+  risk_level: string;
+  requires_approval: boolean;
+  max_duration_minutes: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PrivilegedAccess {
+  id: string;
+  tenant_id: string;
+  user_id: string;
+  role_id: string;
+  role_name?: string;
+  granted_by?: string;
+  justification?: string;
+  jit_enabled: boolean;
+  start_time?: string;
+  end_time?: string;
+  status: "pending" | "approved" | "revoked" | "expired";
+  approved_by?: string;
+  approved_at?: string;
+  created_at: string;
+}
+
+export interface DataClassification {
+  id: string;
+  tenant_id: string;
+  resource_type: string;
+  resource_pattern?: string;
+  classification_level: string;
+  category?: string;
+  owner?: string;
+  retention_days?: number;
+  encryption_required: boolean;
+  masking_rules?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DLPPolicy {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  severity: string;
+  rules: Record<string, unknown>;
+  actions: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DLPIncident {
+  id: string;
+  tenant_id: string;
+  policy_id?: string;
+  user_id?: string;
+  resource_type?: string;
+  resource_id?: string;
+  action?: string;
+  data_classification?: string;
+  description?: string;
+  severity?: string;
+  status: string;
+  detected_at: string;
+  remediated_at?: string;
+  evidence?: Record<string, unknown>;
+}
+
+export interface EncryptionKey {
+  id: string;
+  tenant_id: string;
+  key_id: string;
+  algorithm: string;
+  purpose: string;
+  status: string;
+  version: number;
+  rotated_from?: string;
+  activated_at: string;
+  expires_at?: string;
+  rotated_at?: string;
+  created_at: string;
+}
+
+export interface DataResidencyPolicy {
+  id: string;
+  tenant_id: string;
+  region: string;
+  resource_type: string;
+  data_classification?: string;
+  allowed_regions: string[];
+  restricted_regions: string[];
+  enforcement_mode: string;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface SessionRecording {
+  id: string;
+  tenant_id: string;
+  user_id: string;
+  session_id?: string;
+  user_role?: string;
+  recording_type: string;
+  events: Record<string, unknown>[];
+  duration_seconds?: number;
+  ip_address?: string;
+  user_agent?: string;
+  status: string;
+  started_at: string;
+  ended_at?: string;
+}
+
+export interface SecurityDashboard {
+  zero_trust_policies: number;
+  active_zt_policies: number;
+  conditional_access_policies: number;
+  active_ca_policies: number;
+  pending_risk_assessments: number;
+  high_risk_sessions: number;
+  active_privileged_grants: number;
+  pending_pam_requests: number;
+  data_classifications: number;
+  dlp_policies: number;
+  open_dlp_incidents: number;
+  encryption_keys: number;
+  active_encryption_keys: number;
+  data_residency_rules: number;
+  session_recordings_active: number;
+  overall_risk_score: number;
+  compliance_status: string;
+}
+
+export interface WebAuthnCredential {
+  id: number;
+  credential_id: string;
+  device_name: string;
+  device_type: string;
+  counter: number;
+  is_active: boolean;
+  created_at: string;
+  last_used_at?: string;
+}
+
+export interface OAuthProvider {
+  id: number;
+  provider: string;
+  client_id: string;
+  redirect_uri?: string;
+  scopes?: string;
+  enabled: boolean;
+}
+
+export interface OAuthLink {
+  provider: string;
+  provider_user_id: string;
+  created_at: string;
+}
+
+export interface SecurityComplianceReport {
+  category: string;
+  generated_at: string;
+  tenant_id: string;
+  score: number;
+  total_policies: number;
+  enabled_policies: number;
+  total_violations: number;
+  open_violations: number;
+  remediated_violations: number;
+  status: string;
+  findings: { title: string; severity: string; description: string; recommendation: string }[];
+  recommendations: string[];
+}
+
 export interface PromotionReadiness {
   id: string;
   employeeId: string;

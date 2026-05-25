@@ -19,11 +19,19 @@ import {
   GraduationCap,
   Bot,
   Shield,
+  ShieldCheck,
   LayoutGrid,
   Cable,
   Orbit,
   LineChart,
   BookOpen,
+  Lock,
+  Fingerprint,
+  Siren,
+  Database,
+  Key,
+  Globe,
+  Monitor,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -94,6 +102,18 @@ const navItems: ({ href: string; label: string; icon: React.ComponentType<{ clas
   },
   { href: "/dashboard/copilot", label: "AI Copilot", icon: Bot },
   { href: "/dashboard/compliance", label: "Compliance", icon: Shield },
+  {
+    label: "Security",
+    icon: ShieldCheck,
+    children: [
+      { href: "/dashboard/security", label: "Dashboard" },
+      { href: "/dashboard/security/pam", label: "Privileged Access" },
+      { href: "/dashboard/security/data-classification", label: "Data Classification" },
+      { href: "/dashboard/security/dlp", label: "DLP Policies" },
+      { href: "/dashboard/security/compliance-center", label: "Compliance Center" },
+      { href: "/dashboard/security/compliance-reports", label: "Compliance Reports" },
+    ],
+  },
   { href: "/dashboard/integrations", label: "Integrations", icon: Cable },
   { href: "/dashboard/command-center", label: "Command Center", icon: LayoutGrid },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },

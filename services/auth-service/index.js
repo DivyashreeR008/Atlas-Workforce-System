@@ -10,6 +10,7 @@ const jwt = require('jsonwebtoken');
 const { authenticator } = require('otplib');
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
+const { subtle } = crypto.webcrypto;
 
 const app = express();
 app.use(helmet());
@@ -429,6 +430,62 @@ async function initDB() {
       expires_at TIMESTAMP NOT NULL,
       used BOOLEAN DEFAULT false,
       created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS webauthn_credentials (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      credential_id VARCHAR(255) NOT NULL UNIQUE,
+      public_key TEXT NOT NULL,
+      counter INTEGER DEFAULT 0,
+      device_name VARCHAR(200),
+      device_type VARCHAR(50),
+      transports JSONB DEFAULT '[]'::jsonb,
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT NOW(),
+      last_used_at TIMESTAMP
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS oauth_providers (
+      id SERIAL PRIMARY KEY,
+      provider VARCHAR(50) NOT NULL,
+      client_id VARCHAR(255) NOT NULL,
+      client_secret VARCHAR(255) NOT NULL,
+      redirect_uri VARCHAR(500),
+      scopes VARCHAR(500) DEFAULT 'openid email profile',
+      enabled BOOLEAN DEFAULT true,
+      tenant_id VARCHAR(50) DEFAULT 'default',
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(provider, tenant_id)
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS oauth_states (
+      state VARCHAR(64) PRIMARY KEY,
+      provider VARCHAR(50) NOT NULL,
+      tenant_id VARCHAR(50) DEFAULT 'default',
+      redirect_to VARCHAR(500),
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS oauth_links (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      provider VARCHAR(50) NOT NULL,
+      provider_user_id VARCHAR(255) NOT NULL,
+      access_token TEXT,
+      refresh_token TEXT,
+      expires_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(provider, provider_user_id)
     );
   `);
 
@@ -1449,6 +1506,509 @@ app.delete('/sessions', requireRole(), async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Failed to revoke sessions' });
+  }
+});
+
+// ── WebAuthn / Hardware Security Keys ──────────────────────────────────────
+
+app.post('/webauthn/register/begin', requireRole(), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { device_name, device_type } = req.body;
+
+    const challenge = crypto.randomBytes(32).toString('base64url');
+    const rpId = req.hostname || 'localhost';
+    const rpName = 'Atlas Workforce';
+
+    const existing = await pool.query(
+      'SELECT credential_id FROM webauthn_credentials WHERE user_id = $1 AND is_active = true',
+      [userId]
+    );
+
+    const excludeCredentials = existing.rows.map(r => ({
+      id: Buffer.from(r.credential_id, 'base64url').toString('base64'),
+      type: 'public-key',
+    }));
+
+    const userResult = await pool.query('SELECT id, email, name FROM users WHERE id = $1', [userId]);
+    const user = userResult.rows[0];
+
+    const creationOptions = {
+      challenge: challenge,
+      rp: { id: rpId, name: rpName },
+      user: {
+        id: Buffer.from(String(user.id)).toString('base64'),
+        name: user.email,
+        displayName: user.name || user.email,
+      },
+      pubKeyCredParams: [
+        { type: 'public-key', alg: -7 },
+        { type: 'public-key', alg: -257 },
+      ],
+      timeout: 60000,
+      excludeCredentials,
+      authenticatorSelection: {
+        authenticatorAttachment: 'cross-platform',
+        residentKey: 'preferred',
+        userVerification: 'preferred',
+      },
+      attestation: 'direct',
+    };
+
+    await pool.query(
+      'INSERT INTO webauthn_credentials (user_id, credential_id, public_key, device_name, device_type) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (credential_id) DO NOTHING',
+      [userId, `challenge:${challenge}`, challenge, device_name || 'Security Key', device_type || 'hardware']
+    );
+
+    res.json({
+      status: 'ok',
+      creationOptions,
+      challenge,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'WebAuthn registration initiation failed' });
+  }
+});
+
+app.post('/webauthn/register/complete', requireRole(), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { credential_id, public_key, counter, transports, challenge } = req.body;
+
+    if (!credential_id || !public_key) {
+      return res.status(400).json({ message: 'credential_id and public_key are required' });
+    }
+
+    await pool.query(
+      `UPDATE webauthn_credentials SET credential_id = $1, public_key = $2, counter = $3, transports = $4::jsonb, is_active = true, last_used_at = NOW()
+       WHERE user_id = $5 AND credential_id LIKE 'challenge:%'`,
+      [credential_id, public_key, counter || 0, JSON.stringify(transports || []), userId]
+    );
+
+    await sendAuditEvent('auth.webauthn_registered', userId, req.user.email, {
+      device_name: req.body.device_name || 'Security Key',
+      credential_id: credential_id.substring(0, 20) + '...',
+    });
+
+    res.json({ status: 'ok', message: 'Hardware security key registered' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'WebAuthn registration completion failed' });
+  }
+});
+
+app.post('/webauthn/authenticate/begin', createUserRateLimiter('webauthn_auth', 10), async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    const userResult = await pool.query('SELECT id FROM users WHERE email = $1 AND active = true', [email]);
+    if (!userResult.rows[0]) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const userId = userResult.rows[0].id;
+    const credentials = await pool.query(
+      'SELECT credential_id, public_key, transports FROM webauthn_credentials WHERE user_id = $1 AND is_active = true',
+      [userId]
+    );
+
+    if (credentials.rows.length === 0) {
+      return res.status(400).json({ message: 'No hardware security keys registered for this user' });
+    }
+
+    const challenge = crypto.randomBytes(32).toString('base64url');
+    const rpId = req.hostname || 'localhost';
+
+    const allowCredentials = credentials.rows.map(c => ({
+      id: c.credential_id,
+      type: 'public-key',
+      transports: c.transports || [],
+    }));
+
+    res.json({
+      status: 'ok',
+      authenticationOptions: {
+        challenge,
+        timeout: 60000,
+        rpId,
+        allowCredentials,
+        userVerification: 'preferred',
+      },
+      challenge,
+      userId,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'WebAuthn authentication initiation failed' });
+  }
+});
+
+app.post('/webauthn/authenticate/complete', createUserRateLimiter('webauthn_auth', 10), async (req, res) => {
+  try {
+    const { credential_id, signature, user_handle, challenge } = req.body;
+    if (!credential_id) {
+      return res.status(400).json({ message: 'credential_id is required' });
+    }
+
+    const credResult = await pool.query(
+      'SELECT * FROM webauthn_credentials WHERE credential_id = $1 AND is_active = true',
+      [credential_id]
+    );
+
+    if (!credResult.rows[0]) {
+      return res.status(400).json({ message: 'Credential not found' });
+    }
+
+    const cred = credResult.rows[0];
+    await pool.query(
+      'UPDATE webauthn_credentials SET counter = counter + 1, last_used_at = NOW() WHERE id = $1',
+      [cred.id]
+    );
+
+    const userResult = await pool.query('SELECT * FROM users WHERE id = $1', [cred.user_id]);
+    const user = userResult.rows[0];
+
+    if (!user || !user.active) {
+      return res.status(403).json({ message: 'Account is deactivated' });
+    }
+
+    const token = signAccessToken(user);
+    const refreshToken = await createRefreshToken(user.id);
+
+    await sendAuditEvent('auth.webauthn_login', user.id, user.email, {
+      credential_id: credential_id.substring(0, 20) + '...',
+    });
+
+    res.json({
+      message: 'Hardware security key authentication successful',
+      token,
+      refreshToken,
+      user: sanitizeUser(user),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'WebAuthn authentication completion failed' });
+  }
+});
+
+app.get('/webauthn/credentials', requireRole(), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const result = await pool.query(
+      'SELECT id, credential_id, device_name, device_type, counter, is_active, created_at, last_used_at FROM webauthn_credentials WHERE user_id = $1 ORDER BY created_at DESC',
+      [userId]
+    );
+    res.json(result.rows.map(r => ({
+      ...r,
+      credential_id: r.credential_id.substring(0, 20) + '...',
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to list credentials' });
+  }
+});
+
+app.delete('/webauthn/credentials/:id', requireRole(), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const result = await pool.query(
+      'DELETE FROM webauthn_credentials WHERE id = $1 AND user_id = $2 AND is_active = true RETURNING id',
+      [parseInt(req.params.id), userId]
+    );
+    if (!result.rows[0]) {
+      return res.status(404).json({ message: 'Credential not found' });
+    }
+    await sendAuditEvent('auth.webauthn_removed', userId, req.user.email);
+    res.json({ message: 'Security key removed' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to remove credential' });
+  }
+});
+
+// ── OAuth Enterprise Login ─────────────────────────────────────────────────
+
+app.get('/oauth/providers', async (req, res) => {
+  try {
+    const tenantId = req.query.tenant_id || 'default';
+    const result = await pool.query(
+      'SELECT id, provider, client_id, redirect_uri, scopes, enabled FROM oauth_providers WHERE tenant_id = $1 ORDER BY provider',
+      [tenantId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to list OAuth providers' });
+  }
+});
+
+app.post('/oauth/providers', async (req, res) => {
+  try {
+    const { provider, client_id, client_secret, redirect_uri, scopes, tenant_id } = req.body;
+    if (!provider || !client_id || !client_secret) {
+      return res.status(400).json({ message: 'provider, client_id, client_secret are required' });
+    }
+    const result = await pool.query(
+      `INSERT INTO oauth_providers (provider, client_id, client_secret, redirect_uri, scopes, tenant_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, provider, client_id, redirect_uri, scopes, enabled`,
+      [provider, client_id, client_secret, redirect_uri || '', scopes || 'openid email profile', tenant_id || 'default']
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ message: 'Provider already configured for this tenant' });
+    }
+    console.error(err);
+    res.status(500).json({ message: 'Failed to create OAuth provider' });
+  }
+});
+
+app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), async (req, res) => {
+  try {
+    const { provider } = req.params;
+    const { tenant_id } = req.body;
+    const tenantId = tenant_id || 'default';
+    const redirectTo = req.body.redirect_to || '/dashboard';
+
+    const provResult = await pool.query(
+      'SELECT * FROM oauth_providers WHERE provider = $1 AND tenant_id = $2 AND enabled = true',
+      [provider, tenantId]
+    );
+    if (!provResult.rows[0]) {
+      return res.status(404).json({ message: `OAuth provider "${provider}" not configured` });
+    }
+
+    const prov = provResult.rows[0];
+    const state = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    await pool.query(
+      'INSERT INTO oauth_states (state, provider, tenant_id, redirect_to, expires_at) VALUES ($1, $2, $3, $4, $5)',
+      [state, provider, tenantId, redirectTo, expiresAt]
+    );
+
+    const providerConfigs = {
+      google: {
+        authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+        params: {
+          client_id: prov.client_id,
+          redirect_uri: prov.redirect_uri || `${req.protocol}://${req.get('host')}/oauth/callback/${provider}`,
+          response_type: 'code',
+          scope: prov.scopes || 'openid email profile',
+          state,
+          access_type: 'offline',
+          prompt: 'consent',
+        },
+      },
+      microsoft: {
+        authUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+        params: {
+          client_id: prov.client_id,
+          redirect_uri: prov.redirect_uri || `${req.protocol}://${req.get('host')}/oauth/callback/${provider}`,
+          response_type: 'code',
+          scope: prov.scopes || 'openid email profile',
+          state,
+        },
+      },
+      github: {
+        authUrl: 'https://github.com/login/oauth/authorize',
+        params: {
+          client_id: prov.client_id,
+          redirect_uri: prov.redirect_uri || `${req.protocol}://${req.get('host')}/oauth/callback/${provider}`,
+          scope: 'read:user user:email',
+          state,
+        },
+      },
+      okta: {
+        authUrl: `${prov.client_id.includes('.okta.com') ? `https://${prov.client_id.split('.')[0]}.okta.com` : 'https://dev-000000.okta.com'}/oauth2/v1/authorize`,
+        params: {
+          client_id: prov.client_id,
+          redirect_uri: prov.redirect_uri || `${req.protocol}://${req.get('host')}/oauth/callback/${provider}`,
+          response_type: 'code',
+          scope: prov.scopes || 'openid email profile',
+          state,
+        },
+      },
+    };
+
+    const config = providerConfigs[provider] || providerConfigs.google;
+    const params = new URLSearchParams(config.params);
+    const redirectUrl = `${config.authUrl}?${params.toString()}`;
+
+    res.json({
+      redirect_url: redirectUrl,
+      state,
+      provider,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'OAuth login initiation failed' });
+  }
+});
+
+app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20), async (req, res) => {
+  try {
+    const { provider } = req.params;
+    const { code, state } = req.body;
+
+    if (!code || !state) {
+      return res.status(400).json({ message: 'code and state are required' });
+    }
+
+    const stateResult = await pool.query(
+      'SELECT * FROM oauth_states WHERE state = $1 AND provider = $2 AND expires_at > NOW()',
+      [state, provider]
+    );
+    if (!stateResult.rows[0]) {
+      return res.status(400).json({ message: 'Invalid or expired state parameter' });
+    }
+
+    const oauthState = stateResult.rows[0];
+    await pool.query('DELETE FROM oauth_states WHERE state = $1', [state]);
+
+    const provResult = await pool.query(
+      'SELECT * FROM oauth_providers WHERE provider = $1 AND tenant_id = $2 AND enabled = true',
+      [provider, oauthState.tenant_id]
+    );
+    if (!provResult.rows[0]) {
+      return res.status(404).json({ message: 'Provider not found' });
+    }
+
+    const prov = provResult.rows[0];
+
+    let tokenUrl, userInfoUrl, userInfoHeaders;
+    const tokenConfigs = {
+      google: {
+        tokenUrl: 'https://oauth2.googleapis.com/token',
+        userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
+      },
+      microsoft: {
+        tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+        userInfoUrl: 'https://graph.microsoft.com/v1.0/me',
+      },
+      github: {
+        tokenUrl: 'https://github.com/login/oauth/access_token',
+        userInfoUrl: 'https://api.github.com/user',
+        userInfoHeaders: { Accept: 'application/json' },
+      },
+      okta: {
+        tokenUrl: `${prov.client_id.includes('.okta.com') ? `https://${prov.client_id.split('.')[0]}.okta.com` : 'https://dev-000000.okta.com'}/oauth2/v1/token`,
+        userInfoUrl: `${prov.client_id.includes('.okta.com') ? `https://${prov.client_id.split('.')[0]}.okta.com` : 'https://dev-000000.okta.com'}/oauth2/v1/userinfo`,
+      },
+    };
+
+    const tokenConfig = tokenConfigs[provider] || tokenConfigs.google;
+
+    try {
+      const tokenResponse = await axios.post(
+        tokenConfig.tokenUrl,
+        new URLSearchParams({
+          code,
+          client_id: prov.client_id,
+          client_secret: prov.client_secret,
+          redirect_uri: prov.redirect_uri || `${req.protocol}://${req.get('host')}/oauth/callback/${provider}`,
+          grant_type: 'authorization_code',
+        }).toString(),
+        {
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          timeout: 10000,
+        }
+      );
+
+      const accessToken = tokenResponse.data.access_token;
+      const idToken = tokenResponse.data.id_token;
+
+      const userInfoResponse = await axios.get(tokenConfig.userInfoUrl, {
+        headers: { Authorization: `Bearer ${accessToken}`, ...(tokenConfig.userInfoHeaders || {}) },
+        timeout: 10000,
+      });
+
+      const userInfo = userInfoResponse.data;
+      const email = userInfo.email || userInfo.mail || userInfo.userPrincipalName || `${userInfo.login}@${provider}.oauth`;
+      const name = userInfo.name || userInfo.displayName || userInfo.login || email;
+      const providerUserId = String(userInfo.id || userInfo.sub || userInfo.login || email);
+
+      let userResult = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+      let userData;
+
+      if (userResult.rows.length === 0) {
+        const tempPassword = crypto.randomBytes(16).toString('hex');
+        const hashedPass = await bcrypt.hash(tempPassword, 10);
+        userResult = await pool.query(
+          'INSERT INTO users (email, password, name, tenant_id) VALUES ($1, $2, $3, $4) RETURNING *',
+          [email, hashedPass, name, oauthState.tenant_id]
+        );
+        userData = userResult.rows[0];
+      } else {
+        userData = userResult.rows[0];
+      }
+
+      if (!userData.active) {
+        return res.status(403).json({ message: 'Account is deactivated' });
+      }
+
+      await pool.query(
+        `INSERT INTO oauth_links (user_id, provider, provider_user_id, access_token, refresh_token, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (provider, provider_user_id) DO UPDATE SET access_token = $4, refresh_token = COALESCE($5, oauth_links.refresh_token), expires_at = $6`,
+        [userData.id, provider, providerUserId, accessToken, tokenResponse.data.refresh_token || null,
+         tokenResponse.data.expires_in ? new Date(Date.now() + tokenResponse.data.expires_in * 1000) : null]
+      );
+
+      const token = signAccessToken(userData);
+      const refreshToken = await createRefreshToken(userData.id);
+
+      await sendAuditEvent('auth.oauth_login', userData.id, email, { provider });
+
+      res.json({
+        message: `OAuth ${provider} login successful`,
+        token,
+        refreshToken,
+        user: sanitizeUser(userData),
+        provider,
+      });
+    } catch (oauthErr) {
+      console.error('OAuth token exchange error:', oauthErr.response?.data || oauthErr.message);
+      res.status(502).json({ message: `OAuth ${provider} authentication failed` });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'OAuth callback processing failed' });
+  }
+});
+
+app.get('/oauth/links', requireRole(), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const result = await pool.query(
+      'SELECT provider, provider_user_id, created_at FROM oauth_links WHERE user_id = $1',
+      [userId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to list OAuth links' });
+  }
+});
+
+app.delete('/oauth/links/:provider', requireRole(), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const result = await pool.query(
+      'DELETE FROM oauth_links WHERE user_id = $1 AND provider = $2 RETURNING id',
+      [userId, req.params.provider]
+    );
+    if (!result.rows[0]) {
+      return res.status(404).json({ message: 'Link not found' });
+    }
+    res.json({ message: 'OAuth link disconnected' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to remove OAuth link' });
   }
 });
 
