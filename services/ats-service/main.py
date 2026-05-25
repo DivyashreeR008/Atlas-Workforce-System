@@ -2,7 +2,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from sqlalchemy import create_engine, text
@@ -13,6 +13,7 @@ from atlas_observability import (
 )
 
 from models import Base
+from file_security import validate_file, get_secure_path, MAX_FILE_SIZE
 
 _PG_USER = os.environ.get("POSTGRES_USER", "atlas_user")
 _PG_PASS = os.environ.get("POSTGRES_PASSWORD", "atlas_password")
@@ -54,6 +55,8 @@ app = FastAPI(title="ATS Service API", version="1.0.0", lifespan=lifespan)
 configure_logging("ats-service", level=logging.INFO)
 logger = get_logger("ats-service")
 
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 
 app.add_middleware(
@@ -67,6 +70,19 @@ app.add_middleware(
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(AtlasLoggingMiddleware)
 app.add_middleware(AtlasMetricsMiddleware)
+
+
+@app.middleware("http")
+async def limit_upload_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_UPLOAD_SIZE:
+                raise HTTPException(status_code=413, detail="File too large. Maximum size is 10MB.")
+        except ValueError:
+            pass
+    response = await call_next(request)
+    return response
 
 
 def custom_openapi():

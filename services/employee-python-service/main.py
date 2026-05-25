@@ -1,6 +1,7 @@
 import json
 import logging
 import uuid
+import random
 from contextvars import ContextVar
 from fastapi import FastAPI, HTTPException, Body, Query, Header, Depends, Request
 from fastapi.openapi.utils import get_openapi
@@ -13,6 +14,7 @@ import asyncio
 import uvicorn
 # pyrefly: ignore [missing-import]
 from motor.motor_asyncio import AsyncIOMotorClient
+import pymongo.errors
 from contextlib import asynccontextmanager
 import pika
 from atlas_observability import AtlasMetricsMiddleware
@@ -86,6 +88,9 @@ async def lifespan(app: FastAPI):
         await employees_collection.create_index("email", unique=True)
         await employees_collection.create_index("name")
         await employees_collection.create_index("department")
+        await employees_collection.create_index([("tenant_id", 1), ("email", 1)])
+        await employees_collection.create_index([("tenant_id", 1), ("name", 1)])
+        await employees_collection.create_index([("tenant_id", 1), ("department", 1), ("position", 1)])
         log_event("info", "indexes.created")
     except Exception as e:
         log_event("warning", "indexes.failed", error=str(e))
@@ -257,11 +262,10 @@ async def health_check():
     try:
         await client.admin.command("ping")
         return {"status": "Employee Service is running", "database": "connected"}
-    except Exception as e:
+    except Exception:
         return {
             "status": "Employee Service is running",
             "database": "disconnected",
-            "error": str(e),
         }
 
 
@@ -304,6 +308,7 @@ async def get_employee(email: str, x_tenant_id: str = Header("default", alias="X
     employee = await employees_collection.find_one({"email": email, "tenant_id": x_tenant_id})
     if employee:
         return serialize_employee(employee)
+    await asyncio.sleep(random.uniform(0, 0.05))
     raise HTTPException(status_code=404, detail="Employee not found")
 
 
@@ -316,15 +321,15 @@ async def create_employee(
     employee_dict = employee.model_dump(by_alias=True, exclude_none=True)
     employee_dict["tenant_id"] = x_tenant_id
 
-    existing = await employees_collection.find_one({"email": employee.email, "tenant_id": x_tenant_id})
-    if existing:
+    try:
+        result = await employees_collection.insert_one(employee_dict)
+        employee_dict["_id"] = str(result.inserted_id)
+        return employee_dict
+    except pymongo.errors.DuplicateKeyError:
+        log_event("warning", "employee.duplicate_email", email=employee.email, tenant_id=x_tenant_id)
         raise HTTPException(
             status_code=400, detail="Employee with this email already exists"
         )
-
-    result = await employees_collection.insert_one(employee_dict)
-    employee_dict["_id"] = str(result.inserted_id)
-    return employee_dict
 
 
 @app.put("/employees/{email}", response_model=EmployeeSchema, tags=["employees"], summary="Update employee")

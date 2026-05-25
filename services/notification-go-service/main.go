@@ -19,6 +19,9 @@ import (
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return false
+		}
 		allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
 		if allowedOrigins == "" {
 			allowedOrigins = "http://localhost:3000"
@@ -343,44 +346,57 @@ func setupRabbitMQConsumer() {
 
 	log.Println("Waiting for messages from RabbitMQ...")
 	for d := range msgs {
-		log.Printf("Received a message: %s", d.Body)
-
-		var rawData map[string]interface{}
-		json.Unmarshal(d.Body, &rawData)
-
-		tenantID := "default"
-		if val, ok := rawData["tenant_id"].(string); ok {
-			tenantID = val
-		}
-
-		title := "System Notification"
-		if t, ok := rawData["title"].(string); ok {
-			title = t
-		}
-		message := string(d.Body)
-		if m, ok := rawData["message"].(string); ok {
-			message = m
-		}
-
-		notif := Notification{
-			ID:        uuid.New().String(),
-			Title:     title,
-			Message:   message,
-			TenantID:  tenantID,
-			Read:      false,
-			CreatedAt: time.Now().UTC().Format(time.RFC3339),
-		}
-
-		store.Add(notif)
-
-		msgWrapper := map[string]interface{}{
-			"type":      "notification",
-			"data":      notif,
-			"timestamp": time.Now().Format(time.RFC3339),
-		}
-		jsonMsg, _ := json.Marshal(msgWrapper)
-		broadcast <- BroadcastMessage{TenantID: tenantID, Payload: jsonMsg}
+		processMessage(d.Body)
 	}
+}
+
+func processMessage(body []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Recovered from panic processing message: %v", r)
+		}
+	}()
+
+	log.Printf("Received a message: %s", body)
+
+	var rawData map[string]interface{}
+	if err := json.Unmarshal(body, &rawData); err != nil {
+		log.Printf("Error unmarshalling message: %v", err)
+		return
+	}
+
+	tenantID := "default"
+	if val, ok := rawData["tenant_id"].(string); ok {
+		tenantID = val
+	}
+
+	title := "System Notification"
+	if t, ok := rawData["title"].(string); ok {
+		title = t
+	}
+	message := string(body)
+	if m, ok := rawData["message"].(string); ok {
+		message = m
+	}
+
+	notif := Notification{
+		ID:        uuid.New().String(),
+		Title:     title,
+		Message:   message,
+		TenantID:  tenantID,
+		Read:      false,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	store.Add(notif)
+
+	msgWrapper := map[string]interface{}{
+		"type":      "notification",
+		"data":      notif,
+		"timestamp": time.Now().Format(time.RFC3339),
+	}
+	jsonMsg, _ := json.Marshal(msgWrapper)
+	broadcast <- BroadcastMessage{TenantID: tenantID, Payload: jsonMsg}
 }
 
 func main() {

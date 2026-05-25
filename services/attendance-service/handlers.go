@@ -144,6 +144,12 @@ func clockIn(c *fiber.Ctx) error {
 	var geoVerified bool
 	var geoFenceID *uint
 	if req.Latitude != nil && req.Longitude != nil {
+		if *req.Latitude < -90 || *req.Latitude > 90 {
+			return c.Status(400).JSON(fiber.Map{"error": "Latitude must be between -90 and 90"})
+		}
+		if *req.Longitude < -180 || *req.Longitude > 180 {
+			return c.Status(400).JSON(fiber.Map{"error": "Longitude must be between -180 and 180"})
+		}
 		var fence GeoFence
 		fenceErr := db.Where("tenant_id = ? AND is_active = ?", tenantId, true).First(&fence).Error
 		if fenceErr == nil {
@@ -344,6 +350,12 @@ func verifyGeoLocation(c *fiber.Ctx) error {
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
+	}
+	if req.Latitude < -90 || req.Latitude > 90 {
+		return c.Status(400).JSON(fiber.Map{"error": "Latitude must be between -90 and 90"})
+	}
+	if req.Longitude < -180 || req.Longitude > 180 {
+		return c.Status(400).JSON(fiber.Map{"error": "Longitude must be between -180 and 180"})
 	}
 	tenantId := getTenant(c)
 	if db == nil {
@@ -632,6 +644,12 @@ func enrollFace(c *fiber.Ctx) error {
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
+	}
+	if len(req.FaceVector) < 64 {
+		return c.Status(400).JSON(fiber.Map{"error": "FaceVector must be at least 64 characters"})
+	}
+	if req.ImageURL == "" || (!strings.HasPrefix(req.ImageURL, "http://") && !strings.HasPrefix(req.ImageURL, "https://")) {
+		return c.Status(400).JSON(fiber.Map{"error": "ImageURL must be a valid URL (http/https)"})
 	}
 	tenantId := getTenant(c)
 	if db == nil {

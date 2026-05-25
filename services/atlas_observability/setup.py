@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name="atlas_observability",
     version="0.1.0",
-    packages=find_packages(),
+    packages=["atlas_observability"],
     install_requires=[
         "prometheus-client>=0.19.0",
         "fastapi>=0.104.0",

@@ -3,6 +3,7 @@ package com.ems.payroll.controller;
 import com.ems.payroll.model.*;
 import com.ems.payroll.service.PayrollEnterpriseService;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -11,6 +12,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/payroll/enterprise")
 @CrossOrigin(origins = "${ALLOWED_ORIGINS:http://localhost:3000}")
+@Validated
 public class PayrollEnterpriseController {
 
     private final PayrollEnterpriseService service;

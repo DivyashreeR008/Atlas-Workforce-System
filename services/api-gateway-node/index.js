@@ -9,6 +9,11 @@ const rateLimit = require('express-rate-limit');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const redis = require('redis');
 const axios = require('axios');
+const crypto = require('crypto');
+const cookieParser = require('cookie-parser');
+const dns = require('dns');
+const { promisify } = require('util');
+const resolveDns = promisify(dns.resolve4);
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://redis:6379';
 const redisClient = redis.createClient({ url: REDIS_URL });
@@ -37,17 +42,43 @@ async function checkCache(req, res, next) {
   const role = req.user?.role || 'public';
   const userScope = req.user ? `${req.user.id}:${tenantId}:${role}` : 'public:public:public';
   const key = `cache:${userScope}:${req.originalUrl}`;
-  try {
-    const cachedData = await redisClient.get(key);
-    if (cachedData) {
-      res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Content-Type', 'application/json');
-      return res.send(cachedData);
+  const lockKey = `lock:${key}`;
+  const maxRetries = 3;
+  const retryDelays = [50, 100, 200];
+
+  async function tryGetCache(attempt) {
+    try {
+      const cachedData = await redisClient.get(key);
+      if (cachedData) {
+        res.setHeader('X-Cache', 'HIT');
+        res.setHeader('Content-Type', 'application/json');
+        return res.send(cachedData);
+      }
+
+      const lockAcquired = await redisClient.set(lockKey, '1', { NX: true, EX: 5 });
+      if (lockAcquired) {
+        const originalSend = res.send.bind(res);
+        res.send = function (body) {
+          redisClient.setEx(key, 300, typeof body === 'string' ? body : JSON.stringify(body)).catch(() => {});
+          redisClient.del(lockKey).catch(() => {});
+          return originalSend(body);
+        };
+        return next();
+      }
+
+      if (attempt < maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt]));
+        return tryGetCache(attempt + 1);
+      }
+
+      return next();
+    } catch (err) {
+      console.error('Cache error:', err);
+      return next();
     }
-  } catch (err) {
-    console.error('Cache read error:', err);
   }
-  next();
+
+  return tryGetCache(0);
 }
 
 const app = express();
@@ -71,6 +102,7 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
   .filter(Boolean);
 
 app.use(helmet());
+app.use(cookieParser());
 app.use(
   cors({
     origin(origin, callback) {
@@ -96,10 +128,18 @@ app.use(globalLimiter);
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: 'Too many auth requests, please try again later' }
+});
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many login attempts, please try again later' }
 });
 
 const apiLimiter = rateLimit({
@@ -119,7 +159,7 @@ const sensitiveLimiter = rateLimit({
 });
 
 app.use('/api/auth', authLimiter);
-app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/login', loginLimiter);
 app.use('/api/auth/register', authLimiter);
 
 app.use('/api/payroll', sensitiveLimiter);
@@ -156,6 +196,95 @@ const services = {
   ai: process.env.AI_SERVICE_URL || 'http://ai-service:8065',
 };
 
+async function resolveServiceHostnames() {
+  const hostnameCache = new Map();
+  const TTL = 5 * 60 * 1000;
+  for (const [name, url] of Object.entries(services)) {
+    try {
+      const hostname = new URL(url).hostname;
+      if (!hostnameCache.has(hostname)) {
+        const addresses = await resolveDns(hostname);
+        if (addresses && addresses.length > 0) {
+          hostnameCache.set(hostname, { ips: addresses, timestamp: Date.now() });
+          console.log(`  DNS resolved ${hostname} → ${addresses[0]}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`  DNS resolution failed for ${name}: ${err.code || err.message}`);
+    }
+  }
+  return hostnameCache;
+}
+
+async function getServiceIp(hostname, cache) {
+  const entry = cache.get(hostname);
+  if (entry && Date.now() - entry.timestamp < 5 * 60 * 1000) {
+    return entry.ips[0];
+  }
+  try {
+    const addresses = await resolveDns(hostname);
+    if (addresses && addresses.length > 0) {
+      cache.set(hostname, { ips: addresses, timestamp: Date.now() });
+      return addresses[0];
+    }
+  } catch {
+    if (entry) return entry.ips[0];
+  }
+  return null;
+}
+
+async function startupHealthCheck() {
+  console.log('Running upstream health checks...');
+  const entries = Object.entries(services);
+  const results = await Promise.allSettled(
+    entries.map(([name, url]) => checkServiceHealth(url, name))
+  );
+  const failed = entries.filter((_, i) => results[i].status === 'fulfilled' && results[i].value === false);
+  if (failed.length > 0) {
+    console.warn(`Gateway started with ${failed.length} unreachable upstream(s): ${failed.map(([n]) => n).join(', ')}`);
+  } else {
+    console.log('All upstream services are reachable.');
+  }
+}
+
+async function checkServiceHealth(url, label) {
+  try {
+    const resp = await axios.get(`${url}/health`, { timeout: 3000 });
+    if (resp.status === 200) {
+      console.log(`  ✓ ${label} reachable at ${url}`);
+      return true;
+    }
+    console.warn(`  ⚠ ${label} at ${url} returned status ${resp.status}`);
+    return false;
+  } catch (err) {
+    console.warn(`  ✗ ${label} unreachable at ${url}: ${err.code || err.message}`);
+    const hostname = new URL(url).hostname;
+    try {
+      const altIp = await getServiceIp(hostname, hostnameCache);
+      if (altIp) {
+        const altUrl = url.replace(hostname, altIp);
+        console.log(`  → Trying IP fallback for ${label}: ${altUrl}`);
+        const resp = await axios.get(`${altUrl}/health`, { timeout: 3000, headers: { Host: hostname } });
+        if (resp.status === 200) {
+          console.log(`  ✓ ${label} reachable via IP fallback ${altIp}`);
+          return true;
+        }
+      }
+    } catch (fallbackErr) {
+      console.warn(`  ✗ ${label} IP fallback also failed`);
+    }
+    return false;
+  }
+}
+
+let hostnameCache = new Map();
+(async () => {
+  hostnameCache = await resolveServiceHostnames();
+})();
+
+startupHealthCheck();
+
+const ALLOWED_WS_PATHS = new Set(['/ws', '/notification/ws']);
 const PUBLIC_AUTH_PATHS = ['/api/auth/login', '/api/auth/register'];
 
 function isPublicPath(path) {
@@ -217,6 +346,7 @@ function auditProxyMiddleware(req, res, next) {
       if (err.code !== 'ECONNREFUSED' && err.code !== 'ECONNABORTED') {
         console.error('Audit proxy error:', err.message);
       }
+      enqueueAuditRetry(auditPayload);
     });
   });
 
@@ -241,7 +371,7 @@ function mfaStepUpMiddleware(req, res, next) {
   const mfaToken = req.headers['x-mfa-token'];
   if (mfaToken) {
     try {
-      const payload = jwt.verify(mfaToken, jwtSecret);
+      const payload = jwt.verify(mfaToken, jwtSecret, { algorithms: ['HS256'] });
       if (payload.mfa_validated && payload.purpose === 'mfa_step_up') {
         req.headers['x-mfa-validated'] = 'true';
         return next();
@@ -322,10 +452,23 @@ function authMiddleware(req, res, next) {
 
   try {
     const token = authHeader.slice(7);
-    const payload = jwt.verify(token, jwtSecret);
+    const payload = jwt.verify(token, jwtSecret, { algorithms: ['HS256'] });
     req.user = payload;
     next();
-  } catch {
+  } catch (err) {
+    if (err.name === 'TokenExpiredError') {
+      console.error('JWT auth failure: token expired for', req.path);
+      return res.status(401).json({ message: 'Token expired' });
+    }
+    if (err.name === 'JsonWebTokenError') {
+      console.error('JWT auth failure: invalid token for', req.path);
+      return res.status(401).json({ message: 'Invalid token' });
+    }
+    if (err.name === 'NotBeforeError') {
+      console.error('JWT auth failure: token not yet active for', req.path);
+      return res.status(401).json({ message: 'Token not yet active' });
+    }
+    console.error('JWT auth failure: unknown error', err.message, 'for', req.path);
     return res.status(401).json({ message: 'Invalid or expired token' });
   }
 }
@@ -371,6 +514,53 @@ app.use(rbacMiddleware);
 
 app.use(auditProxyMiddleware);
 app.use(mfaStepUpMiddleware);
+
+function csrfMiddleware(req, res, next) {
+  if (req.user && !req.cookies?.csrf_token) {
+    const csrfToken = crypto.randomBytes(32).toString('hex');
+    res.cookie('csrf_token', csrfToken, {
+      httpOnly: false,
+      secure: NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 24 * 60 * 60 * 1000,
+    });
+  }
+
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    return next();
+  }
+
+  const headerToken = req.headers['x-csrf-token'];
+  const cookieToken = req.cookies?.csrf_token;
+
+  if (!headerToken || !cookieToken || headerToken !== cookieToken) {
+    return res.status(403).json({ message: 'CSRF token validation failed' });
+  }
+
+  next();
+}
+
+app.use(csrfMiddleware);
+
+function cacheInvalidationMiddleware(req, res, next) {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    res.on('finish', () => {
+      if (res.statusCode < 400 && redisClient.isOpen) {
+        const tenantId = req.user?.tenant_id || 'public';
+        const userScope = req.user ? `${req.user.id}:${tenantId}:*` : `public:public:*`;
+        const pattern = `cache:${userScope}:*`;
+        redisClient.keys(pattern).then((keys) => {
+          if (keys.length > 0) {
+            redisClient.del(keys).catch((err) => console.error('Cache invalidation error:', err));
+          }
+        }).catch((err) => console.error('Cache key scan error:', err));
+      }
+    });
+  }
+  next();
+}
+
+app.use(cacheInvalidationMiddleware);
 
 app.post('/api/webhooks/slack', express.urlencoded({ extended: true }), async (req, res) => {
   try {
@@ -435,17 +625,19 @@ app.post('/api/billing/create-checkout-session', express.json(), async (req, res
 });
 
 function proxyService(target, prefix, pathRewrite) {
+  if (!target || typeof target !== 'string' || (!target.startsWith('http://') && !target.startsWith('https://'))) {
+    console.error(`Invalid proxy target for prefix "${prefix}": ${target}`);
+    throw new Error(`Invalid proxy target: ${target}`);
+  }
+
   const proxy = createProxyMiddleware({
     target,
     changeOrigin: true,
     pathRewrite,
     on: {
-      proxyReq(proxyReq) {
-        const deviceId = proxyReq.getHeader('x-device-id');
-        const deviceFp = proxyReq.getHeader('x-device-fingerprint');
-        const sessionId = proxyReq.getHeader('x-session-id');
-        const mfaValidated = proxyReq.getHeader('x-mfa-validated');
-        const mfaToken = proxyReq.getHeader('x-mfa-token');
+      proxyReq(proxyReq, req) {
+        const correlationId = req.headers['x-correlation-id'] || crypto.randomUUID();
+        proxyReq.setHeader('x-correlation-id', correlationId);
       }
     }
   });
@@ -492,6 +684,32 @@ app.use('/api/lifecycle', proxyService(services.lifecycle, '/api/lifecycle', { '
 app.use('/api/security', proxyService(services.security, '/api/security', { '^/api/security': '/api/v1/security' }));
 app.use('/api/ai', proxyService(services.ai, '/api/ai', { '^/api/ai': '/api/v1/ai' }));
 
+async function enqueueAuditRetry(payload) {
+  if (!redisClient.isOpen) return;
+  try {
+    await redisClient.rPush('audit_retry_queue', JSON.stringify(payload));
+  } catch (err) {
+    console.error('Failed to enqueue audit retry:', err.message);
+  }
+}
+
+setInterval(async () => {
+  if (!redisClient.isOpen) return;
+  try {
+    while (true) {
+      const item = await redisClient.lPop('audit_retry_queue');
+      if (!item) break;
+      const payload = JSON.parse(item);
+      await axios.post(`${AUDIT_SERVICE_URL}/api/v1/audit/log`, payload, {
+        headers: { 'X-Internal-Key': AUDIT_INTERNAL_KEY },
+        timeout: 2000
+      });
+    }
+  } catch (err) {
+    console.error('Audit retry queue processing error:', err.message);
+  }
+}, 5000);
+
 const server = app.listen(PORT, () => {
   console.log(`API Gateway listening on port ${PORT}`);
 });
@@ -499,7 +717,7 @@ const server = app.listen(PORT, () => {
 server.on('upgrade', (req, socket, head) => {
   const parsedUrl = new URL(req.url, 'http://localhost');
   const pathname = parsedUrl.pathname;
-  const isWs = pathname === '/ws' || pathname.endsWith('/notification/ws');
+  const isWs = ALLOWED_WS_PATHS.has(pathname);
   if (isWs) {
     const token = parsedUrl.searchParams.get('token');
     if (!token) {

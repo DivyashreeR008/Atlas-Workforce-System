@@ -363,6 +363,7 @@ def update_application_status(db: Session, application_id: str, tenant_id: str, 
     app = (
         db.query(Application)
         .filter(Application.id == application_id, Application.tenant_id == tenant_id)
+        .with_for_update()
         .first()
     )
     if not app:
@@ -413,6 +414,19 @@ def get_application_timeline(db: Session, application_id: str, tenant_id: str) -
 
 
 # --- Interview ---
+def check_interview_overlap(db: Session, interviewer_id: str, scheduled_at: datetime, duration_minutes: Optional[int] = None, exclude_id: Optional[str] = None) -> bool:
+    if not interviewer_id:
+        return False
+    query = db.query(Interview).filter(
+        Interview.interviewer_id == interviewer_id,
+        Interview.scheduled_at == scheduled_at,
+        Interview.status.in_(["SCHEDULED", "COMPLETED"]),
+    )
+    if exclude_id:
+        query = query.filter(Interview.id != exclude_id)
+    return query.first() is not None
+
+
 def list_interviews(
     db: Session,
     tenant_id: str,
@@ -453,6 +467,11 @@ def update_interview(db: Session, interview_id: str, tenant_id: str, data: schem
     update_data = data.model_dump(exclude_none=True)
     if not update_data:
         return serialize_uuid(interview)
+    new_interviewer = update_data.get("interviewer_id", interview.interviewer_id)
+    new_scheduled_at = update_data.get("scheduled_at", interview.scheduled_at)
+    new_duration = update_data.get("duration_minutes", interview.duration_minutes)
+    if new_interviewer and check_interview_overlap(db, new_interviewer, new_scheduled_at, new_duration, exclude_id=interview_id):
+        return None
     for key, value in update_data.items():
         setattr(interview, key, value)
     interview.updated_at = datetime.now(timezone.utc)

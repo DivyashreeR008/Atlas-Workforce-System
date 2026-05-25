@@ -29,7 +29,7 @@ from crud import (
     stop_session_recording, update_ca_policy, update_dlp_incident, update_zt_policy,
     get_security_dashboard,
 )
-from models import Base
+from models import Base, PrivilegedAccess
 from schemas import (
     CAPaginated, ConditionalAccessCreate, ConditionalAccessResponse,
     DataClassificationCreate, DataClassificationResponse,
@@ -221,6 +221,12 @@ async def get_pam_role(role_id: uuid.UUID, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/security/pam/requests", response_model=PrivilegedAccessResponse, tags=["PAM"])
 async def request_pam(payload: PrivilegedAccessRequest, db: Session = Depends(get_db)):
+    role = get_privileged_role(db, payload.role_id)
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if role.allowed_requester_roles and payload.requester_role not in role.allowed_requester_roles:
+        logger.warning("pam.role_escalation_denied", extra={"user_id": payload.user_id, "role_id": str(payload.role_id), "requester_role": payload.requester_role})
+        raise HTTPException(status_code=403, detail="Your role is not authorized to request this privileged access")
     return request_privileged_access(db, payload.model_dump())
 
 @app.get("/api/v1/security/pam/requests", tags=["PAM"])
@@ -229,10 +235,13 @@ async def list_pam_requests(tenant_id: Optional[str] = Query(None), user_id: Opt
 
 @app.post("/api/v1/security/pam/requests/{grant_id}/approve", response_model=PrivilegedAccessResponse, tags=["PAM"])
 async def approve_pam(grant_id: uuid.UUID, approved_by: str = Query(...), db: Session = Depends(get_db)):
-    grant = approve_privileged_access(db, grant_id, approved_by)
+    grant = db.query(PrivilegedAccess).filter(PrivilegedAccess.id == grant_id).first()
     if not grant:
         raise HTTPException(status_code=404, detail="Grant not found")
-    return grant
+    if grant.user_id == approved_by:
+        logger.warning("pam.self_approval_denied", extra={"grant_id": str(grant_id), "user_id": grant.user_id})
+        raise HTTPException(status_code=403, detail="Cannot approve your own privileged access request")
+    return approve_privileged_access(db, grant_id, approved_by)
 
 @app.post("/api/v1/security/pam/requests/{grant_id}/revoke", tags=["PAM"])
 async def revoke_pam(grant_id: uuid.UUID, db: Session = Depends(get_db)):
@@ -321,7 +330,10 @@ async def list_residency(tenant_id: Optional[str] = Query(None), db: Session = D
 
 @app.post("/api/v1/security/data-residency", response_model=DataResidencyResponse, status_code=201, tags=["Data Residency"])
 async def create_residency(payload: DataResidencyCreate, db: Session = Depends(get_db)):
-    return create_data_residency(db, payload.model_dump())
+    try:
+        return create_data_residency(db, payload.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/v1/security/data-residency/{policy_id}/check", tags=["Data Residency"])
 async def check_residency(policy_id: uuid.UUID, target_region: str = Query(...), db: Session = Depends(get_db)):

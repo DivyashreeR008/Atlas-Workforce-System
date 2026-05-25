@@ -21,6 +21,10 @@ def upload_resume(
     x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
     db: Session = Depends(get_db),
 ):
+    if data.raw_text:
+        raw_bytes = data.raw_text.encode('utf-8')
+        if len(raw_bytes) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail="Resume content exceeds maximum allowed size")
     parsed = crud.parse_resume_text(data.raw_text)
     enriched = data.model_dump()
     enriched["parsed_skills"] = enriched.get("parsed_skills") or parsed["skills"]

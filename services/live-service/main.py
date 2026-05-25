@@ -31,15 +31,18 @@ class ChannelManager:
         self.ws_clients: dict[str, set[WebSocket]] = defaultdict(set)
         self.channel_history: dict[str, list[dict]] = defaultdict(lambda: [])
         self.max_history = 200
+        self.event_sequences: dict[str, int] = defaultdict(int)
         self.presence: dict[str, dict] = {}
         self.chat_rooms: dict[str, list[dict]] = defaultdict(lambda: [])
         self.polls: dict[str, dict] = {}
+        self.poll_lock = asyncio.Lock()
         self.incidents: dict[str, list[dict]] = defaultdict(lambda: [])
         self.sla_status: dict[str, dict] = {}
         self.staffing: dict[str, dict] = {}
 
     async def broadcast_sse(self, channel: str, event: str, data: dict):
-        message = {"channel": channel, "event": event, "data": data, "timestamp": datetime.now(timezone.utc).isoformat()}
+        self.event_sequences[channel] += 1
+        message = {"channel": channel, "event": event, "data": data, "timestamp": datetime.now(timezone.utc).isoformat(), "event_id": self.event_sequences[channel]}
         self.channel_history[channel].append(message)
         if len(self.channel_history[channel]) > self.max_history:
             self.channel_history[channel] = self.channel_history[channel][-self.max_history:]
@@ -316,7 +319,7 @@ async def sse_generator(queue: asyncio.Queue, channel: str):
     try:
         while True:
             msg = await queue.get()
-            yield {"event": msg["event"], "data": json.dumps(msg)}
+            yield {"id": str(msg.get("event_id", "")), "event": msg["event"], "data": json.dumps(msg)}
     except asyncio.CancelledError:
         pass
     finally:
@@ -326,8 +329,17 @@ async def sse_generator(queue: asyncio.Queue, channel: str):
 async def sse_channel(channel: str, request: Request):
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
     manager.sse_clients[channel].add(queue)
+    last_event_id = request.headers.get("last-event-id")
     history = manager.channel_history.get(channel, [])
-    for msg in history[-20:]:
+    if last_event_id:
+        try:
+            last_id = int(last_event_id)
+            history = [msg for msg in history if msg.get("event_id", 0) > last_id]
+        except (ValueError, TypeError):
+            history = history[-20:]
+    else:
+        history = history[-20:]
+    for msg in history:
         await queue.put(msg)
     return EventSourceResponse(sse_generator(queue, channel))
 
@@ -541,13 +553,15 @@ async def create_poll(poll: Poll):
 
 @app.post("/api/v1/live/poll/vote")
 async def vote_poll(vote: PollVote):
-    poll = manager.polls.get(vote.poll_id)
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
-    if vote.option not in poll["options"]:
-        raise HTTPException(status_code=400, detail="Invalid option")
-    poll["votes"][vote.option] = poll["votes"].get(vote.option, 0) + 1
-    await manager.broadcast_ws("poll", {"event": "poll.vote", "data": {"poll_id": vote.poll_id, "votes": poll["votes"]}})
+    async with manager.poll_lock:
+        poll = manager.polls.get(vote.poll_id)
+        if not poll:
+            raise HTTPException(status_code=404, detail="Poll not found")
+        if vote.option not in poll["options"]:
+            raise HTTPException(status_code=400, detail="Invalid option")
+        poll["votes"][vote.option] = poll["votes"].get(vote.option, 0) + 1
+        votes_snapshot = dict(poll["votes"])
+    await manager.broadcast_ws("poll", {"event": "poll.vote", "data": {"poll_id": vote.poll_id, "votes": votes_snapshot}})
     return poll
 
 @app.get("/api/v1/live/polls")

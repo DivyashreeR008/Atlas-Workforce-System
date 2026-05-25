@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/atlas-workforce/lms-service/handlers"
 	"github.com/atlas-workforce/lms-service/middleware"
@@ -77,6 +78,8 @@ func main() {
 	app.Use(cors.New())
 	app.Use(middleware.TenantMiddleware())
 
+	go startCertExpiryChecker()
+
 	app.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "LMS Service is running"})
 	})
@@ -94,6 +97,45 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func startCertExpiryChecker() {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+
+	// Run once at startup
+	checkExpiringCertifications()
+
+	for range ticker.C {
+		checkExpiringCertifications()
+	}
+}
+
+func checkExpiringCertifications() {
+	if db == nil {
+		return
+	}
+
+	cutoff := time.Now().AddDate(0, 0, 30)
+	var expiring []struct {
+		ID         string
+		EmployeeID string
+		Name       string
+		ExpiryDate *time.Time
+	}
+
+	db.Table("certifications").
+		Select("id, employee_id, name, expiry_date").
+		Where("status = ? AND expiry_date IS NOT NULL AND expiry_date <= ?", "ACTIVE", cutoff).
+		Find(&expiring)
+
+	for _, c := range expiring {
+		if c.ExpiryDate != nil {
+			daysLeft := int(time.Until(*c.ExpiryDate).Hours() / 24)
+			log.Printf("WARNING: Certification '%s' for employee %s expires in %d days (on %s)",
+				c.Name, c.EmployeeID, daysLeft, c.ExpiryDate.Format("2006-01-02"))
+		}
+	}
 }
 
 func setupRoutes(app *fiber.App) {

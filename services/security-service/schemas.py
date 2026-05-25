@@ -80,6 +80,7 @@ class PrivilegedRoleCreate(BaseModel):
     risk_level: str = "high"
     requires_approval: bool = True
     max_duration_minutes: int = 480
+    allowed_requester_roles: list[str] = []
 
 class PrivilegedRoleResponse(BaseModel):
     id: UUID
@@ -90,6 +91,7 @@ class PrivilegedRoleResponse(BaseModel):
     risk_level: str
     requires_approval: bool
     max_duration_minutes: int
+    allowed_requester_roles: list[str] = []
     created_at: datetime
     updated_at: datetime
     model_config = {"from_attributes": True}
@@ -101,6 +103,7 @@ class PrivilegedAccessRequest(BaseModel):
     justification: Optional[str] = None
     jit_enabled: bool = True
     duration_minutes: Optional[int] = None
+    requester_role: Optional[str] = Field(None, max_length=100)
 
 class PrivilegedAccessResponse(BaseModel):
     id: UUID

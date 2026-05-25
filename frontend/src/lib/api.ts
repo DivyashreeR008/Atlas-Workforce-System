@@ -87,7 +87,10 @@ api.interceptors.response.use(
     } catch {
       processQueue(null);
       clearAuth();
-      if (typeof window !== "undefined") window.location.href = "/login";
+      if (typeof window !== "undefined") {
+        const currentPath = window.location.pathname + window.location.search;
+        window.location.href = "/login?redirect=" + encodeURIComponent(currentPath);
+      }
       return Promise.reject(error);
     } finally {
       refreshing = false;

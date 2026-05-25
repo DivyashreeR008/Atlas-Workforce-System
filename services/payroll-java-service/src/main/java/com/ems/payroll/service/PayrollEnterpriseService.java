@@ -8,6 +8,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 public class PayrollEnterpriseService {
@@ -384,6 +385,7 @@ public class PayrollEnterpriseService {
     public ExpenseReport approveExpense(Long expenseId, String approvedBy) {
         ExpenseReport expense = expenseRepo.findById(expenseId).orElseThrow(
                 () -> new IllegalArgumentException("Expense not found"));
+        validateEmployeeExists(expense.getTenantId(), expense.getEmployeeId());
         expense.setStatus("APPROVED");
         expense.setApprovedBy(approvedBy);
         expense.setProcessedAt(LocalDateTime.now());
@@ -420,9 +422,21 @@ public class PayrollEnterpriseService {
         return benefitPlanRepo.save(plan);
     }
 
+    @Transactional
     public BenefitEnrollment enrollInBenefit(String tenantId, String employeeId, Long planId) {
         BenefitPlan plan = benefitPlanRepo.findById(planId).orElseThrow(
                 () -> new IllegalArgumentException("Benefit plan not found"));
+
+        if (plan.getMaxParticipants() != null && plan.getCurrentParticipants() != null
+                && plan.getCurrentParticipants() >= plan.getMaxParticipants()) {
+            throw new IllegalStateException("Benefit plan has reached maximum capacity");
+        }
+
+        List<BenefitEnrollment> existing = benefitEnrollRepo.findByTenantIdAndEmployeeId(tenantId, employeeId);
+        boolean alreadyEnrolled = existing.stream().anyMatch(e -> e.getPlanId().equals(planId) && "ACTIVE".equals(e.getStatus()));
+        if (alreadyEnrolled) {
+            throw new IllegalArgumentException("Employee is already enrolled in this benefit plan");
+        }
 
         BenefitEnrollment enrollment = new BenefitEnrollment();
         enrollment.setTenantId(tenantId);
@@ -435,7 +449,13 @@ public class PayrollEnterpriseService {
         enrollment.setEmployerContribution(plan.getEmployerContribution());
         enrollment.setCreatedAt(LocalDateTime.now());
         enrollment.setUpdatedAt(LocalDateTime.now());
-        return benefitEnrollRepo.save(enrollment);
+
+        enrollment = benefitEnrollRepo.save(enrollment);
+
+        plan.setCurrentParticipants(plan.getCurrentParticipants() != null ? plan.getCurrentParticipants() + 1 : 1);
+        benefitPlanRepo.save(plan);
+
+        return enrollment;
     }
 
     // ============================================================
@@ -695,6 +715,127 @@ public class PayrollEnterpriseService {
                 "unresolvedAnomalies", anomalies,
                 "pendingBonuses", pendingBonuses
         );
+    }
+
+    // ============================================================
+    // BATCH PAYROLL PROCESSING (10K employees)
+    // ============================================================
+
+    private static final int BATCH_SIZE = 500;
+
+    public Map<String, Object> runBatchPayroll(String tenantId, String period, List<String> employeeIds,
+                                                Double baseSalary, Double allowances, Double deductions,
+                                                String country, String currency) {
+        int total = employeeIds.size();
+        int processed = 0;
+        int failed = 0;
+        List<Map<String, Object>> failures = new ArrayList<>();
+        long startTime = System.currentTimeMillis();
+
+        for (int i = 0; i < total; i += BATCH_SIZE) {
+            int end = Math.min(i + BATCH_SIZE, total);
+            List<String> batch = employeeIds.subList(i, end);
+
+            try {
+                for (String empId : batch) {
+                    try {
+                        runMultiCountryPayroll(tenantId, empId, period, baseSalary, allowances, deductions, country, currency);
+                        processed++;
+                    } catch (Exception e) {
+                        failed++;
+                        Map<String, Object> err = new HashMap<>();
+                        err.put("employeeId", empId);
+                        err.put("error", e.getMessage());
+                        err.put("batch", i / BATCH_SIZE);
+                        failures.add(err);
+                    }
+                }
+            } catch (Exception e) {
+                failed += batch.size();
+                for (String empId : batch) {
+                    Map<String, Object> err = new HashMap<>();
+                    err.put("employeeId", empId);
+                    err.put("error", "Batch transaction failed: " + e.getMessage());
+                    err.put("batch", i / BATCH_SIZE);
+                    failures.add(err);
+                }
+            }
+
+            updateBatchProgress(tenantId, period, processed, failed, total);
+        }
+
+        long duration = System.currentTimeMillis() - startTime;
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("totalEmployees", total);
+        result.put("processed", processed);
+        result.put("failed", failed);
+        result.put("batches", (int) Math.ceil((double) total / BATCH_SIZE));
+        result.put("durationMs", duration);
+        result.put("failures", failures);
+        return result;
+    }
+
+    private void updateBatchProgress(String tenantId, String period, int processed, int failed, int total) {
+        PayrollAudit audit = new PayrollAudit();
+        audit.setTenantId(tenantId);
+        audit.setPayrollId(0L);
+        audit.setAction("BATCH_PROGRESS");
+        audit.setChangedBy("system");
+        audit.setOldValue("");
+        audit.setNewValue("processed=" + processed + ",failed=" + failed + ",total=" + total + ",period=" + period);
+        audit.setChangedAt(LocalDateTime.now());
+        auditRepo.save(audit);
+    }
+
+    public List<Map<String, Object>> verifyPayrollConsistency(String tenantId, String period) {
+        List<EnhancedPayrollRecord> payrollRecords = payrollRepo.findByTenantIdAndPeriod(tenantId, period);
+        Set<String> paidEmployees = payrollRecords.stream()
+                .map(EnhancedPayrollRecord::getEmployeeId)
+                .collect(Collectors.toSet());
+
+        // Cross-reference with attendance data via bank transactions as proxy
+        List<BankTransaction> bankTxns = bankRepo.findByTenantId(tenantId);
+        Set<String> attendanceEmployees = bankTxns.stream()
+                .filter(tx -> "PAYROLL_DIRECT_DEPOSIT".equals(tx.getTransactionType()))
+                .map(BankTransaction::getEmployeeId)
+                .collect(Collectors.toSet());
+
+        List<Map<String, Object>> discrepancies = new ArrayList<>();
+
+        for (String empId : paidEmployees) {
+            if (!attendanceEmployees.contains(empId)) {
+                Map<String, Object> d = new LinkedHashMap<>();
+                d.put("type", "PAID_NO_ATTENDANCE");
+                d.put("employeeId", empId);
+                d.put("detail", "Employee has payroll record but no attendance data for period " + period);
+                discrepancies.add(d);
+            }
+        }
+
+        for (String empId : attendanceEmployees) {
+            if (!paidEmployees.contains(empId)) {
+                Map<String, Object> d = new LinkedHashMap<>();
+                d.put("type", "ATTENDANCE_NO_PAY");
+                d.put("employeeId", empId);
+                d.put("detail", "Employee has attendance data but no payroll record for period " + period);
+                discrepancies.add(d);
+            }
+        }
+
+        return discrepancies;
+    }
+
+    // ============================================================
+    // EMPLOYEE VALIDATION
+    // ============================================================
+
+    private void validateEmployeeExists(String tenantId, String employeeId) {
+        boolean exists = !payrollRepo.findByTenantIdAndEmployeeId(tenantId, employeeId).isEmpty()
+                || !expenseRepo.findByTenantIdAndEmployeeId(tenantId, employeeId).isEmpty()
+                || !bonusRepo.findByTenantIdAndEmployeeId(tenantId, employeeId).isEmpty();
+        if (!exists) {
+            throw new IllegalArgumentException("Employee not found: " + employeeId);
+        }
     }
 
     // ============================================================

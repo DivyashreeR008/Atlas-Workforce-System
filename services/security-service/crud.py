@@ -2,11 +2,51 @@ import hashlib
 import hmac
 import json
 import math
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
+import logging
+
+logger = logging.getLogger("security-service")
+
+MAX_REGEX_LENGTH = 1000
+
+
+def safe_re_match(pattern: str, text: str, *args, **kwargs):
+    if len(pattern) > MAX_REGEX_LENGTH:
+        logger.warning("dlp.regex_pattern_too_long", extra={"pattern_length": len(pattern)})
+        return None
+    try:
+        return re.match(pattern, text, *args, **kwargs)
+    except re.error as e:
+        logger.warning("dlp.regex_error", extra={"error": str(e)})
+        return None
+
+
+def safe_re_search(pattern: str, text: str, *args, **kwargs):
+    if len(pattern) > MAX_REGEX_LENGTH:
+        logger.warning("dlp.regex_pattern_too_long", extra={"pattern_length": len(pattern)})
+        return None
+    try:
+        return re.search(pattern, text, *args, **kwargs)
+    except re.error as e:
+        logger.warning("dlp.regex_error", extra={"error": str(e)})
+        return None
+
+
+def safe_re_findall(pattern: str, text: str, *args, **kwargs):
+    if len(pattern) > MAX_REGEX_LENGTH:
+        logger.warning("dlp.regex_pattern_too_long", extra={"pattern_length": len(pattern)})
+        return []
+    try:
+        return re.findall(pattern, text, *args, **kwargs)
+    except re.error as e:
+        logger.warning("dlp.regex_error", extra={"error": str(e)})
+        return []
+
 from models import (
     ZeroTrustPolicy, ConditionalAccessPolicy, RiskAssessment,
     PrivilegedRole, PrivilegedAccess, DataClassification,
@@ -455,6 +495,19 @@ def rotate_encryption_key(db: Session, key_id_str: str, new_data: dict) -> dict:
     db.refresh(new_key)
     return {"old_key_id": str(old_key.id), "new_key_id": str(new_key.id), "version": new_key.version}
 
+COUNTRY_CODES = {
+    "US", "CA", "GB", "DE", "FR", "IT", "ES", "NL", "BE", "CH", "AT", "SE", "NO", "DK", "FI",
+    "AU", "NZ", "JP", "CN", "KR", "SG", "IN", "BR", "MX", "AR", "ZA", "AE", "SA", "IL",
+    "IE", "PT", "GR", "PL", "CZ", "HU", "RO", "RU", "TR", "BG", "HR", "LT", "LV", "EE",
+    "SK", "SI", "MY", "TH", "VN", "PH", "ID", "HK", "TW", "CL", "CO", "PE", "EG", "NG",
+    "KE", "MA", "QA", "KW", "BH", "OM", "UY", "CR", "PA", "DO",
+}
+
+
+def validate_country_code(country: str) -> bool:
+    return country.upper() in COUNTRY_CODES
+
+
 # ── Data Residency ──────────────────────────────────────────────────────────
 
 def list_data_residency_policies(db: Session, tenant_id: str = None):
@@ -464,6 +517,9 @@ def list_data_residency_policies(db: Session, tenant_id: str = None):
     return q.order_by(DataResidencyPolicy.region).all()
 
 def create_data_residency(db: Session, data: dict):
+    for region in data.get("allowed_regions", []) + data.get("restricted_regions", []) + [data.get("region", "")]:
+        if region and not validate_country_code(region):
+            raise ValueError(f"Invalid country code: {region}")
     policy = DataResidencyPolicy(**data)
     db.add(policy)
     db.commit()
@@ -477,7 +533,12 @@ def check_data_residency(policy: DataResidencyPolicy, target_region: str) -> dic
         "policy_region": policy.region,
         "target_region": target_region,
         "resource_type": policy.resource_type,
+        "valid_country": validate_country_code(target_region),
     }
+    if not validate_country_code(target_region):
+        result["allowed"] = False
+        result["reason"] = "Unrecognized country code"
+        return result
     if policy.allowed_regions:
         if target_region in policy.allowed_regions:
             result["allowed"] = True

@@ -15,9 +15,14 @@ public class BenefitPlan {
     private Double employerContribution;
     private Double employeeContribution;
     private Double maxBenefitAmount;
+    private Integer maxParticipants;
+    private Integer currentParticipants;
     private Boolean isActive;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
+    @Version
+    private Integer version;
 
     public BenefitPlan() {}
 
@@ -37,10 +42,16 @@ public class BenefitPlan {
     public void setEmployeeContribution(Double employeeContribution) { this.employeeContribution = employeeContribution; }
     public Double getMaxBenefitAmount() { return maxBenefitAmount; }
     public void setMaxBenefitAmount(Double maxBenefitAmount) { this.maxBenefitAmount = maxBenefitAmount; }
+    public Integer getMaxParticipants() { return maxParticipants; }
+    public void setMaxParticipants(Integer maxParticipants) { this.maxParticipants = maxParticipants; }
+    public Integer getCurrentParticipants() { return currentParticipants; }
+    public void setCurrentParticipants(Integer currentParticipants) { this.currentParticipants = currentParticipants; }
     public Boolean getIsActive() { return isActive; }
     public void setIsActive(Boolean isActive) { this.isActive = isActive; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+    public Integer getVersion() { return version; }
+    public void setVersion(Integer version) { this.version = version; }
 }

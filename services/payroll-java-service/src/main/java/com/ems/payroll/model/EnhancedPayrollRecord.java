@@ -1,6 +1,8 @@
 package com.ems.payroll.model;
 
 import jakarta.persistence.*;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.PositiveOrZero;
 import java.time.LocalDateTime;
 
 @Entity
@@ -16,13 +18,21 @@ public class EnhancedPayrollRecord {
     private String period;
     private String country;
     private String currency;
+    @Min(0) @PositiveOrZero
     private Double baseSalary;
+    @Min(0) @PositiveOrZero
     private Double allowances;
+    @Min(0) @PositiveOrZero
     private Double deductions;
+    @Min(0) @PositiveOrZero
     private Double tax;
+    @Min(0) @PositiveOrZero
     private Double socialSecurity;
+    @Min(0) @PositiveOrZero
     private Double medicare;
+    @Min(0) @PositiveOrZero
     private Double netSalary;
+    @Min(0) @PositiveOrZero
     private Double grossSalary;
     private String paymentMethod;
     private String bankAccount;

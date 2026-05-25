@@ -115,6 +115,10 @@ class Interview(Base):
 
     application = relationship("Application", back_populates="interviews")
 
+    __table_args__ = (
+        UniqueConstraint("interviewer_id", "scheduled_at", name="uq_interviewer_slot"),
+    )
+
 
 class Offer(Base):
     __tablename__ = "offers"

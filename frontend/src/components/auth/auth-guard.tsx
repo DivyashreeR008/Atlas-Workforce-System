@@ -1,21 +1,32 @@
 "use client";
 
 import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { isAuthenticated } from "@/lib/auth";
 import { useAuthStore } from "@/stores/auth-store";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const user = useAuthStore((s) => s.user);
   const authenticated = isAuthenticated() || !!user;
 
   useEffect(() => {
     if (!authenticated) {
-      router.replace("/login");
+      const redirect = searchParams?.get("redirect");
+      if (redirect) {
+        router.replace("/login?redirect=" + encodeURIComponent(redirect));
+      } else {
+        const currentPath = window.location.pathname + window.location.search;
+        if (currentPath !== "/login") {
+          router.replace("/login?redirect=" + encodeURIComponent(currentPath));
+        } else {
+          router.replace("/login");
+        }
+      }
     }
-  }, [authenticated, router]);
+  }, [authenticated, router, searchParams]);
 
   if (!authenticated) {
     return (

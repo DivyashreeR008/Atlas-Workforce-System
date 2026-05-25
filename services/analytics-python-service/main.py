@@ -23,6 +23,29 @@ app = FastAPI(title="Analytics Service API", version="2.0.0")
 configure_logging("analytics-service", level=logging.INFO)
 logger = get_logger("analytics-service")
 
+payroll_cache = {}
+payroll_cache_timestamp = {}
+PAYROLL_CACHE_TTL = 300
+
+
+def invalidate_payroll_cache(tenant_id=None):
+    if tenant_id:
+        payroll_cache.pop(f"payroll_{tenant_id}", None)
+        payroll_cache_timestamp.pop(f"payroll_{tenant_id}", None)
+    else:
+        payroll_cache.clear()
+        payroll_cache_timestamp.clear()
+
+
+def safe_divide(numerator, denominator, default=0):
+    try:
+        if denominator == 0 or denominator is None:
+            return default
+        return numerator / denominator
+    except (ZeroDivisionError, TypeError, ValueError):
+        return default
+
+
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -116,7 +139,8 @@ def get_department_analytics(x_tenant_id: str = Header("default", alias="X-Tenan
             for dept, count in sorted(dept_counts.items(), key=lambda x: -x[1])
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.warning("analytics.department_analytics_failed", extra={"error": str(e), "tenant_id": x_tenant_id})
+        raise HTTPException(status_code=500, detail="Failed to retrieve department analytics")
 
 
 @app.get("/analytics/payroll", tags=["analytics"], summary="Payroll trends")
@@ -124,6 +148,11 @@ def get_payroll_analytics(x_tenant_id: str = Header("default", alias="X-Tenant-I
     """Returns aggregated payroll data grouped by period."""
     if not engine:
         raise HTTPException(status_code=500, detail="Database connection failed")
+
+    cache_key = f"payroll_{x_tenant_id}"
+    now = time.time()
+    if cache_key in payroll_cache and (now - payroll_cache_timestamp.get(cache_key, 0)) < PAYROLL_CACHE_TTL:
+        return payroll_cache[cache_key]
 
     try:
         query = """
@@ -134,7 +163,10 @@ def get_payroll_analytics(x_tenant_id: str = Header("default", alias="X-Tenant-I
         ORDER BY period ASC
         """
         df = pd.read_sql_query(text(query).bindparams(tenant_id=x_tenant_id), engine)
-        return df.to_dict(orient="records")
+        result = df.to_dict(orient="records")
+        payroll_cache[cache_key] = result
+        payroll_cache_timestamp[cache_key] = now
+        return result
     except Exception:
         return []
 
@@ -194,7 +226,8 @@ def get_ai_insights(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
         )
         return {"insight": response.choices[0].message.content}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.warning("analytics.ai_insights_failed", extra={"error": str(e), "tenant_id": x_tenant_id})
+        raise HTTPException(status_code=500, detail="Failed to generate AI insights")
 
 
 @app.get("/api/v1/command-center/overview", tags=["command-center"], summary="Command Center overview")
@@ -590,6 +623,68 @@ def get_risk_dashboard(x_tenant_id: str = Header("default", alias="X-Tenant-Id")
     }
 
 
+@app.get("/api/v1/payroll/verify/{period}", tags=["analytics"], summary="Verify payroll amounts against attendance records")
+def verify_payroll_consistency(period: str, x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
+    if not engine:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    try:
+        payroll_query = text("""
+            SELECT employee_id, period, base_salary, allowances, deductions,
+                   gross_salary, net_salary, tax
+            FROM payroll_records
+            WHERE tenant_id = :tenant_id AND period = :period
+        """)
+        payroll_df = pd.read_sql_query(
+            payroll_query.bindparams(tenant_id=x_tenant_id, period=period), engine
+        )
+
+        attendance_query = text("""
+            SELECT employee_id, date, status, clock_in, clock_out
+            FROM attendance_records
+            WHERE tenant_id = :tenant_id
+              AND date >= (:period || '-01')::date
+              AND date < ((:period || '-01')::date + INTERVAL '1 month')
+        """)
+        attendance_df = pd.read_sql_query(
+            attendance_query.bindparams(tenant_id=x_tenant_id, period=period), engine
+        )
+
+        discrepancies = []
+        for _, row in payroll_df.iterrows():
+            emp_id = row["employee_id"]
+            emp_attendance = attendance_df[attendance_df["employee_id"] == emp_id]
+            total_hours = 0
+            total_days = len(emp_attendance)
+            for _, a in emp_attendance.iterrows():
+                if a["clock_in"] and a["clock_out"]:
+                    try:
+                        cin = pd.to_datetime(a["clock_in"])
+                        cout = pd.to_datetime(a["clock_out"])
+                        total_hours += (cout - cin).total_seconds() / 3600
+                    except Exception:
+                        pass
+            discrepancies.append({
+                "employee_id": emp_id,
+                "period": period,
+                "gross_salary": float(row["gross_salary"]),
+                "attendance_days": total_days,
+                "attendance_hours": round(total_hours, 2),
+                "base_salary": float(row["base_salary"]),
+            })
+
+        return {
+            "period": period,
+            "tenant_id": x_tenant_id,
+            "total_payroll_records": len(payroll_df),
+            "total_attendance_records": len(attendance_df),
+            "discrepancies": discrepancies,
+            "verified_at": str(pd.Timestamp.now()),
+        }
+    except Exception as e:
+        logger.warning("payroll.verify_failed", extra={"error": str(e), "period": period, "tenant_id": x_tenant_id})
+        raise HTTPException(status_code=500, detail="Failed to verify payroll consistency")
+
+
 @app.get("/api/v1/command-center/activity-feed", tags=["command-center"], summary="Real-time activity feed")
 def get_activity_feed(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Returns real-time activity feed with varied event types."""
@@ -645,6 +740,42 @@ def get_activity_feed(x_tenant_id: str = Header("default", alias="X-Tenant-Id"))
 
 
 
+def payroll_processed_consumer():
+    def callback(ch, method, properties, body):
+        try:
+            event = json.loads(body)
+            tenant_id = event.get("tenant_id", event.get("x-tenant-id", ""))
+            routing_key = method.routing_key
+            invalidate_payroll_cache(tenant_id)
+            logger.info("payroll.processed.cache_invalidated",
+                extra={"tenant_id": tenant_id, "routing_key": routing_key})
+        except Exception as e:
+            logger.error("payroll.processed.error", extra={"error": str(e)})
+        finally:
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+
+    while True:
+        try:
+            credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
+            params = pika.ConnectionParameters(
+                host=RABBITMQ_HOST,
+                port=RABBITMQ_PORT,
+                credentials=credentials,
+            )
+            connection = pika.BlockingConnection(params)
+            channel = connection.channel()
+            channel.exchange_declare(exchange="live_exchange", exchange_type="topic", durable=True)
+            result = channel.queue_declare(queue="", exclusive=True)
+            queue_name = result.method.queue
+            channel.queue_bind(exchange="live_exchange", queue=queue_name, routing_key="payroll.processed")
+            channel.basic_consume(queue=queue_name, on_message_callback=callback, auto_ack=False)
+            logger.info("Started listening for payroll.processed events on live_exchange")
+            channel.start_consuming()
+        except Exception as e:
+            logger.error("RabbitMQ connection error in payroll consumer", extra={"error": str(e)})
+            time.sleep(5)
+
+
 def employee_deletion_consumer():
     def callback(ch, method, properties, body):
         try:
@@ -686,6 +817,8 @@ def employee_deletion_consumer():
 def start_consumers():
     thread = threading.Thread(target=employee_deletion_consumer, daemon=True)
     thread.start()
+    thread2 = threading.Thread(target=payroll_processed_consumer, daemon=True)
+    thread2.start()
 
 
 if __name__ == "__main__":

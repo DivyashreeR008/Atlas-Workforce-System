@@ -63,6 +63,7 @@ class PrivilegedRole(Base):
     risk_level = Column(String(20), default="high")
     requires_approval = Column(Boolean, default=True)
     max_duration_minutes = Column(Integer, default=480)
+    allowed_requester_roles = Column(JSONB, nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)

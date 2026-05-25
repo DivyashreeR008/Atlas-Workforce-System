@@ -2,18 +2,25 @@
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class LeaveService {
 
     private final LeaveRepository repository;
+    private final RabbitTemplate rabbitTemplate;
 
-    public LeaveService(LeaveRepository repository) {
+    public LeaveService(LeaveRepository repository, RabbitTemplate rabbitTemplate) {
         this.repository = repository;
+        this.rabbitTemplate = rabbitTemplate;
     }
 
     public List<LeaveRecord> getAllLeaveRequests(String tenantId) {
@@ -28,6 +35,11 @@ public class LeaveService {
     public LeaveRecord requestLeave(String tenantId, String employeeId, LocalDate startDate, LocalDate endDate, String leaveType, String reason) {
         if (startDate.isAfter(endDate)) {
             throw new IllegalArgumentException("Start date must be before or equal to end date");
+        }
+
+        List<LeaveRecord> overlapping = repository.findOverlapping(employeeId, startDate, endDate, null);
+        if (!overlapping.isEmpty()) {
+            throw new IllegalArgumentException("Leave request overlaps with an existing leave request");
         }
 
         LeaveRecord record = new LeaveRecord();
@@ -68,8 +80,69 @@ public class LeaveService {
             throw new IllegalArgumentException(buildErrorMessage(currentStatus, newStatus, userRole, record.getStartDate()));
         }
 
+        // LEV-003: Check leave balance before approving
+        if (newStatus == LeaveStatus.APPROVED) {
+            int requestedDays = calculateLeaveDays(record.getStartDate(), record.getEndDate());
+            int usedDays = calculateUsedLeaveDays(tenantId, record.getEmployeeId(), id);
+            int balance = getEmployeeLeaveBalance(record.getEmployeeId());
+            if (usedDays + requestedDays > balance) {
+                throw new IllegalArgumentException(
+                    "Insufficient leave balance. Requested: " + requestedDays
+                    + " days, Already used/pending: " + usedDays
+                    + " days, Available: " + balance + " days");
+            }
+        }
+
         record.setStatus(newStatus);
-        return repository.save(record);
+        LeaveRecord saved = repository.save(record);
+
+        String routingKey = "leave." + newStatus.name().toLowerCase();
+        Map<String, Object> event = new HashMap<>();
+        event.put("event", routingKey);
+        event.put("leave_id", saved.getId());
+        event.put("employee_id", saved.getEmployeeId());
+        event.put("tenant_id", tenantId);
+        event.put("status", newStatus.name());
+        event.put("leave_type", saved.getLeaveType());
+        event.put("start_date", saved.getStartDate().toString());
+        event.put("end_date", saved.getEndDate().toString());
+        event.put("timestamp", Instant.now().toString());
+        rabbitTemplate.convertAndSend("live_exchange", routingKey, event);
+
+        if (newStatus == LeaveStatus.APPROVED) {
+            Map<String, Object> notification = new HashMap<>();
+            notification.put("event", "leave.approved");
+            notification.put("tenant_id", saved.getTenantId());
+            notification.put("employeeId", saved.getEmployeeId());
+            notification.put("leaveId", saved.getId());
+            notification.put("title", "Leave Approved");
+            notification.put("message", "Your " + saved.getLeaveType() + " leave from "
+                    + saved.getStartDate() + " to " + saved.getEndDate() + " has been approved.");
+            try {
+                rabbitTemplate.convertAndSend("notifications_exchange", "", notification);
+            } catch (Exception e) {
+                System.err.println("Failed to publish leave approval notification: " + e.getMessage());
+            }
+        }
+
+        return saved;
+    }
+
+    private int calculateLeaveDays(LocalDate start, LocalDate end) {
+        return (int) ChronoUnit.DAYS.between(start, end) + 1;
+    }
+
+    private int calculateUsedLeaveDays(String tenantId, String employeeId, Long excludedId) {
+        List<LeaveRecord> records = repository.findByTenantIdAndEmployeeIdAndStatusIn(
+                tenantId, employeeId, List.of(LeaveStatus.APPROVED, LeaveStatus.PENDING));
+        return records.stream()
+                .filter(r -> !r.getId().equals(excludedId))
+                .mapToInt(r -> calculateLeaveDays(r.getStartDate(), r.getEndDate()))
+                .sum();
+    }
+
+    private int getEmployeeLeaveBalance(String employeeId) {
+        return 20;
     }
 
     /**

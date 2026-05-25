@@ -6,8 +6,9 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from atlas_observability import (
     AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
     configure_logging, get_logger
@@ -86,6 +87,20 @@ app.add_middleware(
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(AtlasLoggingMiddleware)
 app.add_middleware(AtlasMetricsMiddleware)
+
+
+MAX_REQUEST_SIZE = 1_000_000
+
+
+@app.middleware("http")
+async def limit_request_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_REQUEST_SIZE:
+        return JSONResponse(
+            status_code=413,
+            content={"detail": "Request body too large (max 1MB)"},
+        )
+    return await call_next(request)
 
 # ── Helper ──
 def _copilot_response(persona_key: str, query: str, context: Optional[dict] = None) -> dict:

@@ -20,7 +20,7 @@ import { useMemo } from "react";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 
 export default function DashboardPage() {
-  const { data: deptData, isLoading: deptLoading } = useQuery({
+  const { data: deptData, isLoading: deptLoading, isError: deptError } = useQuery({
     queryKey: ["analytics", "department"],
     queryFn: async () => {
       const { data } = await analyticsApi.department();
@@ -30,7 +30,7 @@ export default function DashboardPage() {
     staleTime: 30000,
   });
 
-  const { data: empData } = useQuery({
+  const { data: empData, isError: empError } = useQuery({
     queryKey: ["employees", "page1"],
     queryFn: async () => {
       const { data } = await employeeApi.list({ page: 1, pageSize: 1 });
@@ -40,7 +40,7 @@ export default function DashboardPage() {
     staleTime: 30000,
   });
 
-  const { data: attendanceData } = useQuery({
+  const { data: attendanceData, isError: attendanceError } = useQuery({
     queryKey: ["attendance", "recent"],
     queryFn: async () => {
       const { data } = await attendanceApi.list();
@@ -56,47 +56,56 @@ export default function DashboardPage() {
     staleTime: 15000,
   });
 
-  const totalEmployees = deptData
-    ? deptData.reduce((sum, d) => sum + d.count, 0)
-    : empData?.total ?? fallbackKpis[0].value;
+  const safeFallbackValue = (index: number) =>
+    fallbackKpis?.[index]?.value ?? 0;
 
-  const presentToday = attendanceData
+  const totalEmployees = deptData && Array.isArray(deptData)
+    ? deptData.reduce((sum, d) => sum + (d?.count ?? 0), 0)
+    : empData?.total ?? safeFallbackValue(0);
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const presentToday = attendanceData && Array.isArray(attendanceData)
     ? attendanceData.filter(
         (r) =>
-          r.date === new Date().toISOString().slice(0, 10) &&
-          r.status === "PRESENT"
+          r?.date === todayStr &&
+          r?.status === "PRESENT"
       ).length
     : 0;
 
-  const lateToday = attendanceData
-    ? attendanceData.filter((r) => r.status === "LATE").length
+  const lateToday = attendanceData && Array.isArray(attendanceData)
+    ? attendanceData.filter((r) => r?.status === "LATE").length
     : 0;
 
   const kpis: KpiMetric[] = [
     { label: "Total Employees", value: totalEmployees, change: 4.2, trend: "up" },
-    { label: "Present Today", value: presentToday || fallbackKpis[1].value, change: presentToday ? 0 : 1.8, trend: presentToday ? "neutral" : "up" },
+    { label: "Present Today", value: presentToday || safeFallbackValue(1), change: presentToday ? 0 : 1.8, trend: presentToday ? "neutral" : "up" },
     { label: "Late Today", value: lateToday, change: 0, trend: "down" },
     { label: "Open Positions", value: 23, change: -12, trend: "down" },
   ];
 
-  const realDeptBreakdown = deptData
-    ? deptData.map((d) => ({ name: d.department, value: d.count }))
-    : departmentBreakdown;
+  const realDeptBreakdown = deptData && Array.isArray(deptData) && deptData.length > 0
+    ? deptData.map((d) => ({ name: d?.department ?? "", value: d?.count ?? 0 }))
+    : deptError ? departmentBreakdown : departmentBreakdown;
 
   const recentCheckins = useMemo(() => {
-    if (!attendanceData) return [];
+    if (!attendanceData || !Array.isArray(attendanceData)) return [];
     return attendanceData
-      .filter((r) => r.clockIn)
+      .filter((r) => r?.clockIn)
       .slice(0, 5)
       .map((r) => ({
-        id: r.employeeId,
-        time: new Date(r.clockIn).toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-        status: r.status,
+        id: r?.employeeId ?? "",
+        time: r?.clockIn
+          ? new Date(r.clockIn).toLocaleTimeString("en-US", {
+              hour: "2-digit",
+              minute: "2-digit",
+            })
+          : "",
+        status: r?.status ?? "",
       }));
   }, [attendanceData]);
+
+  const showLoader = deptLoading;
 
   return (
     <ErrorBoundary>
@@ -126,7 +135,7 @@ export default function DashboardPage() {
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 grid gap-6 lg:grid-cols-2">
           <HeadcountChart data={headcountTrend} />
-          {deptLoading ? (
+          {deptLoading || deptError ? (
             <div className="rounded-xl border bg-card p-6">
               <Skeleton className="h-[300px] w-full" />
             </div>
@@ -143,7 +152,12 @@ export default function DashboardPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {recentCheckins.length > 0 ? (
+            {attendanceError ? (
+              <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground">
+                <Clock className="h-8 w-8" />
+                <p className="text-sm">Unable to load check-in data</p>
+              </div>
+            ) : recentCheckins.length > 0 ? (
               <div className="space-y-3">
                 {recentCheckins.map((c) => (
                   <div
@@ -152,11 +166,11 @@ export default function DashboardPage() {
                   >
                     <Avatar className="h-8 w-8">
                       <AvatarFallback className="bg-primary/10 text-xs text-primary">
-                        {c.id.slice(0, 2).toUpperCase()}
+                        {c.id ? c.id.slice(0, 2).toUpperCase() : "?"}
                       </AvatarFallback>
                     </Avatar>
                     <div className="flex-1 min-w-0">
-                      <p className="truncate text-sm font-medium">{c.id}</p>
+                      <p className="truncate text-sm font-medium">{c.id || "Unknown"}</p>
                       <p className="text-xs text-muted-foreground">{c.time}</p>
                     </div>
                     <Badge
@@ -169,7 +183,7 @@ export default function DashboardPage() {
                       }
                       className="shrink-0"
                     >
-                      {c.status}
+                      {c.status || "UNKNOWN"}
                     </Badge>
                   </div>
                 ))}

@@ -1,6 +1,8 @@
 package com.ems.payroll.model;
 
 import jakarta.persistence.*;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.PositiveOrZero;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
@@ -11,7 +13,9 @@ public class CompensationPlan {
     private Long id;
     private String employeeId;
     private String tenantId;
+    @Min(0) @PositiveOrZero
     private Double currentBaseSalary;
+    @Min(0) @PositiveOrZero
     private Double proposedBaseSalary;
     private String currency;
     private LocalDate effectiveDate;

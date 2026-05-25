@@ -1,6 +1,8 @@
 package com.ems.payroll.model;
 
 import jakarta.persistence.*;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.PositiveOrZero;
 import java.time.LocalDateTime;
 
 @Entity
@@ -13,10 +15,15 @@ public class SalaryBenchmark {
     private String experience;
     private String location;
     private String industry;
+    @Min(0) @PositiveOrZero
     private Double percentile10;
+    @Min(0) @PositiveOrZero
     private Double percentile25;
+    @Min(0) @PositiveOrZero
     private Double percentile50;
+    @Min(0) @PositiveOrZero
     private Double percentile75;
+    @Min(0) @PositiveOrZero
     private Double percentile90;
     private String currency;
     private String source;

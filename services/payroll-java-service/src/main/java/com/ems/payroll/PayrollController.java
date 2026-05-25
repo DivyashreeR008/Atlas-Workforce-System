@@ -1,6 +1,7 @@
 package com.ems.payroll;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -9,6 +10,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/payroll")
 @CrossOrigin(origins = "${ALLOWED_ORIGINS:http://localhost:3000}")
+@Validated
 public class PayrollController {
 
     private final PayrollService service;

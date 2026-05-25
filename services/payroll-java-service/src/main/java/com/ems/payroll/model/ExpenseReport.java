@@ -1,6 +1,8 @@
 package com.ems.payroll.model;
 
 import jakarta.persistence.*;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.PositiveOrZero;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
@@ -12,6 +14,7 @@ public class ExpenseReport {
     private String employeeId;
     private String tenantId;
     private String category;
+    @Min(0) @PositiveOrZero
     private Double amount;
     @Column(columnDefinition = "TEXT")
     private String description;

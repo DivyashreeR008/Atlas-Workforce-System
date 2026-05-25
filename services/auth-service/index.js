@@ -10,6 +10,7 @@ const jwt = require('jsonwebtoken');
 const { authenticator } = require('otplib');
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
+const redis = require('redis');
 const { subtle } = crypto.webcrypto;
 
 const app = express();
@@ -66,6 +67,41 @@ const pool = new Pool({
     `postgresql://${process.env.POSTGRES_USER || 'atlas_user'}:${process.env.POSTGRES_PASSWORD || 'atlas_password'}@${process.env.POSTGRES_HOST || 'postgres'}:5432/${process.env.POSTGRES_DB || 'atlas_db'}`,
   ssl: sslConfig,
 });
+
+const REDIS_URL = process.env.REDIS_URL || 'redis://redis:6379';
+const redisClient = redis.createClient({ url: REDIS_URL });
+redisClient.on('error', (err) => console.log('Auth Redis Client Error', err));
+(async () => {
+  try {
+    await redisClient.connect();
+  } catch (err) {
+    console.error('Auth Redis connection failed, nonce check disabled:', err);
+  }
+})();
+
+const BCRYPT_COST = 8;
+
+function sanitizeForLogs(obj) {
+  const sensitiveKeys = new Set(['password', 'token', 'secret', 'authorization', 'cookie', 'mfa_secret', 'backup_codes', 'client_secret', 'access_token', 'refresh_token']);
+  if (!obj || typeof obj !== 'object') return obj;
+  const sanitized = Array.isArray(obj) ? [...obj] : { ...obj };
+  for (const [key, value] of Object.entries(sanitized)) {
+    if (sensitiveKeys.has(key.toLowerCase())) {
+      sanitized[key] = '[REDACTED]';
+    } else if (typeof value === 'object' && value !== null) {
+      sanitized[key] = sanitizeForLogs(value);
+    }
+  }
+  return sanitized;
+}
+
+function safeLog(logFn, msg, data) {
+  if (data) {
+    logFn(msg, sanitizeForLogs(data));
+  } else {
+    logFn(msg);
+  }
+}
 
 function validatePassword(password) {
   if (!password || password.length < 8) {
@@ -130,6 +166,11 @@ async function verifyRefreshToken(refreshToken) {
     [tokenHash]
   );
   return result.rows[0] || null;
+}
+
+async function revokeAllUserSessions(userId) {
+  await pool.query('UPDATE sessions SET is_active = false WHERE user_id = $1', [userId]);
+  await pool.query('DELETE FROM refresh_tokens WHERE user_id = $1', [userId]);
 }
 
 async function recordFailedAttempt(email) {
@@ -489,11 +530,20 @@ async function initDB() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS rotated_tokens (
+      id SERIAL PRIMARY KEY,
+      token_hash VARCHAR(64) NOT NULL,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
   const adminCheck = await pool.query('SELECT * FROM users WHERE email = $1', [
     'admin@atlas.io',
   ]);
   if (adminCheck.rows.length === 0) {
-    const hashedPass = await bcrypt.hash(ADMIN_DEFAULT_PASSWORD, 10);
+    const hashedPass = await bcrypt.hash(ADMIN_DEFAULT_PASSWORD, BCRYPT_COST);
     await pool.query(
       'INSERT INTO users (email, password, name, role, department, position, tenant_id) VALUES ($1, $2, $3, $4, $5, $6, $7)',
       [
@@ -533,7 +583,7 @@ app.post('/register', createUserRateLimiter('register', 10), async (req, res) =>
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, BCRYPT_COST);
     const result = await pool.query(
       'INSERT INTO users (email, password, name, role, department, position, tenant_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, email, name, role, department, position, tenant_id',
       [
@@ -558,6 +608,9 @@ app.post('/register', createUserRateLimiter('register', 10), async (req, res) =>
     });
   } catch (error) {
     console.error(error);
+    if (error.code === '23505') {
+      return res.status(409).json({ message: 'User already exists' });
+    }
     res.status(500).json({ message: 'Server error during registration' });
   }
 });
@@ -669,8 +722,27 @@ app.post('/refresh', async (req, res) => {
   try {
     const row = await verifyRefreshToken(refreshToken);
     if (!row) {
+      const tokenHash = hashToken(refreshToken);
+      const rotatedCheck = await pool.query(
+        'SELECT user_id FROM rotated_tokens WHERE token_hash = $1',
+        [tokenHash]
+      );
+      if (rotatedCheck.rows[0]) {
+        const userId = rotatedCheck.rows[0].user_id;
+        await revokeAllUserSessions(userId);
+        await pool.query('DELETE FROM rotated_tokens WHERE token_hash = $1', [tokenHash]);
+        await sendAuditEvent('auth.refresh_token_reuse', userId, null, { action: 'all_sessions_revoked' });
+        return res.status(401).json({ message: 'Token reuse detected. All sessions revoked.' });
+      }
       return res.status(401).json({ message: 'Invalid or expired refresh token' });
     }
+
+    const oldTokenHash = hashToken(refreshToken);
+    await pool.query(
+      'INSERT INTO rotated_tokens (token_hash, user_id) VALUES ($1, $2)',
+      [oldTokenHash, row.id]
+    );
+    await pool.query("DELETE FROM rotated_tokens WHERE created_at < NOW() - INTERVAL '1 hour'");
 
     await revokeRefreshToken(refreshToken);
 
@@ -990,9 +1062,21 @@ app.delete('/devices/:id', requireRole(), async (req, res) => {
 
 app.post('/devices/verify', requireRole(), createUserRateLimiter('device_verify', 30), async (req, res) => {
   try {
-    const { device_id, fingerprint } = req.body;
+    const { device_id, fingerprint, nonce } = req.body;
     if (!device_id || !fingerprint) {
       return res.status(400).json({ message: 'device_id and fingerprint are required' });
+    }
+
+    if (nonce) {
+      if (!redisClient.isOpen) {
+        return res.status(503).json({ message: 'Nonce verification unavailable' });
+      }
+      const nonceKey = `device_nonce:${nonce}`;
+      const used = await redisClient.get(nonceKey);
+      if (used) {
+        return res.status(400).json({ message: 'Nonce already used' });
+      }
+      await redisClient.setEx(nonceKey, 300, '1');
     }
 
     const userId = req.user.id;
@@ -1093,7 +1177,7 @@ app.post('/scim/v2/Users', requireScimAuth, async (req, res) => {
     }
 
     const tempPassword = crypto.randomBytes(16).toString('hex');
-    const hashedPassword = await bcrypt.hash(tempPassword, 10);
+    const hashedPassword = await bcrypt.hash(tempPassword, BCRYPT_COST);
 
     const result = await pool.query(
       'INSERT INTO users (email, password, name, role, active) VALUES ($1, $2, $3, $4, $5) RETURNING *',
@@ -1296,7 +1380,7 @@ app.post('/saml/acs', createUserRateLimiter('saml_acs', 20), async (req, res) =>
 
     if (userResult.rows.length === 0) {
       const tempPassword = crypto.randomBytes(16).toString('hex');
-      const hashedPassword = await bcrypt.hash(tempPassword, 10);
+      const hashedPassword = await bcrypt.hash(tempPassword, BCRYPT_COST);
       userResult = await pool.query(
         'INSERT INTO users (email, password, name) VALUES ($1, $2, $3) RETURNING *',
         [email, hashedPassword, displayName || email]
@@ -1932,7 +2016,7 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
 
       if (userResult.rows.length === 0) {
         const tempPassword = crypto.randomBytes(16).toString('hex');
-        const hashedPass = await bcrypt.hash(tempPassword, 10);
+        const hashedPass = await bcrypt.hash(tempPassword, BCRYPT_COST);
         userResult = await pool.query(
           'INSERT INTO users (email, password, name, tenant_id) VALUES ($1, $2, $3, $4) RETURNING *',
           [email, hashedPass, name, oauthState.tenant_id]
