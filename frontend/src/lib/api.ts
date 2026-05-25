@@ -1291,3 +1291,35 @@ export const lmsApi = {
     gapAnalysis: () => api.get("/lms/skills/gap-analysis"),
   },
 };
+
+export const liveApi = {
+  sse: {
+    start: (channel: string) => `${API_BASE}/live/sse/${channel}`,
+  },
+  ws: {
+    connect: (channel: string) =>
+      `${API_BASE.replace("http", "ws")}/live/ws/${channel}`,
+  },
+  publish: {
+    presence: (data: Record<string, unknown>) => api.post("/live/publish/presence", data),
+    alert: (data: Record<string, unknown>) => api.post("/live/publish/alert", data),
+    announcement: (data: Record<string, unknown>) => api.post("/live/publish/announcement", data),
+    activity: (data: Record<string, unknown>) => api.post("/live/publish/activity", data),
+    attendance: (data: Record<string, unknown>) => api.post("/live/publish/attendance", data),
+    payroll: (data: Record<string, unknown>) => api.post("/live/publish/payroll", data),
+    leave: (data: Record<string, unknown>) => api.post("/live/publish/leave", data),
+    kpi: (data: Record<string, unknown>) => api.post("/live/publish/kpi", data),
+    task: (data: Record<string, unknown>) => api.post("/live/publish/task", data),
+    escalation: (data: Record<string, unknown>) => api.post("/live/publish/escalation", data),
+    compliance: (data: Record<string, unknown>) => api.post("/live/publish/compliance", data),
+    onboarding: (data: Record<string, unknown>) => api.post("/live/publish/onboarding", data),
+    recruitment: (data: Record<string, unknown>) => api.post("/live/publish/recruitment", data),
+    forecast: (data: Record<string, unknown>) => api.post("/live/publish/forecast", data),
+    staffing: (data: Record<string, unknown>) => api.post("/live/publish/staffing", data),
+    sla: (data: Record<string, unknown>) => api.post("/live/publish/sla", data),
+    poll: (data: Record<string, unknown>) => api.post("/live/publish/poll", data),
+    emergency: (data: Record<string, unknown>) => api.post("/live/publish/emergency", data),
+    incident: (data: Record<string, unknown>) => api.post("/live/publish/incident", data),
+    chat: (data: Record<string, unknown>) => api.post("/live/publish/chat", data),
+  },
+};

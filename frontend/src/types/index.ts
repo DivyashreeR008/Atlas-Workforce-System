@@ -2325,3 +2325,168 @@ export interface DevelopmentPlan {
   endDate: string;
   createdAt: string;
 }
+
+// === Real-Time Event Types (146-170) ===
+export interface RealTimeEventBase {
+  channel: string;
+  event: string;
+  timestamp: string;
+}
+
+export interface PresencePayload {
+  user_id: string;
+  name: string;
+  status: string;
+  department?: string;
+  role?: string;
+  last_active?: string;
+}
+
+export interface AlertPayload {
+  title: string;
+  message: string;
+  severity: "critical" | "high" | "medium" | "low";
+  category?: string;
+  source?: string;
+}
+
+export interface AnnouncementPayload {
+  title: string;
+  message: string;
+  priority?: string;
+  author?: string;
+  department?: string;
+}
+
+export interface ActivityPayload {
+  actor: string;
+  action: string;
+  resource: string;
+  details?: string;
+  department?: string;
+}
+
+export interface AttendancePayload {
+  employee_id: string;
+  name: string;
+  action: string;
+  department?: string;
+  location?: string;
+}
+
+export interface PayrollPayload {
+  batch_id?: string;
+  status: string;
+  processed: number;
+  total: number;
+  department?: string;
+}
+
+export interface LeavePayload {
+  employee_name: string;
+  leave_type: string;
+  status: string;
+  department?: string;
+}
+
+export interface KPIPayload {
+  metric: string;
+  value: number;
+  target: number;
+  unit?: string;
+  department?: string;
+  trend?: string;
+}
+
+export interface TaskPayload {
+  task_id: string;
+  title: string;
+  assignee?: string;
+  status: string;
+  priority?: string;
+}
+
+export interface EscalationPayload {
+  case_id: string;
+  title: string;
+  level: number;
+  status: string;
+  sla_remaining_minutes?: number;
+}
+
+export interface CompliancePayload {
+  policy: string;
+  status: string;
+  score?: number;
+  violations?: number;
+}
+
+export interface OnboardingPayload {
+  employee_name: string;
+  stage: string;
+  progress: number;
+  department?: string;
+}
+
+export interface RecruitmentPayload {
+  candidate_name: string;
+  position: string;
+  stage: string;
+  score?: number;
+}
+
+export interface ForecastPayload {
+  metric: string;
+  value: number;
+  prediction: number;
+  unit?: string;
+  confidence?: number;
+}
+
+export interface StaffingPayload {
+  department: string;
+  filled: number;
+  required: number;
+  shift?: string;
+  status: string;
+}
+
+export interface SLAPayload {
+  service: string;
+  status: string;
+  response_time_ms?: number;
+  threshold_ms?: number;
+}
+
+export interface PollPayload {
+  poll_id: string;
+  question: string;
+  options: { label: string; votes: number }[];
+  total_votes: number;
+  status: string;
+}
+
+export interface EmergencyPayload {
+  title: string;
+  message: string;
+  severity: string;
+  source?: string;
+}
+
+export interface IncidentPayload {
+  incident_id: string;
+  title: string;
+  severity: string;
+  status: string;
+  assignee?: string;
+  resolution_progress?: number;
+}
+
+export interface ChatMessagePayload {
+  id: string;
+  sender: string;
+  message: string;
+  message_type: string;
+  room: string;
+  timestamp: string;
+}
