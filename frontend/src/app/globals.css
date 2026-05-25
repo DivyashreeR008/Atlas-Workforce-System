@@ -150,4 +150,93 @@
   .glass-panel {
     @apply border border-border/60 bg-card/70 shadow-sm backdrop-blur-md;
   }
+
+  .glass-panel-strong {
+    @apply border border-border/40 bg-card/85 shadow-md backdrop-blur-xl;
+  }
+
+  .glass-panel-subtle {
+    @apply border border-border/80 bg-card/50 shadow-sm backdrop-blur-sm;
+  }
+
+  .glass-card {
+    @apply rounded-xl border border-border/50 bg-card/60 shadow-sm backdrop-blur-lg transition-all duration-200 hover:shadow-md hover:bg-card/80;
+  }
+
+  .glass-card-hover {
+    @apply glass-card cursor-pointer hover:border-primary/20 hover:shadow-primary/5;
+  }
+
+  .frosted {
+    @apply backdrop-blur-2xl bg-background/30 border border-white/10 dark:border-white/5;
+  }
+
+  .frosted-dark {
+    @apply backdrop-blur-2xl bg-background/50 border border-white/5;
+  }
+
+  .focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
+
+  .focus-ring-primary {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 4px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground));
+  }
+
+  .skeleton-pulse {
+    @apply relative overflow-hidden rounded-md bg-muted before:absolute before:inset-0 before:-translate-x-full before:animate-[shimmer_2s_infinite] before:bg-gradient-to-r before:from-transparent before:via-white/5 before:to-transparent;
+  }
+
+  .dense-mode {
+    @apply [&_td]:py-1.5 [&_th]:h-8 [&_.gap-4]:gap-2 [&_.p-4]:p-3 [&_.p-6]:p-4;
+  }
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.2);
+    color: hsl(var(--foreground));
+  }
 }

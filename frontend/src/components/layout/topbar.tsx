@@ -1,18 +1,21 @@
 "use client";
 
-import { LogOut } from "lucide-react";
+import { LogOut, Keyboard, Settings } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
-import { CommandPalette } from "@/components/layout/command-palette";
+import { GlobalSearch } from "@/components/ui/global-search";
+import { CommandPalette } from "@/components/ui/command-palette";
 import { NotificationBell } from "@/components/layout/notification-bell";
 import { useAuthStore } from "@/stores/auth-store";
+import { useWorkspaceStore } from "@/stores/workspace-store";
 
 export function TopBar() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const toggleSidebar = useWorkspaceStore((s) => s.toggleSidebar);
 
   const initials = user?.name
     ?.split(" ")
@@ -23,9 +26,22 @@ export function TopBar() {
 
   return (
     <header className="flex h-14 items-center gap-4 border-b bg-background/80 px-6 backdrop-blur-md">
-      <div className="relative flex-1">
-        <CommandPalette />
+      <div className="flex items-center gap-3 flex-1">
+        <button
+          onClick={toggleSidebar}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground lg:hidden"
+          aria-label="Toggle sidebar"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="3" y1="6" x2="21" y2="6" />
+            <line x1="3" y1="12" x2="21" y2="12" />
+            <line x1="3" y1="18" x2="21" y2="18" />
+          </svg>
+        </button>
+        <GlobalSearch />
       </div>
+
+      <CommandPalette />
 
       <div className="ml-auto flex items-center gap-1">
         <NotificationBell />
