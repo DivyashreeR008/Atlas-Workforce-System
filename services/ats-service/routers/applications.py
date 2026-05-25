@@ -12,13 +12,22 @@ router = APIRouter(tags=["applications"])
 
 @router.get("/applications", response_model=schemas.PaginatedResponse, summary="List applications")
 def list_applications(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    job_id: Optional[str] = Query(None),
-    candidate_id: Optional[str] = Query(None),
-    status: Optional[str] = Query(None, regex=r"^(APPLIED|SCREENING|INTERVIEW_STAGE_1|INTERVIEW_STAGE_2|FINAL_INTERVIEW|OFFER_EXTENDED|OFFER_ACCEPTED|HIRED|REJECTED)$"),
-    x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
-    db: Session = Depends(get_db),
+        page: int = Query(
+            1,
+            ge=1),
+    page_size: int = Query(
+            20,
+            ge=1,
+            le=100),
+        job_id: Optional[str] = Query(None),
+        candidate_id: Optional[str] = Query(None),
+        status: Optional[str] = Query(
+            None,
+            regex=r"^(APPLIED|SCREENING|INTERVIEW_STAGE_1|INTERVIEW_STAGE_2|FINAL_INTERVIEW|OFFER_EXTENDED|OFFER_ACCEPTED|HIRED|REJECTED)$"),
+        x_tenant_id: str = Header(
+            "default",
+            alias="X-Tenant-Id"),
+        db: Session = Depends(get_db),
 ):
     return crud.list_applications(db, x_tenant_id, page, page_size, job_id, candidate_id, status)
 
@@ -35,7 +44,9 @@ def create_application(
     return app
 
 
-@router.get("/applications/{application_id}", response_model=schemas.ApplicationResponse, summary="Get application with interviews and offers")
+@router.get("/applications/{application_id}",
+            response_model=schemas.ApplicationResponse,
+            summary="Get application with interviews and offers")
 def get_application(
     application_id: str,
     x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
@@ -47,7 +58,9 @@ def get_application(
     return app
 
 
-@router.put("/applications/{application_id}/status", response_model=schemas.ApplicationResponse, summary="Update application status")
+@router.put("/applications/{application_id}/status",
+            response_model=schemas.ApplicationResponse,
+            summary="Update application status")
 def update_application_status(
     application_id: str,
     data: schemas.ApplicationUpdateStatus,
@@ -60,7 +73,9 @@ def update_application_status(
     return app
 
 
-@router.get("/applications/{application_id}/timeline", response_model=list[schemas.ApplicationTimelineEvent], summary="Get application timeline")
+@router.get("/applications/{application_id}/timeline",
+            response_model=list[schemas.ApplicationTimelineEvent],
+            summary="Get application timeline")
 def get_application_timeline(
     application_id: str,
     x_tenant_id: str = Header("default", alias="X-Tenant-Id"),

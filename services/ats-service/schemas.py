@@ -314,3 +314,346 @@ class SourceEffectiveness(BaseModel):
 
 class ConversionFunnel(BaseModel):
     stages: List[dict]
+
+
+# --- Resume Parser ---
+class ResumeUploadResponse(BaseModel):
+    id: str
+    candidate_id: Optional[str] = None
+    filename: Optional[str] = None
+    raw_text: Optional[str] = None
+    parsed_skills: Optional[List[str]] = None
+    parsed_experience_years: Optional[float] = None
+    parsed_education: Optional[str] = None
+    parsed_certifications: Optional[List[str]] = None
+    parsed_languages: Optional[List[str]] = None
+    parsed_summary: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ResumeParseResponse(BaseModel):
+    skills: List[str]
+    experience_years: float
+    education: str
+    certifications: List[str]
+    languages: List[str]
+    summary: str
+
+
+class ResumeCreate(BaseModel):
+    candidate_id: Optional[str] = None
+    filename: Optional[str] = None
+    raw_text: str
+    parsed_skills: Optional[List[str]] = None
+    parsed_experience_years: Optional[float] = None
+    parsed_education: Optional[str] = None
+    parsed_certifications: Optional[List[str]] = None
+    parsed_languages: Optional[List[str]] = None
+    parsed_summary: Optional[str] = None
+
+
+# --- AI Ranking ---
+class RankingResult(BaseModel):
+    candidate_id: str
+    candidate_name: str
+    match_score: float
+    skills_match: float
+    experience_match: float
+    education_match: float
+    ai_notes: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class RankCandidatesResponse(BaseModel):
+    job_id: str
+    job_title: Optional[str] = None
+    rankings: List[RankingResult]
+
+
+class CandidateMatchRequest(BaseModel):
+    job_id: str
+    candidate_ids: List[str] = Field(..., min_length=1)
+
+
+class CandidateScoreRequest(BaseModel):
+    candidate_id: str
+    job_id: str
+
+
+class CandidateScoreResponse(BaseModel):
+    candidate_id: str
+    job_id: str
+    overall_score: float = 0.0
+    skill_score: float = 0.0
+    experience_score: float = 0.0
+    education_score: float = 0.0
+    culture_score: float = 0.0
+    breakdown: dict = {}
+
+
+# --- Offer Letter ---
+class OfferTemplateCreate(BaseModel):
+    name: str = Field(..., max_length=200)
+    subject: Optional[str] = Field(None, max_length=500)
+    body_template: Optional[str] = None
+    variables: Optional[List[str]] = None
+    is_default: bool = False
+
+
+class OfferTemplateUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=200)
+    subject: Optional[str] = Field(None, max_length=500)
+    body_template: Optional[str] = None
+    variables: Optional[List[str]] = None
+    is_default: Optional[bool] = None
+
+
+class OfferTemplateResponse(BaseModel):
+    id: str
+    tenant_id: str
+    name: str
+    subject: Optional[str] = None
+    body_template: Optional[str] = None
+    variables: Optional[List[str]] = None
+    is_default: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class OfferGenerateRequest(BaseModel):
+    offer_id: str
+    template_id: str
+    candidate_name: Optional[str] = None
+    job_title: Optional[str] = None
+    department: Optional[str] = None
+    start_date: Optional[str] = None
+    salary: Optional[str] = None
+    extra_vars: Optional[dict] = None
+
+
+class OfferGenerateResponse(BaseModel):
+    subject: str
+    body: str
+
+
+# --- Campus Recruitment ---
+class CampusDriveCreate(BaseModel):
+    college_name: str = Field(..., max_length=300)
+    college_location: Optional[str] = Field(None, max_length=200)
+    drive_date: date
+    application_deadline: Optional[date] = None
+    eligible_branches: Optional[List[str]] = None
+    eligible_cgpa: Optional[float] = Field(None, ge=0, le=10)
+    max_backlogs: int = 0
+    positions: Optional[int] = None
+    coordinator_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class CampusDriveUpdate(BaseModel):
+    college_name: Optional[str] = Field(None, max_length=300)
+    college_location: Optional[str] = Field(None, max_length=200)
+    drive_date: Optional[date] = None
+    application_deadline: Optional[date] = None
+    eligible_branches: Optional[List[str]] = None
+    eligible_cgpa: Optional[float] = Field(None, ge=0, le=10)
+    max_backlogs: Optional[int] = None
+    positions: Optional[int] = None
+    coordinator_id: Optional[str] = None
+    notes: Optional[str] = None
+    status: Optional[str] = Field(None, pattern=r"^(PLANNED|UPCOMING|IN_PROGRESS|COMPLETED|CANCELLED)$")
+
+
+class CampusDriveResponse(BaseModel):
+    id: str
+    tenant_id: str
+    college_name: str
+    college_location: Optional[str] = None
+    drive_date: Optional[date] = None
+    application_deadline: Optional[date] = None
+    eligible_branches: Optional[List[str]] = None
+    eligible_cgpa: Optional[float] = None
+    max_backlogs: int = 0
+    positions: Optional[int] = None
+    status: str = "PLANNED"
+    coordinator_id: Optional[str] = None
+    notes: Optional[str] = None
+    registration_count: Optional[int] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CampusRegistrationCreate(BaseModel):
+    drive_id: str
+    first_name: str = Field(..., max_length=100)
+    last_name: str = Field(..., max_length=100)
+    email: str = Field(..., max_length=255)
+    phone: Optional[str] = Field(None, max_length=50)
+    college_name: Optional[str] = Field(None, max_length=300)
+    branch: Optional[str] = Field(None, max_length=100)
+    graduation_year: Optional[int] = None
+    cgpa: Optional[float] = Field(None, ge=0, le=10)
+    backlog_count: int = 0
+    resume_url: Optional[str] = None
+
+
+class CampusRegistrationUpdate(BaseModel):
+    status: Optional[str] = Field(None, pattern=r"^(REGISTERED|SHORTLISTED|TESTED|INTERVIEWED|SELECTED|REJECTED)$")
+    test_score: Optional[float] = None
+    interview_score: Optional[float] = None
+
+
+class CampusRegistrationResponse(BaseModel):
+    id: str
+    tenant_id: str
+    drive_id: str
+    candidate_id: Optional[str] = None
+    first_name: str
+    last_name: str
+    email: str
+    phone: Optional[str] = None
+    college_name: Optional[str] = None
+    branch: Optional[str] = None
+    graduation_year: Optional[int] = None
+    cgpa: Optional[float] = None
+    backlog_count: int = 0
+    resume_url: Optional[str] = None
+    status: str = "REGISTERED"
+    test_score: Optional[float] = None
+    interview_score: Optional[float] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# --- Referral Management ---
+class ReferralCreate(BaseModel):
+    referrer_employee_id: str = Field(..., max_length=100)
+    first_name: str = Field(..., max_length=100)
+    last_name: str = Field(..., max_length=100)
+    email: str = Field(..., max_length=255)
+    phone: Optional[str] = Field(None, max_length=50)
+    relationship: Optional[str] = Field(None, max_length=100)
+    notes: Optional[str] = None
+
+
+class ReferralUpdate(BaseModel):
+    status: Optional[str] = Field(None, pattern=r"^(PENDING|CONTACTED|APPLIED|INTERVIEWING|HIRED|REJECTED)$")
+    reward_amount: Optional[float] = None
+    reward_paid: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+class ReferralResponse(BaseModel):
+    id: str
+    tenant_id: str
+    referrer_employee_id: str
+    candidate_id: Optional[str] = None
+    first_name: str
+    last_name: str
+    email: str
+    phone: Optional[str] = None
+    relationship: Optional[str] = None
+    notes: Optional[str] = None
+    status: str = "PENDING"
+    reward_amount: Optional[float] = None
+    reward_paid: bool = False
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ReferralStatsResponse(BaseModel):
+    total_referrals: int
+    pending: int
+    contacted: int
+    applied: int
+    interviewing: int
+    hired: int
+    total_reward_amount: float = 0.0
+    total_reward_paid: float = 0.0
+    top_referrers: List[dict] = []
+
+
+# --- Recruitment Chatbot ---
+class ChatbotSessionCreate(BaseModel):
+    visitor_id: Optional[str] = None
+    candidate_id: Optional[str] = None
+
+
+class ChatbotMessageCreate(BaseModel):
+    content: str = Field(..., min_length=1)
+
+
+class ChatbotMessageResponse(BaseModel):
+    id: str
+    session_id: str
+    role: str
+    content: str
+    intent: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ChatbotSessionResponse(BaseModel):
+    id: str
+    tenant_id: str
+    visitor_id: Optional[str] = None
+    candidate_id: Optional[str] = None
+    status: str = "ACTIVE"
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    messages: List[ChatbotMessageResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+class ChatbotIntentResponse(BaseModel):
+    intent: str
+    confidence: float
+    reply: str
+
+
+# --- Enhanced Analytics ---
+class RecruitmentAnalyticsResponse(BaseModel):
+    total_jobs: int = 0
+    active_jobs: int = 0
+    total_candidates: int = 0
+    total_applications: int = 0
+    total_interviews: int = 0
+    total_offers: int = 0
+    accepted_offers: int = 0
+    offer_acceptance_rate: float = 0.0
+    average_time_to_hire_days: float = 0.0
+    conversion_funnel: List[dict] = []
+    source_breakdown: List[dict] = []
+    department_demand: List[dict] = []
+    monthly_trend: List[dict] = []
+
+
+class HiringPipelineResponse(BaseModel):
+    active_jobs: int = 0
+    total_candidates: int = 0
+    active_candidates: int = 0
+    interviews_scheduled: int = 0
+    offers_extended: int = 0
+    offers_accepted: int = 0
+    pipeline_stages: List[dict] = []
+    upcoming_interviews: List[dict] = []
+    recent_activities: List[dict] = []

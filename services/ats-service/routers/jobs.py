@@ -92,7 +92,9 @@ def close_job(
     return job
 
 
-@router.get("/jobs/{job_id}/applications", response_model=schemas.PaginatedResponse, summary="Get applications for a job")
+@router.get("/jobs/{job_id}/applications",
+            response_model=schemas.PaginatedResponse,
+            summary="Get applications for a job")
 def get_job_applications(
     job_id: str,
     page: int = Query(1, ge=1),

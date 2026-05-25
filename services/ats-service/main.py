@@ -9,9 +9,13 @@ from sqlalchemy.orm import sessionmaker, Session
 
 from models import Base
 
+_PG_USER = os.environ.get("POSTGRES_USER", "atlas_user")
+_PG_PASS = os.environ.get("POSTGRES_PASSWORD", "atlas_password")
+_PG_HOST = os.environ.get("POSTGRES_HOST", "localhost")
+_PG_DB = os.environ.get("POSTGRES_DB", "atlas_db")
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    f"postgresql://{os.environ.get('POSTGRES_USER', 'atlas_user')}:{os.environ.get('POSTGRES_PASSWORD', 'atlas_password')}@{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/{os.environ.get('POSTGRES_DB', 'atlas_db')}",
+    f"postgresql://{_PG_USER}:{_PG_PASS}@{_PG_HOST}:5432/{_PG_DB}",
 )
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
@@ -26,7 +30,11 @@ def get_db():
         db.close()
 
 
-from routers import jobs, candidates, applications, interviews, offers, analytics
+from routers import (
+    jobs, candidates, applications, interviews, offers, analytics,
+    career_portal, resume_parser, offer_letters, campus_recruitment,
+    referral_management, recruitment_chatbot, recruitment_analytics,
+)
 
 
 @asynccontextmanager
@@ -80,13 +88,23 @@ app.include_router(applications.router, prefix="/api/v1")
 app.include_router(interviews.router, prefix="/api/v1")
 app.include_router(offers.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
+app.include_router(career_portal.router, prefix="/api/v1")
+app.include_router(resume_parser.router, prefix="/api/v1")
+app.include_router(offer_letters.router, prefix="/api/v1")
+app.include_router(campus_recruitment.router, prefix="/api/v1")
+app.include_router(referral_management.router, prefix="/api/v1")
+app.include_router(recruitment_chatbot.router, prefix="/api/v1")
+app.include_router(recruitment_analytics.router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["health"])
 def health_check():
     try:
         with engine.connect() as conn:
-            conn.execute(engine.dialect.statement_compiler(engine.dialect, None).__class__.__module__ and text("SELECT 1"))
+            conn.execute(
+                engine.dialect.statement_compiler(
+                    engine.dialect,
+                    None).__class__.__module__ and text("SELECT 1"))
             db_status = "connected"
     except Exception:
         db_status = "disconnected"

@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -34,7 +34,9 @@ def create_candidate(
     return crud.create_candidate(db, x_tenant_id, data)
 
 
-@router.get("/candidates/{candidate_id}", response_model=schemas.CandidateWithApplications, summary="Get candidate with application history")
+@router.get("/candidates/{candidate_id}",
+            response_model=schemas.CandidateWithApplications,
+            summary="Get candidate with application history")
 def get_candidate(
     candidate_id: str,
     x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
@@ -70,7 +72,9 @@ def delete_candidate(
     return {"message": "Candidate withdrawn successfully"}
 
 
-@router.get("/candidates/{candidate_id}/applications", response_model=schemas.PaginatedResponse, summary="Get applications by candidate")
+@router.get("/candidates/{candidate_id}/applications",
+            response_model=schemas.PaginatedResponse,
+            summary="Get applications by candidate")
 def get_candidate_applications(
     candidate_id: str,
     page: int = Query(1, ge=1),
@@ -81,7 +85,9 @@ def get_candidate_applications(
     return crud.get_candidate_applications(db, candidate_id, x_tenant_id, page, page_size)
 
 
-@router.post("/candidates/{candidate_id}/skills", response_model=schemas.CandidateResponse, summary="Add skills to candidate")
+@router.post("/candidates/{candidate_id}/skills",
+             response_model=schemas.CandidateResponse,
+             summary="Add skills to candidate")
 def add_candidate_skills(
     candidate_id: str,
     data: schemas.AddSkillsRequest,

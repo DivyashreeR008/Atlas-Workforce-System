@@ -49,7 +49,9 @@ def update_interview(
     return interview
 
 
-@router.put("/interviews/{interview_id}/feedback", response_model=schemas.InterviewResponse, summary="Submit interview feedback")
+@router.put("/interviews/{interview_id}/feedback",
+            response_model=schemas.InterviewResponse,
+            summary="Submit interview feedback")
 def submit_interview_feedback(
     interview_id: str,
     data: schemas.InterviewFeedback,
@@ -62,7 +64,9 @@ def submit_interview_feedback(
     return interview
 
 
-@router.put("/interviews/{interview_id}/status", response_model=schemas.InterviewResponse, summary="Update interview status")
+@router.put("/interviews/{interview_id}/status",
+            response_model=schemas.InterviewResponse,
+            summary="Update interview status")
 def update_interview_status(
     interview_id: str,
     data: schemas.InterviewStatusUpdate,
