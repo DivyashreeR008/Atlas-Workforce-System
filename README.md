@@ -1,223 +1,306 @@
-
 # Atlas Workforce System
 
-A production‑inspired, polyglot microservices platform for **employee onboarding, payroll processing, and real‑time notifications** in a distributed environment.
+A production‑grade, polyglot microservices platform for **workforce management, payroll processing, real‑time analytics, and live notifications** in a distributed environment.
 
 ---
 
-## 🎯 Why this project?
+## Overview
 
-This project was built to explore **distributed system design**, **polyglot microservices**, and **event‑driven architectures** in a realistic HR/Workforce context. It simulates how a startup or mid‑sized company might manage employees, payroll, and analytics across decoupled services, with an eye toward scalability and observability.
+Atlas is a full‑stack HRMS platform built with 4 backend runtimes (Node.js, Python, Java, Go) and a modern Next.js frontend. Each domain workload routes to its optimal runtime—Go for high‑concurrency WebSocket broadcasting, Python for AI‑powered analytics, Java for transactional payroll, and Node.js for API orchestration.
 
----
-
-## 🚀 Overview
-
-Atlas Workforce System is a distributed, event‑driven application that manages:
-
-- Employee onboarding and lifecycle management  
-- Payroll processing and tax handling  
-- Real‑time notifications (email/alerts)  
-- Workforce analytics and reporting  
-
-The system is structured as a **microservices architecture**, enabling independent deployment, scaling, and technology‑specific optimizations for each service.
+**Live demo:** `http://localhost:3000` — Login: `admin@atlas.io` / `ChangeMe123!`
 
 ---
 
-## 🏗️ System Architecture
-
-Atlas consists of the following core services:
-
-- **API Gateway** (Node.js / Express) – Central entry point for all client requests, handles routing and future authentication.  
-- **Employee Service** (Python / FastAPI) – Manages creation, retrieval, updating, and deletion of employee records.  
-- **Payroll Service** (Java / Spring Boot) – Handles salary calculations, tax computations, and payroll runs.  
-- **Analytics Service** (Python) – Provides workforce analytics and reporting over employee and payroll data.  
-- **Notification Service** (Go) – Sends alerts and notifications via email or internal messaging.  
-- **Message Broker** (RabbitMQ) – Enables event‑driven communication (e.g., `employee_created`, `payroll_processed`).  
-
-Services are loosely coupled, independently deployable, and communicate via asynchronous events for resilience and fault tolerance.
-
----
-
-## 🔁 Architecture diagram (concept)
+## System Architecture
 
 ```
-         Frontend (Next.js)
-                  ↓
-            API Gateway
-                  ↓
-  ┌──────────────┼──────────────┐
-  ↓              ↓              ↓
-Employee     Payroll      Analytics
- Service      Service        Service
-  ↓              ↓              ↓
-MongoDB      PostgreSQL    Elasticsearch
-  ↓              ↓
-  └──────────────┴──────────────┘
-                  ↓
-               RabbitMQ
-                  ↓
-        Notification Service
-                  ↓
-              Email/SMS
+                          Frontend (Next.js 16 / Tailwind)
+                                  │
+                             API Gateway (Node.js / Express)
+                    ┌──────────────┼──────────────┬──────────────┐
+                    │              │              │              │
+              Auth Service    Employee       Payroll        Attendance
+             (Node.js/Express) Service       Service         Service
+                              (Python/       (Java/          (Go/Fiber)
+                              FastAPI)      Spring Boot)
+                    │              │              │              │
+              Leave Service   Analytics     Notification    Integration
+              (Java/Spring     Service       Service (Go)     Service
+                Boot)        (Python/AI)    + WebSocket      (Python)
+                    │              │              │
+               PostgreSQL     PostgreSQL     RabbitMQ
+                    └──────────────┴──────────────┘
+                         Redis Cache Layer
 ```
 
-This layout emphasizes **separation of concerns**, **event‑driven flows**, and **multi‑database integration**.
+### Services
+
+| Service | Language | Framework | Database | Purpose |
+|---------|----------|-----------|----------|---------|
+| **API Gateway** | Node.js | Express | Redis | Central routing, JWT auth, RBAC, rate limiting, WebSocket proxy |
+| **Auth Service** | Node.js | Express | PostgreSQL | User registration, login, JWT + refresh tokens, account lockout |
+| **Employee Service** | Python | FastAPI | MongoDB | Employee CRUD, directory search, multi‑tenant |
+| **Payroll Service** | Java | Spring Boot | PostgreSQL | Salary calc, progressive tax, payroll runs |
+| **Leave Service** | Java | Spring Boot | PostgreSQL | Leave requests, approval workflow |
+| **Attendance Service** | Go | Fiber | PostgreSQL | Clock in/out, overtime calc, live status |
+| **Analytics Service** | Python | FastAPI | PostgreSQL | Dept headcount, payroll trends, AI insights |
+| **Notification Service** | Go | net/http | In‑memory | WebSocket broadcasting, REST API, RabbitMQ consumer |
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 ### Frontend
-- **Next.js** – React‑based framework for server‑side rendering and static site generation.  
-- **React** – Component‑driven UI.  
-- **Tailwind CSS** – Utility‑first styling.  
+- **Next.js 16** — App Router, React 19, SSR/SSG
+- **Tailwind CSS 4** — Utility‑first styling with dark mode
+- **TanStack Query** — Server state management
+- **Zustand** — Client state (auth, toasts)
+- **Recharts** — Charts and data visualization
+- **Framer Motion** — Animations
+- **SheetJS** — Excel (.xlsx) export
+- **Radix UI** — Accessible primitives (dialog, dropdown, toast, etc.)
 
-### Backend Services
-- **Node.js (Express)** – API Gateway.  
-- **Python (FastAPI)** – Employee and Analytics services.  
-- **Java (Spring Boot)** – Payroll service (enterprise‑grade reliability).  
-- **Go (Golang)** – Notification service (high‑concurrency, low‑latency).  
-
-### Databases & Storage
-- **MongoDB** – Document‑oriented storage for employee data.  
-- **PostgreSQL** – Relational database for payroll and transactional data.  
-- **Redis** – In‑memory caching for performance.  
-- **Elasticsearch** – Analytics and search‑oriented storage.  
-
-### Infrastructure & DevOps
-- **Docker** – Containerization for consistent environments.  
-- **docker compose** – Local orchestration of multi‑service applications.  
-- **RabbitMQ** – Message‑oriented middleware for event‑driven communication.  
-- **Resilience‑oriented design** – Retry patterns and fault‑tolerant communication (signals system‑design thinking).  
+### Infrastructure
+- **Docker / docker compose** — Local orchestration (13 containers)
+- **RabbitMQ** — Event‑driven messaging
+- **Prometheus + Grafana** — Monitoring stack
+- **Kubernetes** — Production manifests (k8s/)
 
 ---
 
 ## ✨ Key Features
 
-- **Microservices‑based architecture** with independent deployment and scaling.  
-- **API Gateway pattern** for centralized routing, future security (JWT/OAuth2), and observability.  
-- **Event‑driven communication** using RabbitMQ to decouple services.  
-- **Multi‑database integration** supporting both relational and document‑oriented models.  
-- **Containerized deployment** for reproducible, production‑like environments.  
-- **Resilience‑oriented** design (retries, fault tolerance, structured logging in future).  
+### Workforce Management
+- **Employee Directory** — Searchable, paginated, multi‑tenant
+- **Attendance Tracking** — Clock in/out with automatic overtime calculation
+- **Leave Management** — Request, approve/reject workflow
+- **Payroll Engine** — Salary computation, progressive tax, payslip history
+
+### Real‑Time Capabilities
+- **WebSocket Broadcasting** — Live notifications pushed to all connected clients
+- **Notification Bell** — Unread badge, dropdown preview, auto‑reconnect
+- **Live Attendance** — Real‑time check‑in feed on dashboard
+
+### Analytics & AI
+- **Department Headcount** — Live breakdown from employee service
+- **Payroll Trends** — Aggregated payroll by period
+- **Performance Predictions** — Mock ML scoring model
+- **AI‑Powered Insights** — OpenAI integration for strategic HR analysis
+
+### Data Export
+- **CSV Export** — One‑click download on all data tables
+- **Excel Export** — `.xlsx` with auto‑sized columns
+- **JSON Export** — Raw data export on reports page
+
+### Security
+- **JWT Authentication** — Access + refresh token rotation
+- **RBAC** — Role‑based access control (admin, hr, manager, employee)
+- **Account Lockout** — Rate‑limited login with failed attempt tracking
+- **Helmet** — HTTP security headers on all Node.js services
+
+### DevOps
+- **CI/CD** — GitHub Actions for all 4 runtimes
+- **Docker** — Multi‑stage builds for slim production images
+- **Kubernetes** — Ready‑to‑deploy manifests
+- **Monitoring** — Prometheus metrics + Grafana dashboards
 
 ---
 
-## 📡 Sample APIs
+## API Endpoints
 
-### Employee Service
+### Auth Service (`:8010`)
+- `POST /register` — Create account
+- `POST /login` — Sign in (returns JWT + refresh token)
+- `POST /refresh` — Rotate tokens
+- `POST /logout` — Revoke refresh token
 
-- `POST /employees` → Create a new employee.  
-- `GET /employees/{id}` → Fetch an employee by ID.  
-- `PUT /employees/{id}` → Update employee details.  
-- `DELETE /employees/{id}` → Delete an employee.  
+### Employee Service (`:8001`)
+- `GET /employees` — Paginated list with search
+- `GET /employees/{email}` — Get by email
+- `POST /employees` — Create employee
+- `PUT /employees/{email}` — Update employee
+- `DELETE /employees/{email}` — Delete employee
 
-### Payroll Service
+### Payroll Service (`:8002`)
+- `GET /api/payroll` — All payroll records
+- `GET /api/payroll/employee/{employeeId}` — By employee
+- `POST /api/payroll/run` — Process payroll (admin only)
 
-- `POST /payroll/process` → Trigger payroll processing for a given period.  
-- `GET /payroll/{employeeId}` → Fetch payroll history for an employee.  
+### Analytics Service (`:8003`)
+- `GET /analytics/department` — Headcount breakdown
+- `GET /analytics/payroll` — Payroll trends
+- `GET /analytics/performance` — Performance prediction
+- `POST /analytics/ai-insights` — AI‑powered strategic insights
 
-### Notification Service
+### Notification Service (`:8004`)
+- `GET /api/notifications` — List notifications
+- `POST /api/notifications` — Mark as read
+- `WS /ws` — WebSocket for live events
 
-- `POST /notifications/send` → Send an alert/email (triggered via RabbitMQ events).  
+### Attendance Service (`:8005`)
+- `GET /api/attendance` — All records
+- `GET /api/attendance/employee/{employeeId}` — By employee
+- `POST /api/attendance/clock-in` — Clock in
+- `POST /api/attendance/clock-out` — Clock out
 
-These endpoints demonstrate real‑world HR workflows and integration points.
+### Leave Service (`:8006`)
+- `GET /api/leave` — All requests
+- `GET /api/leave/employee/{employeeId}` — By employee
+- `POST /api/leave/request` — Submit request
+- `PUT /api/leave/{id}/status` — Approve/reject (admin only)
 
 ---
 
-## 📂 Project Structure
+## Getting Started
 
-```text
+### Prerequisites
+- **Docker** + **docker compose**
+- **Git**
+
+### Run the Project
+
+```bash
+git clone https://github.com/Senthil455/Atlas-Workforce-System.git
+cd Atlas-Workforce-System
+docker compose up --build
+```
+
+This starts **13 containers**: postgres, mongodb, redis, rabbitmq + 9 application services.
+
+### Access
+
+| Service | URL |
+|---------|-----|
+| Frontend | `http://localhost:3000` |
+| API Gateway | `http://localhost:8080` |
+| Auth Service | `http://localhost:8010/docs` |
+| Analytics Service | `http://localhost:8003/docs` |
+| RabbitMQ UI | `http://localhost:15672` (guest/guest) |
+| Grafana | `http://localhost:3001` (admin/admin) |
+| Prometheus | `http://localhost:9090` |
+
+### Default Credentials
+
+- **Admin:** `admin@atlas.io` / `ChangeMe123!`
+
+---
+
+## Development
+
+### Project Structure
+
+```
 Atlas-Workforce-System/
-│
-├── frontend/                      # Next.js frontend application
+├── frontend/                          # Next.js application (port 3000)
 ├── services/
-│   ├── api-gateway-node/          # Node.js / Express API Gateway
-│   ├── employee-python-service/   # Python / FastAPI Employee Service
-│   ├── payroll-java-service/      # Java / Spring Boot Payroll Service
-│   ├── analytics-python-service/  # Python Analytics Service
-│   └── notification-go-service/   # Go Notification Service
-│
-├── docker-compose.yml             # Container orchestration configuration
-└── README.md                      # Project documentation
+│   ├── api-gateway-node/              # Node.js API Gateway (8080)
+│   ├── auth-service/                  # Node.js Auth (8010)
+│   ├── employee-python-service/       # Python FastAPI (8001)
+│   ├── payroll-java-service/          # Java Spring Boot (8002)
+│   ├── analytics-python-service/      # Python FastAPI (8003)
+│   ├── notification-go-service/       # Go WebSocket + REST (8004)
+│   ├── attendance-service/            # Go Fiber (8005)
+│   ├── leave-service/                 # Java Spring Boot (8006)
+│   └── integration-service/           # Python (future)
+├── k8s/                               # Kubernetes manifests
+├── .github/workflows/                 # CI pipeline
+├── docker-compose.yml                 # Main orchestration
+├── docker-compose.monitoring.yml      # Prometheus + Grafana
+├── Makefile                           # Dev CLI commands
+└── prometheus.yml                     # Metrics config
+```
+
+### Available Commands
+
+```bash
+make up          # Start all services
+make down        # Stop all services
+make logs        # Tail container logs
+make test        # Run all unit tests
+make build-all   # Force rebuild images
 ```
 
 ---
 
-## ⚙️ Getting Started
+## Testing
 
-### Prerequisites
+Each service has unit tests:
 
-- **Docker**  
-- **docker compose** (modern Docker CLI)  
+```bash
+# Node.js services
+cd services/auth-service && npm test
+cd services/api-gateway-node && npm test
 
----
+# Python services
+cd services/employee-python-service && python -m pytest -v
+cd services/analytics-python-service && python -m pytest -v
 
-### ▶️ Run the Project
+# Java services
+cd services/payroll-java-service && mvn test
+cd services/leave-service && mvn test
 
-1. Clone the repository:
+# E2E (Playwright)
+cd frontend && npx playwright test
 
-   ```bash
-   git clone https://github.com/Senthil455/Atlas-Workforce-System.git
-   cd Atlas-Workforce-System
-   ```
-
-2. Build and start all services:
-
-   ```bash
-   docker compose up --build
-   ```
-
-   This command:
-   - Builds each service container (if Dockerfiles exist).  
-   - Starts MongoDB, PostgreSQL, Redis, and Elasticsearch.  
-   - Launches RabbitMQ as the message broker.  
-   - Spins up the API Gateway and all microservices.  
+# Or all at once
+make test
+```
 
 ---
 
-### 🌐 Access Services
+## Monitoring
 
-- **Frontend (Next.js UI)** → `http://localhost:3000`  
-- **API Gateway** → `http://localhost:8081`  
+```bash
+docker compose -f docker-compose.monitoring.yml up -d
+```
 
-From the frontend, requests flow through the API Gateway to the appropriate microservice, with events communicated via RabbitMQ and data stored in the respective databases.
-
----
-
-### 🔄 Workflow Summary
-
-1. User interacts with the **Next.js frontend**.  
-2. Requests are routed through the **API Gateway**.  
-3. Gateway forwards the request to the relevant **microservice** (Employee, Payroll, Analytics, or Notification).  
-4. Services emit **events** (e.g., `employee_created`, `payroll_processed`) to **RabbitMQ**.  
-5. **Notification Service** consumes these events and sends alerts.  
-6. Data is persisted in **MongoDB, PostgreSQL, Redis, Elasticsearch**.  
+- **Prometheus** — `http://localhost:9090`
+- **Grafana** — `http://localhost:3001` (admin/admin)
 
 ---
 
+## Future Roadmap
 
-## 📌 Future Improvements
+### Phase 1 — Quick Wins (completed)
+- [x] Standardized UI components with dark mode
+- [x] Redis caching for employee directory
+- [x] CSV, Excel, and JSON export on all data tables
+- [x] Real‑time WebSocket notifications
+- [x] OpenAPI/Swagger docs on Python services
+- [x] Live attendance widget on dashboard
 
-- **Authentication & Authorization** (JWT, role‑based access: Admin/HR).  
-- **API Documentation** (Swagger/OpenAPI for each service).  
-- **Observability** (Prometheus, Grafana, ELK stack).  
-- **Deployment** (AWS/GCP, Kubernetes, CI/CD).  
-- **Resilience** – Retry policies, circuit breakers (e.g., Hystrix‑style patterns).  
+### Phase 2 — Medium Impact
+- [ ] Centralized RBAC management panel
+- [ ] Multi‑tenant database isolation
+- [ ] Automated PDF payslip generation
+- [ ] Bulk approve/reject for leave
+- [ ] Email notification integration (SMTP)
+
+### Phase 3 — Enterprise
+- [ ] Applicant Tracking System (ATS)
+- [ ] Biometric / geofenced attendance
+- [ ] Advanced reporting with customizable dashboards
+- [ ] SOC2 compliance audit logs
+
+### Phase 4 — AI‑Powered
+- [ ] Predictive attrition ML models
+- [ ] NLP HR assistant chatbot
+- [ ] AI‑driven shift optimization
+- [ ] Resume screening and scoring
 
 ---
 
-## 👨‍💻 Author
+## Author
 
 **Senthil Raja R**  
-Full Stack Developer | AI Automation Enthusiast  
+Full Stack Developer | AI Automation Enthusiast
 
-- 📧 Email: [senthilrajasen637@gmail.com](mailto:senthilrajasen637@gmail.com)  
-- 🔗 LinkedIn: [https://www.linkedin.com/in/senthil-raja-r-a29839329/](https://www.linkedin.com/in/senthil-raja-r-a29839329/)  
+- Email: [senthilrajasen637@gmail.com](mailto:senthilrajasen637@gmail.com)
+- LinkedIn: [senthil-raja-r](https://www.linkedin.com/in/senthil-raja-r-a29839329/)
 
 ---
 
-## ⭐ Support
+## License
 
-If you found this project useful, consider giving it a **⭐ on GitHub** to support its continued development and improvement.
+MIT
