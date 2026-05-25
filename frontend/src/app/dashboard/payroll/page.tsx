@@ -16,9 +16,10 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToastStore } from "@/stores/toast-store";
-import { Download, Plus } from "lucide-react";
+import { Download, FileSpreadsheet, Plus } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv";
+import { downloadExcel } from "@/lib/excel";
 
 interface PayrollRecord {
   id: number;
@@ -149,28 +150,52 @@ export default function PayrollPage() {
               </CardDescription>
             </div>
             {records && records.length > 0 && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  downloadCSV(
-                    "payroll_history",
-                    ["Employee", "Period", "Gross", "Tax", "Net", "Status"],
-                    records.map((r) => [
-                      r.employeeId,
-                      r.period,
-                      formatCurrency(r.baseSalary + r.allowances),
-                      formatCurrency(r.tax),
-                      formatCurrency(r.netSalary),
-                      r.status,
-                    ])
-                  );
-                  addToast({ title: "Payroll data exported" });
-                }}
-              >
-                <Download className="h-4 w-4" />
-                Export CSV
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    downloadCSV(
+                      "payroll_history",
+                      ["Employee", "Period", "Gross", "Tax", "Net", "Status"],
+                      records.map((r) => [
+                        r.employeeId,
+                        r.period,
+                        formatCurrency(r.baseSalary + r.allowances),
+                        formatCurrency(r.tax),
+                        formatCurrency(r.netSalary),
+                        r.status,
+                      ])
+                    );
+                    addToast({ title: "Payroll data exported" });
+                  }}
+                >
+                  <Download className="h-4 w-4" />
+                  CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    downloadExcel(
+                      "payroll_history",
+                      ["Employee", "Period", "Gross", "Tax", "Net", "Status"],
+                      records.map((r) => [
+                        r.employeeId,
+                        r.period,
+                        formatCurrency(r.baseSalary + r.allowances),
+                        formatCurrency(r.tax),
+                        formatCurrency(r.netSalary),
+                        r.status,
+                      ])
+                    );
+                    addToast({ title: "Payroll data exported as Excel" });
+                  }}
+                >
+                  <FileSpreadsheet className="h-4 w-4" />
+                  Excel
+                </Button>
+              </div>
             )}
           </div>
         </CardHeader>

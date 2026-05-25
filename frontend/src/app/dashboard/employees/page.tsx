@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, Plus, Search } from "lucide-react";
+import { Download, FileSpreadsheet, Plus, Search } from "lucide-react";
 import { employeeApi } from "@/lib/api";
 import type { Employee, PaginatedEmployees } from "@/types";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/card";
 import { useToastStore } from "@/stores/toast-store";
 import { downloadCSV } from "@/lib/csv";
+import { downloadExcel } from "@/lib/excel";
 
 async function fetchEmployeePage(
   page: number,
@@ -108,21 +109,38 @@ export default function EmployeesPage() {
               <CardDescription>Search and browse all employees</CardDescription>
             </div>
             {employees.length > 0 && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  downloadCSV(
-                    "employee_directory",
-                    ["Name", "Email", "Department", "Position"],
-                    employees.map((e) => [e.name, e.email, e.department, e.position])
-                  );
-                  addToast({ title: "Employee directory exported" });
-                }}
-              >
-                <Download className="h-4 w-4" />
-                Export CSV
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    downloadCSV(
+                      "employee_directory",
+                      ["Name", "Email", "Department", "Position"],
+                      employees.map((e) => [e.name, e.email, e.department, e.position])
+                    );
+                    addToast({ title: "Employee directory exported" });
+                  }}
+                >
+                  <Download className="h-4 w-4" />
+                  CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    downloadExcel(
+                      "employee_directory",
+                      ["Name", "Email", "Department", "Position"],
+                      employees.map((e) => [e.name, e.email, e.department, e.position])
+                    );
+                    addToast({ title: "Employee directory exported as Excel" });
+                  }}
+                >
+                  <FileSpreadsheet className="h-4 w-4" />
+                  Excel
+                </Button>
+              </div>
             )}
           </div>
         </CardHeader>

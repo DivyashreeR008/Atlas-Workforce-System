@@ -9,6 +9,7 @@ import {
   leaveApi,
 } from "@/lib/api";
 import { downloadCSV, downloadJSON } from "@/lib/csv";
+import { downloadExcel } from "@/lib/excel";
 import { Download, FileSpreadsheet, FileText, Loader2 } from "lucide-react";
 import {
   Card,
@@ -92,6 +93,7 @@ export default function ReportsPage() {
     loading: boolean;
     rowCount?: number;
     onDownloadCSV: () => void;
+    onDownloadExcel: () => void;
     onDownloadJSON: () => void;
   };
 
@@ -114,6 +116,18 @@ export default function ReportsPage() {
           deptData.map((d) => [d.department, String(d.count)])
         );
         addToast({ title: "Headcount report downloaded" });
+      },
+      onDownloadExcel: () => {
+        if (!deptData?.length) {
+          addToast({ title: "No data to export", variant: "destructive" });
+          return;
+        }
+        downloadExcel(
+          "headcount_by_department",
+          ["Department", "Headcount"],
+          deptData.map((d) => [d.department, String(d.count)])
+        );
+        addToast({ title: "Headcount report downloaded as Excel" });
       },
       onDownloadJSON: () => {
         if (!deptData?.length) {
@@ -143,6 +157,19 @@ export default function ReportsPage() {
           items.map((e) => [e.name, e.email, e.department, e.position])
         );
         addToast({ title: "Employee directory downloaded" });
+      },
+      onDownloadExcel: () => {
+        const items = empData?.items;
+        if (!items?.length) {
+          addToast({ title: "No data to export", variant: "destructive" });
+          return;
+        }
+        downloadExcel(
+          "employee_directory",
+          ["Name", "Email", "Department", "Position"],
+          items.map((e) => [e.name, e.email, e.department, e.position])
+        );
+        addToast({ title: "Employee directory downloaded as Excel" });
       },
       onDownloadJSON: () => {
         if (!empData?.items?.length) {
@@ -179,6 +206,25 @@ export default function ReportsPage() {
         );
         addToast({ title: "Payroll history downloaded" });
       },
+      onDownloadExcel: () => {
+        if (!payrollRecords?.length) {
+          addToast({ title: "No data to export", variant: "destructive" });
+          return;
+        }
+        downloadExcel(
+          "payroll_history",
+          ["Employee", "Period", "Gross Salary", "Tax", "Net Salary", "Status"],
+          payrollRecords.map((r) => [
+            r.employeeId,
+            r.period,
+            formatCurrency(r.baseSalary),
+            formatCurrency(r.tax),
+            formatCurrency(r.netSalary),
+            r.status,
+          ])
+        );
+        addToast({ title: "Payroll history downloaded as Excel" });
+      },
       onDownloadJSON: () => {
         if (!payrollRecords?.length) {
           addToast({ title: "No data to export", variant: "destructive" });
@@ -213,6 +259,24 @@ export default function ReportsPage() {
         );
         addToast({ title: "Leave report downloaded" });
       },
+      onDownloadExcel: () => {
+        if (!leaveRecords?.length) {
+          addToast({ title: "No data to export", variant: "destructive" });
+          return;
+        }
+        downloadExcel(
+          "leave_requests",
+          ["Employee", "Type", "Start Date", "End Date", "Status"],
+          leaveRecords.map((r) => [
+            r.employeeId,
+            r.leaveType,
+            formatDate(r.startDate),
+            formatDate(r.endDate),
+            r.status,
+          ])
+        );
+        addToast({ title: "Leave report downloaded as Excel" });
+      },
       onDownloadJSON: () => {
         if (!leaveRecords?.length) {
           addToast({ title: "No data to export", variant: "destructive" });
@@ -229,7 +293,7 @@ export default function ReportsPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Reports</h1>
         <p className="text-muted-foreground">
-          Generate and export workforce reports in CSV or JSON
+          Generate and export workforce reports in CSV, Excel, or JSON
         </p>
       </div>
 
@@ -275,7 +339,24 @@ export default function ReportsPage() {
                     ) : (
                       <Download className="h-4 w-4" />
                     )}
-                    Export CSV
+                    CSV
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setGenerating(`xlsx-${report.id}`);
+                      report.onDownloadExcel();
+                      setGenerating(null);
+                    }}
+                    disabled={generating === `xlsx-${report.id}`}
+                  >
+                    {generating === `xlsx-${report.id}` ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <FileSpreadsheet className="h-4 w-4" />
+                    )}
+                    Excel
                   </Button>
                   <Button
                     variant="outline"
@@ -292,7 +373,7 @@ export default function ReportsPage() {
                     ) : (
                       <FileText className="h-4 w-4" />
                     )}
-                    Export JSON
+                    JSON
                   </Button>
                 </div>
               )}

@@ -14,9 +14,10 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToastStore } from "@/stores/toast-store";
-import { Clock, Clock9, Download } from "lucide-react";
+import { Clock, Clock9, Download, FileSpreadsheet } from "lucide-react";
 import { formatDate } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv";
+import { downloadExcel } from "@/lib/excel";
 
 const statusVariant: Record<
   string,
@@ -139,28 +140,52 @@ export default function AttendancePage() {
               </CardDescription>
             </div>
             {records && records.length > 0 && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  downloadCSV(
-                    "attendance_records",
-                    ["Employee ID", "Date", "Clock In", "Clock Out", "Overtime", "Status"],
-                    records.map((r) => [
-                      r.employeeId,
-                      formatDate(r.date),
-                      formatTime(r.clockIn),
-                      r.clockOut ? formatTime(r.clockOut) : "-",
-                      r.overtime > 0 ? `${r.overtime.toFixed(1)}h` : "-",
-                      r.status,
-                    ])
-                  );
-                  addToast({ title: "Attendance data exported" });
-                }}
-              >
-                <Download className="h-4 w-4" />
-                Export CSV
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    downloadCSV(
+                      "attendance_records",
+                      ["Employee ID", "Date", "Clock In", "Clock Out", "Overtime", "Status"],
+                      records.map((r) => [
+                        r.employeeId,
+                        formatDate(r.date),
+                        formatTime(r.clockIn),
+                        r.clockOut ? formatTime(r.clockOut) : "-",
+                        r.overtime > 0 ? `${r.overtime.toFixed(1)}h` : "-",
+                        r.status,
+                      ])
+                    );
+                    addToast({ title: "Attendance data exported" });
+                  }}
+                >
+                  <Download className="h-4 w-4" />
+                  CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    downloadExcel(
+                      "attendance_records",
+                      ["Employee ID", "Date", "Clock In", "Clock Out", "Overtime", "Status"],
+                      records.map((r) => [
+                        r.employeeId,
+                        formatDate(r.date),
+                        formatTime(r.clockIn),
+                        r.clockOut ? formatTime(r.clockOut) : "-",
+                        r.overtime > 0 ? `${r.overtime.toFixed(1)}h` : "-",
+                        r.status,
+                      ])
+                    );
+                    addToast({ title: "Attendance data exported as Excel" });
+                  }}
+                >
+                  <FileSpreadsheet className="h-4 w-4" />
+                  Excel
+                </Button>
+              </div>
             )}
           </div>
         </CardHeader>

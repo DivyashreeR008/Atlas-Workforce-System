@@ -16,9 +16,10 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToastStore } from "@/stores/toast-store";
-import { Download, Plus } from "lucide-react";
+import { Download, FileSpreadsheet, Plus } from "lucide-react";
 import { formatDate } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv";
+import { downloadExcel } from "@/lib/excel";
 
 interface LeaveRecord {
   id: number;
@@ -137,28 +138,52 @@ export default function LeavePage() {
                   </CardDescription>
                 </div>
                 {requests && requests.length > 0 && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      downloadCSV(
-                        "leave_requests",
-                        ["Employee", "Type", "Start", "End", "Days", "Status"],
-                        requests.map((r) => [
-                          r.employeeId,
-                          r.leaveType,
-                          formatDate(r.startDate),
-                          formatDate(r.endDate),
-                          String(calcDays(r.startDate, r.endDate)),
-                          r.status,
-                        ])
-                      );
-                      addToast({ title: "Leave data exported" });
-                    }}
-                  >
-                    <Download className="h-4 w-4" />
-                    Export CSV
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        downloadCSV(
+                          "leave_requests",
+                          ["Employee", "Type", "Start", "End", "Days", "Status"],
+                          requests.map((r) => [
+                            r.employeeId,
+                            r.leaveType,
+                            formatDate(r.startDate),
+                            formatDate(r.endDate),
+                            String(calcDays(r.startDate, r.endDate)),
+                            r.status,
+                          ])
+                        );
+                        addToast({ title: "Leave data exported" });
+                      }}
+                    >
+                      <Download className="h-4 w-4" />
+                      CSV
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        downloadExcel(
+                          "leave_requests",
+                          ["Employee", "Type", "Start", "End", "Days", "Status"],
+                          requests.map((r) => [
+                            r.employeeId,
+                            r.leaveType,
+                            formatDate(r.startDate),
+                            formatDate(r.endDate),
+                            String(calcDays(r.startDate, r.endDate)),
+                            r.status,
+                          ])
+                        );
+                        addToast({ title: "Leave data exported as Excel" });
+                      }}
+                    >
+                      <FileSpreadsheet className="h-4 w-4" />
+                      Excel
+                    </Button>
+                  </div>
                 )}
               </div>
             </CardHeader>
