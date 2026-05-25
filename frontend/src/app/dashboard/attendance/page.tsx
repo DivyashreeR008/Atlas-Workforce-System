@@ -116,7 +116,7 @@ function RecordsTab() {
       if (!coords) { addToast({ title: "GPS unavailable", variant: "destructive" }); return; }
       const { data } = await attendanceApi.geoFences.verify(coords.latitude, coords.longitude);
       setGeoStatus(data as GeoVerifyResult);
-      addToast({ title: data.verified ? "Inside geo-fence" : "Outside geo-fence", variant: data.verified ? "default" : "warning" });
+      addToast({ title: data.verified ? "Inside geo-fence" : "Outside geo-fence", variant: data.verified ? "default" : "destructive" });
     } finally { setGpsLoading(false); }
   };
 
