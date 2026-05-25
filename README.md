@@ -401,39 +401,6 @@ docker compose -f docker-compose.monitoring.yml up -d
 - **Prometheus** — `http://localhost:9090`
 - **Grafana** — `http://localhost:3001` (admin/admin)
 
----
-
-## Future Roadmap
-
-### Phase 1 — Quick Wins (completed)
-- [x] Standardized UI components with dark mode
-- [x] Redis caching for employee directory
-- [x] CSV, Excel, and JSON export on all data tables
-- [x] Real‑time WebSocket notifications
-- [x] OpenAPI/Swagger docs on Python services
-- [x] Live attendance widget on dashboard
-
-### Phase 2 — Medium Impact
-- [ ] Centralized RBAC management panel
-- [ ] Multi‑tenant database isolation
-- [ ] Automated PDF payslip generation
-- [ ] Bulk approve/reject for leave
-- [ ] Email notification integration (SMTP)
-
-### Phase 3 — Enterprise
-- [ ] Applicant Tracking System (ATS)
-- [ ] Biometric / geofenced attendance
-- [ ] Advanced reporting with customizable dashboards
-- [ ] SOC2 compliance audit logs
-
-### Phase 4 — AI‑Powered
-- [ ] Predictive attrition ML models
-- [ ] NLP HR assistant chatbot
-- [ ] AI‑driven shift optimization
-- [ ] Resume screening and scoring
-
----
-
 ## Author
 
 **Senthil Raja R**  

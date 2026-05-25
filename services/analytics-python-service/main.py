@@ -146,11 +146,6 @@ def get_performance_prediction():
 def get_ai_insights(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Generates strategic HR insights using AI based on current workforce data."""
     try:
-        dept_data = get_department_analytics(x_tenant_id=x_tenant_id)
-        payroll_data = get_payroll_analytics(x_tenant_id=x_tenant_id)
-
-        context = f"Department Headcounts: {json.dumps(dept_data)}. Payroll Trends: {json.dumps(payroll_data)}."
-
         if not client:
             return {
                 "insight": (
@@ -159,6 +154,11 @@ def get_ai_insights(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
                     "Consider optimizing cloud costs to offset the growing personnel expenditure."
                 )
             }
+
+        dept_data = get_department_analytics(x_tenant_id=x_tenant_id)
+        payroll_data = get_payroll_analytics(x_tenant_id=x_tenant_id)
+
+        context = f"Department Headcounts: {json.dumps(dept_data)}. Payroll Trends: {json.dumps(payroll_data)}."
 
         response = client.chat.completions.create(
             model="gpt-4",
