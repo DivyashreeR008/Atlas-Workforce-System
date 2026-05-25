@@ -6,6 +6,8 @@ import uvicorn
 from sqlalchemy import create_engine, text
 from openai import OpenAI
 import json
+import requests
+from urllib.parse import urljoin
 
 app = FastAPI(title="Analytics Service API", version="1.0.0")
 
@@ -43,24 +45,31 @@ def health_check():
     return {"status": "Analytics Service is running"}
 
 
+EMPLOYEE_SERVICE_URL = os.environ.get("EMPLOYEE_SERVICE_URL", "http://employee-service:8001")
+
 @app.get("/analytics/department")
 def get_department_analytics(x_tenant_id: str = Header("default")):
-    if not engine:
-        raise HTTPException(status_code=500, detail="Database connection failed")
-
     try:
-        # Try common table names for employee/department data
-        for tbl in ["users", "employees", "employee_records"]:
-            try:
-                query = text(
-                    "SELECT department, count(id) as headcount FROM {} WHERE tenant_id = :tenant_id GROUP BY department".format(tbl)
-                )
-                df = pd.read_sql_query(query.bindparams(tenant_id=x_tenant_id), engine)
-                if not df.empty:
-                    return df.to_dict(orient="records")
-            except Exception:
-                continue
-        return []
+        # Fetch employee data from the employee service API
+        resp = requests.get(
+            urljoin(EMPLOYEE_SERVICE_URL, "/employees?limit=1000"),
+            headers={"X-Tenant-Id": x_tenant_id},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return []
+        employees = resp.json()
+        items = employees if isinstance(employees, list) else employees.get("items", [])
+        if not items:
+            return []
+        dept_counts = {}
+        for emp in items:
+            dept = emp.get("department", "Unknown")
+            dept_counts[dept] = dept_counts.get(dept, 0) + 1
+        return [
+            {"department": dept, "headcount": count}
+            for dept, count in sorted(dept_counts.items(), key=lambda x: -x[1])
+        ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

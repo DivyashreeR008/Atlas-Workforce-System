@@ -5,7 +5,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
-const { createProxyMiddleware, responseInterceptor } = require('http-proxy-middleware');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 const redis = require('redis');
 const axios = require('axios');
 
@@ -45,46 +45,6 @@ async function checkCache(req, res, next) {
     console.error('Cache read error:', err);
   }
   next();
-}
-
-const cacheInterceptor = responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
-  const response = responseBuffer.toString('utf8');
-  if (req.method === 'GET' && proxyRes.statusCode === 200 && redisClient.isOpen) {
-    const userScope = req.user ? req.user.id : 'public';
-    const key = `cache:${userScope}:${req.originalUrl}`;
-    try {
-      await redisClient.setEx(key, 15, response);
-    } catch (err) {
-      console.error('Failed to write to cache:', err);
-    }
-  }
-  return responseBuffer;
-});
-
-function getProxyOptions(target, prefix) {
-  return {
-    target,
-    changeOrigin: true,
-    pathRewrite: { [`^${prefix}`]: '' },
-    selfHandleResponse: true,
-    onProxyReq(proxyReq, req, res) {
-      if (req.user) {
-        proxyReq.setHeader('X-User-Id', String(req.user.id));
-        proxyReq.setHeader('X-User-Role', String(req.user.role));
-        proxyReq.setHeader('X-User-Email', String(req.user.email));
-        if (req.user.tenant_id) {
-          proxyReq.setHeader('X-Tenant-Id', String(req.user.tenant_id));
-        }
-      }
-      if (req.body && Object.keys(req.body).length) {
-        const bodyData = JSON.stringify(req.body);
-        proxyReq.setHeader('Content-Type', 'application/json');
-        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
-        proxyReq.write(bodyData);
-      }
-    },
-    onProxyRes: cacheInterceptor,
-  };
 }
 
 const app = express();
@@ -282,50 +242,39 @@ app.post('/api/billing/create-checkout-session', express.json(), async (req, res
   }
 });
 
-app.use(
-  '/api/auth',
-  createProxyMiddleware({
-    target: services.auth,
+function proxyService(target, prefix, pathRewrite, stripRootSlash) {
+  const proxy = createProxyMiddleware({
+    target,
     changeOrigin: true,
-    pathRewrite: { '^/api/auth': '' },
-  })
-);
+    pathRewrite,
+  });
+  return (req, res, next) => {
+    if (req.user) {
+      req.headers['X-User-Id'] = String(req.user.id);
+      req.headers['X-User-Role'] = String(req.user.role);
+      req.headers['X-User-Email'] = String(req.user.email);
+      if (req.user.tenant_id) {
+        req.headers['X-Tenant-Id'] = String(req.user.tenant_id);
+      }
+    }
+    req.url = prefix + req.url;
+    if (stripRootSlash && req.url === prefix + '/') {
+      req.url = prefix;
+    }
+    checkCache(req, res, (err) => {
+      if (err) return next(err);
+      proxy(req, res, next);
+    });
+  };
+}
 
-app.use(
-  '/api/employee',
-  checkCache,
-  createProxyMiddleware(getProxyOptions(services.employee, '/api/employee'))
-);
-
-app.use(
-  '/api/payroll',
-  checkCache,
-  createProxyMiddleware(getProxyOptions(services.payroll, '/api/payroll'))
-);
-
-app.use(
-  '/api/analytics',
-  checkCache,
-  createProxyMiddleware(getProxyOptions(services.analytics, '/api/analytics'))
-);
-
-app.use(
-  '/api/notification',
-  checkCache,
-  createProxyMiddleware(getProxyOptions(services.notification, '/api/notification'))
-);
-
-app.use(
-  '/api/attendance',
-  checkCache,
-  createProxyMiddleware(getProxyOptions(services.attendance, '/api/attendance'))
-);
-
-app.use(
-  '/api/leave',
-  checkCache,
-  createProxyMiddleware(getProxyOptions(services.leave, '/api/leave'))
-);
+app.use('/api/auth', proxyService(services.auth, '/api/auth', { '^/api/auth': '' }));
+app.use('/api/employee', proxyService(services.employee, '/api/employee', { '^/api/employee': '' }));
+app.use('/api/analytics', proxyService(services.analytics, '/api/analytics', { '^/api/analytics': '/analytics' }));
+app.use('/api/attendance', proxyService(services.attendance, '/api/attendance'));
+app.use('/api/leave', proxyService(services.leave, '/api/leave', null, true));
+app.use('/api/payroll', proxyService(services.payroll, '/api/payroll', null, true));
+app.use('/api/notification', proxyService(services.notification, '/api/notification'));
 
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'API Gateway is running' });
