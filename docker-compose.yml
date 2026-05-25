@@ -81,6 +81,20 @@ services:
     networks:
       - atlas-network
 
+  employee-lifecycle-service:
+    build: ./services/employee-lifecycle-service
+    container_name: atlas-employee-lifecycle-service
+    ports:
+      - "8020:8020"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+    networks:
+      - atlas-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   integration-service:
     build: ./services/integration-service
     container_name: atlas-integration-service
@@ -124,6 +138,7 @@ services:
       - AI_COPILOT_SERVICE_URL=http://ai-copilot-service:8015
       - AUDIT_COMPLIANCE_SERVICE_URL=http://audit-compliance-service:8011
       - INTEGRATION_SERVICE_URL=http://integration-service:8016
+      - EMPLOYEE_LIFECYCLE_SERVICE_URL=http://employee-lifecycle-service:8020
       - AUDIT_INTERNAL_KEY=${AUDIT_INTERNAL_KEY:-atlas-internal-key-change-me}
     networks:
       - atlas-network
@@ -139,6 +154,7 @@ services:
       - lms-service
       - performance-service
       - ai-copilot-service
+      - employee-lifecycle-service
 
   auth-service:
     build: ./services/auth-service

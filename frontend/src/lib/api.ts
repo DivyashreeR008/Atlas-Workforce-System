@@ -403,6 +403,124 @@ export const integrationApi = {
   },
 };
 
+export const lifecycleApi = {
+  dashboard: () => api.get("/lifecycle/dashboard"),
+  onboarding: {
+    templates: {
+      list: (params?: { page?: number; page_size?: number; is_active?: boolean }) =>
+        api.get("/lifecycle/onboarding/templates", { params }),
+      create: (data: Record<string, unknown>) => api.post("/lifecycle/onboarding/templates", data),
+      get: (id: string) => api.get(`/lifecycle/onboarding/templates/${id}`),
+      update: (id: string, data: Record<string, unknown>) => api.put(`/lifecycle/onboarding/templates/${id}`, data),
+      delete: (id: string) => api.delete(`/lifecycle/onboarding/templates/${id}`),
+    },
+    assignments: {
+      list: (params?: { page?: number; page_size?: number; employee_id?: string; status?: string }) =>
+        api.get("/lifecycle/onboarding/assignments", { params }),
+      create: (data: Record<string, unknown>) => api.post("/lifecycle/onboarding/assignments", data),
+      get: (id: string) => api.get(`/lifecycle/onboarding/assignments/${id}`),
+      update: (id: string, data: Record<string, unknown>) => api.put(`/lifecycle/onboarding/assignments/${id}`, data),
+      delete: (id: string) => api.delete(`/lifecycle/onboarding/assignments/${id}`),
+    },
+  },
+  offboarding: {
+    list: (params?: { page?: number; page_size?: number; employee_id?: string; status?: string }) =>
+      api.get("/lifecycle/offboarding", { params }),
+    create: (data: Record<string, unknown>) => api.post("/lifecycle/offboarding", data),
+    get: (id: string) => api.get(`/lifecycle/offboarding/${id}`),
+    update: (id: string, data: Record<string, unknown>) => api.put(`/lifecycle/offboarding/${id}`, data),
+  },
+  probation: {
+    list: (params?: { page?: number; page_size?: number; employee_id?: string; status?: string }) =>
+      api.get("/lifecycle/probation", { params }),
+    create: (data: Record<string, unknown>) => api.post("/lifecycle/probation", data),
+    getByEmployee: (employeeId: string) => api.get(`/lifecycle/probation/employee/${employeeId}`),
+    get: (id: string) => api.get(`/lifecycle/probation/${id}`),
+    update: (id: string, data: Record<string, unknown>) => api.put(`/lifecycle/probation/${id}`, data),
+    assessments: {
+      list: (probationId: string) => api.get(`/lifecycle/probation/${probationId}/assessments`),
+      create: (probationId: string, data: Record<string, unknown>) =>
+        api.post(`/lifecycle/probation/${probationId}/assessments`, data),
+      update: (id: string, data: Record<string, unknown>) =>
+        api.put(`/lifecycle/probation/assessments/${id}`, data),
+    },
+  },
+  career: {
+    frameworks: {
+      list: () => api.get("/lifecycle/career/frameworks"),
+      create: (data: Record<string, unknown>) => api.post("/lifecycle/career/frameworks", data),
+    },
+    jobFamilies: {
+      list: (frameworkId?: string) => api.get("/lifecycle/career/job-families", { params: { framework_id: frameworkId } }),
+      create: (data: Record<string, unknown>) => api.post("/lifecycle/career/job-families", data),
+    },
+    paths: {
+      list: (jobFamilyId?: string) => api.get("/lifecycle/career/paths", { params: { job_family_id: jobFamilyId } }),
+      create: (data: Record<string, unknown>) => api.post("/lifecycle/career/paths", data),
+    },
+    roadmaps: {
+      list: (employeeId?: string) => api.get("/lifecycle/career/roadmaps", { params: { employee_id: employeeId } }),
+      create: (data: Record<string, unknown>) => api.post("/lifecycle/career/roadmaps", data),
+      get: (id: string) => api.get(`/lifecycle/career/roadmaps/${id}`),
+      update: (id: string, data: Record<string, unknown>) => api.put(`/lifecycle/career/roadmaps/${id}`, data),
+    },
+  },
+  mobility: {
+    jobs: {
+      list: (params?: { status?: string; department?: string }) =>
+        api.get("/lifecycle/mobility/jobs", { params }),
+      create: (data: Record<string, unknown>) => api.post("/lifecycle/mobility/jobs", data),
+      get: (id: string) => api.get(`/lifecycle/mobility/jobs/${id}`),
+      update: (id: string, data: Record<string, unknown>) => api.put(`/lifecycle/mobility/jobs/${id}`, data),
+      delete: (id: string) => api.delete(`/lifecycle/mobility/jobs/${id}`),
+    },
+    applications: {
+      list: (params?: { job_id?: string; employee_id?: string; status?: string }) =>
+        api.get("/lifecycle/mobility/applications", { params }),
+      create: (data: Record<string, unknown>) => api.post("/lifecycle/mobility/applications", data),
+      update: (id: string, data: Record<string, unknown>) => api.put(`/lifecycle/mobility/applications/${id}`, data),
+    },
+    transfers: {
+      list: (params?: { page_size?: number; employee_id?: string; status?: string }) =>
+        api.get("/lifecycle/mobility/transfers", { params }),
+      create: (data: Record<string, unknown>) => api.post("/lifecycle/mobility/transfers", data),
+      get: (id: string) => api.get(`/lifecycle/mobility/transfers/${id}`),
+      update: (id: string, data: Record<string, unknown>) => api.put(`/lifecycle/mobility/transfers/${id}`, data),
+    },
+  },
+  promotions: {
+    list: (params?: { page_size?: number; employee_id?: string; status?: string }) =>
+      api.get("/lifecycle/promotions", { params }),
+    create: (data: Record<string, unknown>) => api.post("/lifecycle/promotions", data),
+    get: (id: string) => api.get(`/lifecycle/promotions/${id}`),
+    update: (id: string, data: Record<string, unknown>) => api.put(`/lifecycle/promotions/${id}`, data),
+  },
+  timeline: {
+    list: (employeeId: string) => api.get(`/lifecycle/timeline/${employeeId}`),
+    create: (data: Record<string, unknown>) => api.post("/lifecycle/timeline", data),
+  },
+  documents: {
+    list: (employeeId: string, category?: string) =>
+      api.get(`/lifecycle/documents/${employeeId}`, { params: { category } }),
+    create: (data: Record<string, unknown>) => api.post("/lifecycle/documents", data),
+    get: (id: string) => api.get(`/lifecycle/documents/doc/${id}`),
+    update: (id: string, data: Record<string, unknown>) => api.put(`/lifecycle/documents/doc/${id}`, data),
+    delete: (id: string) => api.delete(`/lifecycle/documents/doc/${id}`),
+  },
+  profile: {
+    get: (employeeId: string) => api.get(`/lifecycle/profile/${employeeId}`),
+    upsert: (employeeId: string, data: Record<string, unknown>) =>
+      api.put(`/lifecycle/profile/${employeeId}`, data),
+  },
+  achievements: {
+    list: (employeeId: string, category?: string) =>
+      api.get(`/lifecycle/achievements/${employeeId}`, { params: { category } }),
+    create: (data: Record<string, unknown>) => api.post("/lifecycle/achievements", data),
+    update: (id: string, data: Record<string, unknown>) => api.put(`/lifecycle/achievements/${id}`, data),
+    delete: (id: string) => api.delete(`/lifecycle/achievements/${id}`),
+  },
+};
+
 export const lmsApi = {
   dashboard: () => api.get("/lms/dashboard"),
   courses: {

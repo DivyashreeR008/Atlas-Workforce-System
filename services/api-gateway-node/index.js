@@ -146,6 +146,8 @@ const services = {
     process.env.AUDIT_COMPLIANCE_SERVICE_URL || 'http://audit-compliance-service:8011',
   integration:
     process.env.INTEGRATION_SERVICE_URL || 'http://integration-service:8016',
+  lifecycle:
+    process.env.EMPLOYEE_LIFECYCLE_SERVICE_URL || 'http://employee-lifecycle-service:8020',
 };
 
 const PUBLIC_AUTH_PATHS = ['/api/auth/login', '/api/auth/register'];
@@ -294,6 +296,7 @@ function authMiddleware(req, res, next) {
     '/api/audit',
     '/api/compliance',
     '/api/integration',
+    '/api/lifecycle',
   ];
 
   const needsAuth = protectedPrefixes.some(
@@ -470,6 +473,7 @@ app.use('/api/audit', proxyService(services.audit, '/api/audit', { '^/api/audit'
 app.use('/api/compliance', proxyService(services.compliance, '/api/compliance', { '^/api/compliance': '/api/v1' }));
 
 app.use('/api/integration', proxyService(services.integration, '/api/integration', { '^/api/integration': '/api/v1/integration' }));
+app.use('/api/lifecycle', proxyService(services.lifecycle, '/api/lifecycle', { '^/api/lifecycle': '/api/v1/lifecycle' }));
 
 const server = app.listen(PORT, () => {
   console.log(`API Gateway listening on port ${PORT}`);

@@ -21,6 +21,7 @@ import {
   Shield,
   LayoutGrid,
   Cable,
+  Orbit,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -35,6 +36,7 @@ interface NavGroup {
 const navItems: ({ href: string; label: string; icon: React.ComponentType<{ className?: string }> } | NavGroup)[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/dashboard/employees", label: "Employees", icon: Users },
+  { href: "/dashboard/lifecycle", label: "Lifecycle", icon: Orbit },
   { href: "/dashboard/attendance", label: "Attendance", icon: Clock },
   {
     label: "ATS",

@@ -785,3 +785,187 @@ export interface IntegrationDashboard {
   outbox_pending: number;
   outbox_failed: number;
 }
+
+export interface LifecycleDashboard {
+  onboarding_pending: number;
+  onboarding_active: number;
+  offboarding_pending: number;
+  probations_active: number;
+  promotions_pending: number;
+  transfers_pending: number;
+  total_documents: number;
+  total_achievements: number;
+  total_career_roadmaps: number;
+}
+
+export interface OnboardingTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  department: string | null;
+  stages: Record<string, unknown>[];
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface OnboardingAssignment {
+  id: string;
+  employee_id: string;
+  template_id: string | null;
+  status: string;
+  current_stage: string | null;
+  stages_completed: unknown[];
+  tasks: unknown[];
+  start_date: string | null;
+  expected_completion_date: string | null;
+  completed_at: string | null;
+  assigned_to: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface OffboardingRecord {
+  id: string;
+  employee_id: string;
+  resignation_date: string | null;
+  last_working_date: string | null;
+  reason: string | null;
+  status: string;
+  clearance_checklist: unknown[];
+  asset_return_checklist: unknown[];
+  exit_interview_completed: boolean;
+  eligible_for_rehire: boolean;
+  created_at: string;
+}
+
+export interface ProbationRecord {
+  id: string;
+  employee_id: string;
+  start_date: string;
+  end_date: string;
+  probation_length_days: number;
+  status: string;
+  extended: boolean;
+  overall_rating: string | null;
+  result: string | null;
+  created_at: string;
+}
+
+export interface InternalJobPosting {
+  id: string;
+  title: string;
+  department: string | null;
+  location: string | null;
+  employment_type: string | null;
+  level: string | null;
+  status: string;
+  posted_at: string | null;
+  closes_at: string | null;
+  hiring_manager: string | null;
+  created_at: string;
+}
+
+export interface PromotionRequest {
+  id: string;
+  employee_id: string;
+  current_title: string | null;
+  current_level: string | null;
+  proposed_title: string;
+  proposed_level: string | null;
+  status: string;
+  effective_date: string | null;
+  created_at: string;
+}
+
+export interface TransferRequest {
+  id: string;
+  employee_id: string;
+  from_department: string | null;
+  to_department: string;
+  from_position: string | null;
+  to_position: string;
+  status: string;
+  effective_date: string | null;
+  created_at: string;
+}
+
+export interface EmployeeDocument {
+  id: string;
+  employee_id: string;
+  name: string;
+  category: string;
+  file_url: string | null;
+  version: number;
+  tags: string[];
+  is_confidential: boolean;
+  expiry_date: string | null;
+  status: string;
+  created_at: string;
+}
+
+export interface EmployeeAchievement {
+  id: string;
+  employee_id: string;
+  title: string;
+  category: string;
+  description: string | null;
+  date_awarded: string | null;
+  issuer: string | null;
+  badge_url: string | null;
+  is_public: boolean;
+  created_at: string;
+}
+
+export interface CareerFramework {
+  id: string;
+  name: string;
+  description: string | null;
+  levels: Record<string, unknown>[];
+  is_active: boolean;
+}
+
+export interface CareerPath {
+  id: string;
+  name: string;
+  description: string | null;
+  job_family_id: string | null;
+  steps: Record<string, unknown>[];
+  typical_duration_months: number | null;
+  is_active: boolean;
+}
+
+export interface CareerRoadmap {
+  id: string;
+  employee_id: string;
+  career_path_id: string | null;
+  milestones: Record<string, unknown>[];
+  current_step: number;
+  target_role: string | null;
+  target_level: string | null;
+  progress_percentage: number;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface EmployeeProfile {
+  employee_id: string;
+  personal_info: Record<string, unknown>;
+  contact_info: Record<string, unknown>;
+  employment_info: Record<string, unknown>;
+  education: unknown[];
+  certifications: unknown[];
+  work_history: unknown[];
+  skills_summary: Record<string, unknown>;
+  profile_completeness: number;
+  updated_at: string;
+}
+
+export interface TimelineEvent {
+  id: string;
+  employee_id: string;
+  event_type: string;
+  title: string;
+  description: string | null;
+  event_date: string;
+  created_at: string;
+}
