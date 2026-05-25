@@ -1,0 +1,14 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.5
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+openai==1.58.1
+scikit-learn==1.6.1
+numpy==2.2.2
+pandas==2.2.3
+textblob==0.18.0
+nltk==3.9.1
+aio-pika==9.5.3
+sse-starlette==2.2.1
+redis==5.2.1

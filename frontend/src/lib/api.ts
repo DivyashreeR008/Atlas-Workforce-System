@@ -1323,3 +1323,90 @@ export const liveApi = {
     chat: (data: Record<string, unknown>) => api.post("/live/publish/chat", data),
   },
 };
+
+export const aiApi = {
+  copilot: (persona: string, query: string, context?: Record<string, unknown>) =>
+    api.post(`/ai/${persona}/copilot`, { query, context }),
+  reporting: {
+    generate: (data: { query: string; department?: string; timeframe?: string; format?: string }) =>
+      api.post("/ai/natural-language-reporting", data),
+  },
+  dashboard: {
+    generate: (data: { focus: string; department?: string; role?: string }) =>
+      api.post("/ai/ai-dashboard", data),
+  },
+  predictions: {
+    attrition: (data: { employee_id?: string; department?: string; timeframe_months?: number; include_factors?: boolean }) =>
+      api.post("/ai/attrition-prediction", data),
+    burnout: (data: { employee_id?: string; department?: string; timeframe_months?: number }) =>
+      api.post("/ai/burnout-prediction", data),
+    promotion: (data: { employee_id?: string; department?: string; timeframe_months?: number }) =>
+      api.post("/ai/promotion-prediction", data),
+  },
+  salary: {
+    recommend: (data: { employee_id: string; role: string; experience_years: number; performance_score?: number; location?: string; department?: string }) =>
+      api.post("/ai/salary-recommendation", data),
+  },
+  forecasting: {
+    workforce: (data: { department?: string; horizon_months?: number; include_attrition?: boolean; include_hiring?: boolean }) =>
+      api.post("/ai/workforce-forecasting", data),
+    budget: (data: { department: string; current_budget: number; forecast_months?: number }) =>
+      api.post("/ai/budget-forecasting", data),
+  },
+  assistants: {
+    policy: (data: { query: string; policy_area?: string }) =>
+      api.post("/ai/policy-assistant", data),
+    leave: (data: { employee_id: string; leave_type: string; requested_dates: string[]; department?: string }) =>
+      api.post("/ai/leave-assistant", data),
+    recruitment: (data: { job_requirements: string; candidate_pool?: string[]; screening_criteria?: Record<string, unknown> }) =>
+      api.post("/ai/recruitment-assistant", data),
+    onboarding: (data: { employee_role: string; department: string; experience_level: string }) =>
+      api.post("/ai/onboarding-assistant", data),
+    training: (data: { employee_id: string; current_skills?: string[]; target_role?: string; performance_gaps?: string[] }) =>
+      api.post("/ai/training-assistant", data),
+    compliance: (data: { action: string; department: string; employee_role: string; region?: string }) =>
+      api.post("/ai/compliance-assistant", data),
+  },
+  knowledge: {
+    search: (data: { query: string; filters?: Record<string, unknown>; max_results?: number }) =>
+      api.post("/ai/knowledge-search", data),
+  },
+  advisory: {
+    org: (data: { query: string; org_context?: Record<string, unknown> }) =>
+      api.post("/ai/org-advisor", data),
+  },
+  risk: {
+    detect: (data: { department?: string; employee_id?: string; risk_categories?: string[] }) =>
+      api.post("/ai/risk-detection", data),
+    anomalies: (data: { data_source: string; metric?: string; department?: string; sensitivity?: number }) =>
+      api.post("/ai/anomaly-detection", data),
+  },
+  operations: {
+    shifts: (data: { department: string; date_range: string[]; constraints?: Record<string, unknown> }) =>
+      api.post("/ai/shift-optimization", data),
+  },
+  planning: {
+    succession: (data: { position: string; department: string; required_skills: string[]; timeline_months?: number }) =>
+      api.post("/ai/succession-planning", data),
+  },
+  summaries: {
+    performance: (data: { employee_id: string; period?: string; include_metrics?: string[] }) =>
+      api.post("/ai/performance-summaries", data),
+    meeting: (data: { transcript: string; meeting_type?: string; attendees?: string[] }) =>
+      api.post("/ai/meeting-summaries", data),
+  },
+  automation: {
+    workflow: (data: { process_name: string; department: string; description: string; constraints?: Record<string, unknown> }) =>
+      api.post("/ai/workflow-generation", data),
+    build: (data: { trigger: string; actions: string[]; conditions?: string[]; department: string }) =>
+      api.post("/ai/automation-builder", data),
+  },
+  agentic: {
+    hr: (data: { goal: string; context?: Record<string, unknown>; autonomy_level?: string }) =>
+      api.post("/ai/agentic-hr", data),
+  },
+  autonomous: {
+    intelligence: (data: { scope?: string; metrics?: string[]; generate_recommendations?: boolean }) =>
+      api.post("/ai/autonomous-intelligence", data),
+  },
+};

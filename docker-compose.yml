@@ -140,6 +140,7 @@ services:
       - INTEGRATION_SERVICE_URL=http://integration-service:8016
       - EMPLOYEE_LIFECYCLE_SERVICE_URL=http://employee-lifecycle-service:8020
       - SECURITY_SERVICE_URL=http://security-service:8050
+      - AI_SERVICE_URL=http://ai-service:8065
       - AUDIT_INTERNAL_KEY=${AUDIT_INTERNAL_KEY:-atlas-internal-key-change-me}
     networks:
       - atlas-network
@@ -155,6 +156,7 @@ services:
       - lms-service
       - performance-service
       - ai-copilot-service
+      - ai-service
       - security-service
       - employee-lifecycle-service
 
@@ -349,6 +351,17 @@ services:
       - atlas-network
     depends_on:
       - redis
+
+  ai-service:
+    build: ./services/ai-service
+    container_name: atlas-ai-service
+    ports:
+      - "8065:8065"
+    environment:
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    networks:
+      - atlas-network
 
   frontend:
     build: ./frontend

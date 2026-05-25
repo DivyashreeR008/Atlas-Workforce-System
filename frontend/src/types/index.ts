@@ -2490,3 +2490,198 @@ export interface ChatMessagePayload {
   room: string;
   timestamp: string;
 }
+
+// === AI Features Types (171-200) ===
+export interface AICopilotResponse {
+  reply: string;
+  confidence: number;
+  sources: string[];
+  suggestions: string[];
+  session_id: string;
+}
+
+export interface AICopilotQuery {
+  query: string;
+  context?: Record<string, unknown>;
+  session_id?: string;
+}
+
+export interface NLReportRequest {
+  query: string;
+  department?: string;
+  timeframe?: string;
+  format?: string;
+}
+
+export interface NLReportResponse {
+  title: string;
+  summary: string;
+  data: { label: string; value: number; change: number }[];
+  chart_config?: Record<string, unknown>;
+  insights: string[];
+}
+
+export interface AIDashboardResponse {
+  title: string;
+  description: string;
+  widgets: { type: string; title: string; metric: string; color?: string; chart_type?: string }[];
+  layout: { widget: number; x: number; y: number; w: number; h: number }[];
+}
+
+export interface AIPredictionResponse {
+  prediction: string;
+  probability: number;
+  risk_factors: { factor: string; weight?: number; severity?: string; impact?: number; trend?: string; value?: number }[];
+  recommendations: string[];
+  confidence_interval?: { lower: number; upper: number };
+  factors?: { factor: string; weight: string; value: number }[];
+  suggested_roles?: string[];
+}
+
+export interface AISalaryResponse {
+  current_salary: number;
+  recommended_salary: number;
+  percentile: string;
+  market_data: { role: string; location: string; p10: number; p25: number; p50: number; p75: number; p90: number };
+  factors: { name: string; impact: string }[];
+}
+
+export interface AIForecastResponse {
+  forecasts: { metric: string; current: number; projected: number; change_pct: number }[];
+  total_headcount_projection: { month: string; headcount: number; hires: number; attrition: number }[];
+  key_insights: string[];
+  confidence: number;
+}
+
+export interface AIPolicyResponse {
+  answer: string;
+  policy_citations: { policy: string; relevance: string; section: string }[];
+  related_policies: string[];
+}
+
+export interface AILeaveResponse {
+  recommended: boolean;
+  reason: string;
+  coverage_suggestions: string[];
+  pattern_insights?: { total_days_used: number; remaining_days: number; department_coverage: string; previous_approvals: number };
+}
+
+export interface AIRecruitmentResponse {
+  recommended_sources: string[];
+  screening_questions: string[];
+  interview_tips: string[];
+  estimated_time_to_hire: string;
+}
+
+export interface AIOnboardingResponse {
+  recommended_plan: { week: number; focus: string; activities: string[] }[];
+  estimated_ramp_up: string;
+  key_milestones: string[];
+  mentor_suggestion: string;
+}
+
+export interface AITrainingResponse {
+  recommended_courses: { title: string; category: string; duration: string; relevance: number }[];
+  skill_gaps: { skill: string; current: string; required: string; priority: string }[];
+  learning_path: string[];
+  estimated_time: string;
+}
+
+export interface AIComplianceResponse {
+  compliant: boolean;
+  risks: { type: string; severity: string; description: string; mitigation: string }[];
+  required_actions: string[];
+  policy_references: string[];
+}
+
+export interface AIKnowledgeResponse {
+  results: { id: string; title: string; category: string; relevance: number; snippet: string; url: string }[];
+  total: number;
+  suggested_queries: string[];
+}
+
+export interface AIOrgAdvisorResponse {
+  answer: string;
+  recommendations: string[];
+  impact_analysis?: { communication_efficiency: string; decision_speed: string; collaboration_score: string; suggested_improvements: string[] };
+}
+
+export interface AIRiskResponse {
+  risks: { category: string; risk: string; severity: string; probability: number; impact: string; affected_employees: number }[];
+  overall_risk_score: number;
+  trend: string;
+  mitigation_priorities: string[];
+}
+
+export interface AIAnomalyResponse {
+  anomalies: { timestamp: string; expected: number; actual: number; deviation: string; severity: string }[];
+  baseline: { mean: number; std: number; period: string };
+  alert_level: string;
+}
+
+export interface AIShiftResponse {
+  optimized_schedule: { date: string; shift: string; staff_required: number; staff_assigned: number; gap: number }[];
+  coverage_gaps: { date: string; shift: string; staff_required: number; staff_assigned: number; gap: number }[];
+  cost_savings: number;
+  efficiency_gain: number;
+}
+
+export interface AISuccessionResponse {
+  internal_candidates: { name: string; current_role: string; readiness: string; overlap_score: number }[];
+  readiness_levels: { ready_now: number; ready_1_2_years: number; ready_3_5_years: number; not_ready: number };
+  development_plans: string[];
+  risk_of_vacancy: string;
+}
+
+export interface AIBudgetResponse {
+  monthly_projections: { month: string; budgeted: number; projected: number; remaining: number }[];
+  total_forecast: number;
+  variance_analysis: { budgeted_total: number; projected_total: number; variance: number; variance_pct: number };
+  recommendations: string[];
+}
+
+export interface AIPerformanceSummaryResponse {
+  summary: string;
+  highlights: string[];
+  areas_for_improvement: string[];
+  overall_score: number;
+  trend: string;
+}
+
+export interface AIMeetingSummaryResponse {
+  summary: string;
+  key_points: string[];
+  action_items: string[];
+  decisions: string[];
+  follow_ups: string[];
+}
+
+export interface AIWorkflowResponse {
+  workflow: { step: number; name: string; role: string; estimated_time: string; automation_potential: string }[];
+  estimated_time: string;
+  required_roles: string[];
+  automation_opportunities: string[];
+}
+
+export interface AIAutomationResponse {
+  automation_script: string;
+  integration_points: string[];
+  estimated_savings: string;
+  validation_steps: string[];
+}
+
+export interface AIAgenticResponse {
+  plan: { phase: number; name: string; agent: string; autonomous: boolean; human_required: boolean }[];
+  sub_agents: { name: string; role: string; capabilities: string[] }[];
+  estimated_steps: number;
+  estimated_duration: string;
+  human_touchpoints: string[];
+}
+
+export interface AIAutonomousResponse {
+  analysis: string;
+  insights: { type: string; description: string; confidence: number; auto_actionable: boolean }[];
+  predictions: { metric: string; current: number; projected_30d: number; projected_90d: number }[];
+  auto_actions: { action: string; trigger: string; priority: string; auto_execute: boolean }[];
+  dashboard_suggestions: string[];
+}
