@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search } from "lucide-react";
+import { Download, Plus, Search } from "lucide-react";
 import { employeeApi } from "@/lib/api";
 import type { Employee, PaginatedEmployees } from "@/types";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useToastStore } from "@/stores/toast-store";
+import { downloadCSV } from "@/lib/csv";
 
 async function fetchEmployeePage(
   page: number,
@@ -101,8 +102,29 @@ export default function EmployeesPage() {
 
       <Card className="glass-panel">
         <CardHeader>
-          <CardTitle className="text-base">Directory</CardTitle>
-          <CardDescription>Search and browse all employees</CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-base">Directory</CardTitle>
+              <CardDescription>Search and browse all employees</CardDescription>
+            </div>
+            {employees.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  downloadCSV(
+                    "employee_directory",
+                    ["Name", "Email", "Department", "Position"],
+                    employees.map((e) => [e.name, e.email, e.department, e.position])
+                  );
+                  addToast({ title: "Employee directory exported" });
+                }}
+              >
+                <Download className="h-4 w-4" />
+                Export CSV
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="relative max-w-sm">

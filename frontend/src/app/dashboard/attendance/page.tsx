@@ -14,8 +14,9 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToastStore } from "@/stores/toast-store";
-import { Clock, Clock9 } from "lucide-react";
+import { Clock, Clock9, Download } from "lucide-react";
 import { formatDate } from "@/lib/utils";
+import { downloadCSV } from "@/lib/csv";
 
 const statusVariant: Record<
   string,
@@ -130,10 +131,38 @@ export default function AttendancePage() {
 
       <Card className="glass-panel">
         <CardHeader>
-          <CardTitle className="text-base">Attendance Records</CardTitle>
-          <CardDescription>
-            {isLoading ? "Loading..." : `${records?.length ?? 0} records found`}
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-base">Attendance Records</CardTitle>
+              <CardDescription>
+                {isLoading ? "Loading..." : `${records?.length ?? 0} records found`}
+              </CardDescription>
+            </div>
+            {records && records.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  downloadCSV(
+                    "attendance_records",
+                    ["Employee ID", "Date", "Clock In", "Clock Out", "Overtime", "Status"],
+                    records.map((r) => [
+                      r.employeeId,
+                      formatDate(r.date),
+                      formatTime(r.clockIn),
+                      r.clockOut ? formatTime(r.clockOut) : "-",
+                      r.overtime > 0 ? `${r.overtime.toFixed(1)}h` : "-",
+                      r.status,
+                    ])
+                  );
+                  addToast({ title: "Attendance data exported" });
+                }}
+              >
+                <Download className="h-4 w-4" />
+                Export CSV
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto rounded-lg border">

@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/streadway/amqp"
 )
@@ -30,6 +30,16 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// Notification represents a persisted notification
+type Notification struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Message   string `json:"message"`
+	TenantID  string `json:"tenant_id"`
+	Read      bool   `json:"read"`
+	CreatedAt string `json:"created_at"`
+}
+
 // Client represents a connected WebSocket client
 type Client struct {
 	conn     *websocket.Conn
@@ -42,14 +52,62 @@ type BroadcastMessage struct {
 	Payload  []byte
 }
 
+// In-memory notification store
+type NotificationStore struct {
+	mu     sync.RWMutex
+	items  []Notification
+}
+
+func (s *NotificationStore) Add(n Notification) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items = append([]Notification{n}, s.items...)
+	if len(s.items) > 1000 {
+		s.items = s.items[:1000]
+	}
+}
+
+func (s *NotificationStore) List(tenantID string) []Notification {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if tenantID == "" {
+		result := make([]Notification, len(s.items))
+		copy(result, s.items)
+		return result
+	}
+	var result []Notification
+	for _, n := range s.items {
+		if n.TenantID == tenantID {
+			result = append(result, n)
+		}
+	}
+	return result
+}
+
+func (s *NotificationStore) MarkRead(ids []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idSet := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		idSet[id] = true
+	}
+	for i := range s.items {
+		if idSet[s.items[i].ID] {
+			s.items[i].Read = true
+		}
+	}
+}
+
 var (
-	clients   = make(map[*Client]bool)
-	broadcast = make(chan BroadcastMessage)
-	mutex     = &sync.Mutex{}
+	store      = &NotificationStore{}
+	clients    = make(map[*Client]bool)
+	broadcast  = make(chan BroadcastMessage)
+	mutex      = &sync.Mutex{}
 )
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, `{"status": "Notification Service is running"}`)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "Notification Service is running"})
 }
 
 func handleConnections(w http.ResponseWriter, r *http.Request) {
@@ -66,12 +124,11 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &Client{conn: ws, send: make(chan []byte, 256), tenantID: tenantID}
-	
+
 	mutex.Lock()
 	clients[client] = true
 	mutex.Unlock()
 
-	// Handle disconnect
 	defer func() {
 		mutex.Lock()
 		delete(clients, client)
@@ -79,7 +136,6 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		mutex.Unlock()
 	}()
 
-	// Read messages (ping/pong handling could go here)
 	for {
 		_, _, err := ws.ReadMessage()
 		if err != nil {
@@ -90,9 +146,7 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 
 func handleMessages() {
 	for {
-		// Grab the next message from the broadcast channel
 		msg := <-broadcast
-		
 		mutex.Lock()
 		for client := range clients {
 			if client.tenantID == msg.TenantID {
@@ -108,6 +162,35 @@ func handleMessages() {
 	}
 }
 
+// REST API handlers
+
+func listNotificationsHandler(w http.ResponseWriter, r *http.Request) {
+	tenantID := r.URL.Query().Get("tenant_id")
+	if tenantID == "" {
+		tenantID = r.Header.Get("X-Tenant-Id")
+	}
+	notifications := store.List(tenantID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(notifications)
+}
+
+func markReadHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	if len(req.IDs) == 0 {
+		http.Error(w, `{"error":"ids array is required"}`, http.StatusBadRequest)
+		return
+	}
+	store.MarkRead(req.IDs)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
 func setupRabbitMQConsumer() {
 	rabbitURL := os.Getenv("RABBITMQ_URL")
 	if rabbitURL == "" {
@@ -117,7 +200,6 @@ func setupRabbitMQConsumer() {
 	var conn *amqp.Connection
 	var err error
 
-	// Retry connection
 	for i := 0; i < 5; i++ {
 		conn, err = amqp.Dial(rabbitURL)
 		if err == nil {
@@ -131,7 +213,6 @@ func setupRabbitMQConsumer() {
 		log.Printf("Could not connect to RabbitMQ: %v", err)
 		return
 	}
-	// Do not close connection if we want it to run indefinitely, but typically handled properly.
 
 	ch, err := conn.Channel()
 	if err != nil {
@@ -140,13 +221,13 @@ func setupRabbitMQConsumer() {
 	}
 
 	err = ch.ExchangeDeclare(
-		"notifications_exchange", // name
-		"fanout",                 // type
-		true,                     // durable
-		false,                    // auto-deleted
-		false,                    // internal
-		false,                    // no-wait
-		nil,                      // arguments
+		"notifications_exchange",
+		"fanout",
+		true,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		log.Printf("Failed to declare an exchange: %v", err)
@@ -168,7 +249,7 @@ func setupRabbitMQConsumer() {
 
 	err = ch.QueueBind(
 		q.Name,
-		"", // routing key
+		"",
 		"notifications_exchange",
 		false,
 		nil,
@@ -179,13 +260,13 @@ func setupRabbitMQConsumer() {
 	}
 
 	msgs, err := ch.Consume(
-		q.Name, // queue
-		"",     // consumer
-		true,   // auto-ack
-		false,  // exclusive
-		false,  // no-local
-		false,  // no-wait
-		nil,    // args
+		q.Name,
+		"",
+		true,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		log.Printf("Failed to register a consumer: %v", err)
@@ -195,19 +276,38 @@ func setupRabbitMQConsumer() {
 	log.Println("Waiting for messages from RabbitMQ...")
 	for d := range msgs {
 		log.Printf("Received a message: %s", d.Body)
-		
-		// Send to WebSocket connected clients
+
 		var rawData map[string]interface{}
 		json.Unmarshal(d.Body, &rawData)
-		
+
 		tenantID := "default"
 		if val, ok := rawData["tenant_id"].(string); ok {
 			tenantID = val
 		}
 
+		title := "System Notification"
+		if t, ok := rawData["title"].(string); ok {
+			title = t
+		}
+		message := string(d.Body)
+		if m, ok := rawData["message"].(string); ok {
+			message = m
+		}
+
+		notif := Notification{
+			ID:        uuid.New().String(),
+			Title:     title,
+			Message:   message,
+			TenantID:  tenantID,
+			Read:      false,
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+
+		store.Add(notif)
+
 		msgWrapper := map[string]interface{}{
-			"type": "notification",
-			"data": string(d.Body),
+			"type":      "notification",
+			"data":      notif,
 			"timestamp": time.Now().Format(time.RFC3339),
 		}
 		jsonMsg, _ := json.Marshal(msgWrapper)
@@ -224,11 +324,37 @@ func main() {
 	go handleMessages()
 	go setupRabbitMQConsumer()
 
-	http.HandleFunc("/health", healthHandler)
-	http.HandleFunc("/ws", handleConnections)
+	mux := http.NewServeMux()
+
+	// Health
+	mux.HandleFunc("/health", healthHandler)
+
+	// WebSocket
+	mux.HandleFunc("/ws", handleConnections)
+
+	// REST API for notifications
+	mux.HandleFunc("/api/notifications", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tenant-Id")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		switch r.Method {
+		case "GET":
+			listNotificationsHandler(w, r)
+		case "POST":
+			markReadHandler(w, r)
+		default:
+			http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		}
+	})
 
 	log.Printf("Notification Service listening on port %s", port)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }

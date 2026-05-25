@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Body, Query, Header
+from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import os
@@ -38,16 +39,37 @@ async def lifespan(app: FastAPI):
     client.close()
 
 
-app = FastAPI(title="Employee Service API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Employee Service API", version="2.0.0", lifespan=lifespan)
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title="Atlas Employee Service",
+        version="2.0.0",
+        description="Manages employee records, directory, and lifecycle. Part of the Atlas Workforce System.",
+        routes=app.routes,
+    )
+    openapi_schema["servers"] = [{"url": "http://localhost:8001", "description": "Local development"}]
+    openapi_schema["tags"] = [
+        {"name": "employees", "description": "Employee CRUD operations"},
+        {"name": "health", "description": "Service health check"},
+    ]
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 
 class EmployeeSchema(BaseModel):
     id: Optional[str] = Field(None, alias="_id")
-    name: str
-    department: str
-    position: str
-    email: str
-    tenant_id: Optional[str] = None
+    name: str = Field(..., description="Full name of the employee")
+    department: str = Field(..., description="Department name")
+    position: str = Field(..., description="Job position/title")
+    email: str = Field(..., description="Employee email address (unique per tenant)")
+    tenant_id: Optional[str] = Field(None, description="Multi-tenant identifier")
 
     class Config:
         populate_by_name = True
@@ -75,14 +97,15 @@ def serialize_employee(employee: dict) -> dict:
 
 
 class EmployeeUpdateSchema(BaseModel):
-    name: Optional[str] = None
-    department: Optional[str] = None
-    position: Optional[str] = None
-    email: Optional[str] = None
+    name: Optional[str] = Field(None, description="Updated full name")
+    department: Optional[str] = Field(None, description="Updated department")
+    position: Optional[str] = Field(None, description="Updated position")
+    email: Optional[str] = Field(None, description="Updated email")
 
 
-@app.get("/health")
+@app.get("/health", tags=["health"])
 async def health_check():
+    """Check if the service and database are healthy."""
     try:
         await client.admin.command("ping")
         return {"status": "Employee Service is running", "database": "connected"}
@@ -94,13 +117,14 @@ async def health_check():
         }
 
 
-@app.get("/employees", response_model=PaginatedEmployees)
+@app.get("/employees", response_model=PaginatedEmployees, tags=["employees"], summary="List all employees")
 async def get_employees(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(10, ge=1, le=100),
-    search: Optional[str] = Query(None),
-    x_tenant_id: str = Header("default"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(10, ge=1, le=100, description="Items per page"),
+    search: Optional[str] = Query(None, description="Search by name, email, department, or position"),
+    x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
 ):
+    """Retrieve a paginated, searchable list of employees scoped to a tenant."""
     query = {"tenant_id": x_tenant_id}
     if search:
         pattern = re.compile(re.escape(search), re.IGNORECASE)
@@ -130,19 +154,21 @@ async def get_employees(
     }
 
 
-@app.get("/employees/{email}", response_model=EmployeeSchema)
-async def get_employee(email: str, x_tenant_id: str = Header("default")):
+@app.get("/employees/{email}", response_model=EmployeeSchema, tags=["employees"], summary="Get employee by email")
+async def get_employee(email: str, x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
+    """Fetch a single employee by their email address within a tenant scope."""
     employee = await employees_collection.find_one({"email": email, "tenant_id": x_tenant_id})
     if employee:
         return serialize_employee(employee)
     raise HTTPException(status_code=404, detail="Employee not found")
 
 
-@app.post("/employees", response_model=EmployeeSchema)
+@app.post("/employees", response_model=EmployeeSchema, tags=["employees"], summary="Create employee")
 async def create_employee(
     employee: EmployeeSchema = Body(...),
-    x_tenant_id: str = Header("default")
+    x_tenant_id: str = Header("default", alias="X-Tenant-Id")
 ):
+    """Create a new employee record. Email must be unique per tenant."""
     employee_dict = employee.model_dump(by_alias=True, exclude_none=True)
     employee_dict["tenant_id"] = x_tenant_id
 
@@ -157,12 +183,13 @@ async def create_employee(
     return employee_dict
 
 
-@app.put("/employees/{email}", response_model=EmployeeSchema)
+@app.put("/employees/{email}", response_model=EmployeeSchema, tags=["employees"], summary="Update employee")
 async def update_employee(
     email: str,
     employee: EmployeeUpdateSchema = Body(...),
-    x_tenant_id: str = Header("default")
+    x_tenant_id: str = Header("default", alias="X-Tenant-Id")
 ):
+    """Update an existing employee's details. Email change is validated for uniqueness."""
     existing = await employees_collection.find_one({"email": email, "tenant_id": x_tenant_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -187,8 +214,9 @@ async def update_employee(
     return serialize_employee(updated)
 
 
-@app.delete("/employees/{email}")
-async def delete_employee(email: str, x_tenant_id: str = Header("default")):
+@app.delete("/employees/{email}", tags=["employees"], summary="Delete employee")
+async def delete_employee(email: str, x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
+    """Permanently delete an employee record."""
     result = await employees_collection.delete_one({"email": email, "tenant_id": x_tenant_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Employee not found")

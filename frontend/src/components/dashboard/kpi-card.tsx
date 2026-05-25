@@ -5,14 +5,16 @@ import { TrendingDown, TrendingUp } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn, formatCurrency } from "@/lib/utils";
 import type { KpiMetric } from "@/types";
+import type { ReactNode } from "react";
 
 interface KpiCardProps {
   metric: KpiMetric;
   isCurrency?: boolean;
   index?: number;
+  icon?: ReactNode;
 }
 
-export function KpiCard({ metric, isCurrency, index = 0 }: KpiCardProps) {
+export function KpiCard({ metric, isCurrency, icon, index = 0 }: KpiCardProps) {
   const display = isCurrency
     ? formatCurrency(metric.value)
     : metric.value.toLocaleString();
@@ -25,9 +27,16 @@ export function KpiCard({ metric, isCurrency, index = 0 }: KpiCardProps) {
     >
       <Card className="glass-panel">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">
-            {metric.label}
-          </CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              {metric.label}
+            </CardTitle>
+            {icon && (
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                {icon}
+              </div>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           <p className="text-2xl font-bold tracking-tight">{display}</p>

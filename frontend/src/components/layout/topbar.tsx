@@ -1,12 +1,12 @@
 "use client";
 
-import { LogOut, Search } from "lucide-react";
+import { LogOut } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { CommandPalette } from "@/components/layout/command-palette";
+import { NotificationBell } from "@/components/layout/notification-bell";
 import { useAuthStore } from "@/stores/auth-store";
 
 export function TopBar() {
@@ -27,7 +27,8 @@ export function TopBar() {
         <CommandPalette />
       </div>
 
-      <div className="ml-auto flex items-center gap-3">
+      <div className="ml-auto flex items-center gap-1">
+        <NotificationBell />
         <ThemeToggle />
         <div className="hidden items-center gap-2 sm:flex">
           <Avatar className="h-8 w-8">

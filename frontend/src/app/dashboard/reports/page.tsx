@@ -2,8 +2,14 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { analyticsApi, employeeApi, payrollApi, leaveApi } from "@/lib/api";
-import { FileText, Download, Loader2 } from "lucide-react";
+import {
+  analyticsApi,
+  employeeApi,
+  payrollApi,
+  leaveApi,
+} from "@/lib/api";
+import { downloadCSV, downloadJSON } from "@/lib/csv";
+import { Download, FileSpreadsheet, FileText, Loader2 } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -12,20 +18,16 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useToastStore } from "@/stores/toast-store";
-
-interface ReportGenerator {
-  title: string;
-  description: string;
-  apiCall: () => Promise<unknown>;
-  format: (data: unknown) => string;
-}
+import { formatCurrency, formatDate } from "@/lib/utils";
 
 export default function ReportsPage() {
   const addToast = useToastStore((s) => s.toast);
   const [generating, setGenerating] = useState<string | null>(null);
 
-  const { data: deptData } = useQuery({
+  const { data: deptData, isLoading: deptLoading } = useQuery({
     queryKey: ["analytics", "department"],
     queryFn: async () => {
       const { data } = await analyticsApi.department();
@@ -34,156 +36,270 @@ export default function ReportsPage() {
     retry: false,
   });
 
-  const { data: empData } = useQuery({
+  const { data: empData, isLoading: empLoading } = useQuery({
     queryKey: ["employees", "all"],
     queryFn: async () => {
-      const { data } = await employeeApi.list({ page: 1, pageSize: 100 });
-      return data as { items: Array<{ name: string; department: string; position: string; email: string }>; total: number };
+      const { data } = await employeeApi.list({ page: 1, pageSize: 1000 });
+      return data as {
+        items: Array<{
+          name: string;
+          department: string;
+          position: string;
+          email: string;
+        }>;
+        total: number;
+      };
     },
     retry: false,
   });
 
-  const { data: payrollRecords } = useQuery({
+  const { data: payrollRecords, isLoading: payrollLoading } = useQuery({
     queryKey: ["payroll"],
     queryFn: async () => {
       const { data } = await payrollApi.list();
-      return (Array.isArray(data) ? data : []) as Array<{ employeeId: string; period: string; netSalary: number; status: string }>;
+      return (Array.isArray(data) ? data : []) as Array<{
+        employeeId: string;
+        period: string;
+        baseSalary: number;
+        netSalary: number;
+        tax: number;
+        status: string;
+      }>;
     },
     retry: false,
   });
 
-  const reportTypes: ReportGenerator[] = [
-    {
-      title: "Headcount Report",
-      description: "Employee count by department",
-      apiCall: () => analyticsApi.department().then((r) => r.data),
-      format: (data: unknown) => {
-        const rows = data as Array<{ department: string; count: number }>;
-        if (!rows?.length) return "No data available";
-        const lines = rows.map((r) => `${r.department}: ${r.count}`);
-        const total = rows.reduce((s, r) => s + r.count, 0);
-        return `=== Headcount Report ===\n\n${lines.join("\n")}\n\nTotal: ${total}`;
-      },
+  const { data: leaveRecords, isLoading: leaveLoading } = useQuery({
+    queryKey: ["leave"],
+    queryFn: async () => {
+      const { data } = await leaveApi.list();
+      return (Array.isArray(data) ? data : []) as Array<{
+        employeeId: string;
+        startDate: string;
+        endDate: string;
+        leaveType: string;
+        status: string;
+      }>;
     },
+    retry: false,
+  });
+
+  type ReportConfig = {
+    id: string;
+    title: string;
+    description: string;
+    icon: typeof FileText;
+    loading: boolean;
+    rowCount?: number;
+    onDownloadCSV: () => void;
+    onDownloadJSON: () => void;
+  };
+
+  const reports: ReportConfig[] = [
     {
-      title: "Payroll Summary",
-      description: "Payroll disbursement breakdown",
-      apiCall: () => analyticsApi.payroll().then((r) => r.data),
-      format: (data: unknown) => {
-        const rows = data as Array<{ period: string; total_base_salary: number; total_net_salary: number }>;
-        if (!rows?.length) return "No payroll data available";
-        const lines = rows.map((r) =>
-          `${r.period}: Gross $${r.total_base_salary?.toFixed(2) ?? "0.00"}, Net $${r.total_net_salary?.toFixed(2) ?? "0.00"}`
+      id: "headcount",
+      title: "Headcount by Department",
+      description: "Employee count broken down by department",
+      icon: FileSpreadsheet,
+      loading: deptLoading,
+      rowCount: deptData?.length,
+      onDownloadCSV: () => {
+        if (!deptData?.length) {
+          addToast({ title: "No data to export", variant: "destructive" });
+          return;
+        }
+        downloadCSV(
+          "headcount_by_department",
+          ["Department", "Headcount"],
+          deptData.map((d) => [d.department, String(d.count)])
         );
-        return `=== Payroll Summary ===\n\n${lines.join("\n")}`;
+        addToast({ title: "Headcount report downloaded" });
+      },
+      onDownloadJSON: () => {
+        if (!deptData?.length) {
+          addToast({ title: "No data to export", variant: "destructive" });
+          return;
+        }
+        downloadJSON("headcount_by_department", deptData);
+        addToast({ title: "Headcount report downloaded" });
       },
     },
     {
+      id: "employees",
       title: "Employee Directory",
-      description: "Full employee listing with details",
-      apiCall: async () => {
-        if (empData?.items) return empData.items;
-        const { data } = await employeeApi.list({ page: 1, pageSize: 100 });
-        return (data as { items: Array<{ name: string; department: string; position: string; email: string }> }).items ?? [];
+      description: "Full employee listing with contact details",
+      icon: FileSpreadsheet,
+      loading: empLoading,
+      rowCount: empData?.items?.length,
+      onDownloadCSV: () => {
+        const items = empData?.items;
+        if (!items?.length) {
+          addToast({ title: "No data to export", variant: "destructive" });
+          return;
+        }
+        downloadCSV(
+          "employee_directory",
+          ["Name", "Email", "Department", "Position"],
+          items.map((e) => [e.name, e.email, e.department, e.position])
+        );
+        addToast({ title: "Employee directory downloaded" });
       },
-      format: (data: unknown) => {
-        const rows = data as Array<{ name: string; department: string; position: string; email: string }>;
-        if (!rows?.length) return "No employees found";
-        const lines = rows.map((r) => `${r.name} | ${r.department} | ${r.position} | ${r.email}`);
-        return `=== Employee Directory ===\n\nName | Department | Position | Email\n${"-".repeat(60)}\n${lines.join("\n")}\n\nTotal: ${rows.length}`;
+      onDownloadJSON: () => {
+        if (!empData?.items?.length) {
+          addToast({ title: "No data to export", variant: "destructive" });
+          return;
+        }
+        downloadJSON("employee_directory", empData.items);
+        addToast({ title: "Employee directory downloaded" });
       },
     },
     {
+      id: "payroll",
       title: "Payroll History",
-      description: "All payroll runs by employee",
-      apiCall: async () => payrollRecords ?? [],
-      format: (data: unknown) => {
-        const rows = data as Array<{ employeeId: string; period: string; netSalary: number; status: string }>;
-        if (!rows?.length) return "No payroll history available";
-        const lines = rows.map((r) =>
-          `${r.employeeId} | ${r.period} | $${r.netSalary?.toFixed(2) ?? "0.00"} | ${r.status}`
+      description: "All payroll runs with net salary details",
+      icon: FileSpreadsheet,
+      loading: payrollLoading,
+      rowCount: payrollRecords?.length,
+      onDownloadCSV: () => {
+        if (!payrollRecords?.length) {
+          addToast({ title: "No data to export", variant: "destructive" });
+          return;
+        }
+        downloadCSV(
+          "payroll_history",
+          ["Employee", "Period", "Gross Salary", "Tax", "Net Salary", "Status"],
+          payrollRecords.map((r) => [
+            r.employeeId,
+            r.period,
+            formatCurrency(r.baseSalary),
+            formatCurrency(r.tax),
+            formatCurrency(r.netSalary),
+            r.status,
+          ])
         );
-        return `=== Payroll History ===\n\nEmployee | Period | Net Salary | Status\n${"-".repeat(60)}\n${lines.join("\n")}`;
+        addToast({ title: "Payroll history downloaded" });
+      },
+      onDownloadJSON: () => {
+        if (!payrollRecords?.length) {
+          addToast({ title: "No data to export", variant: "destructive" });
+          return;
+        }
+        downloadJSON("payroll_history", payrollRecords);
+        addToast({ title: "Payroll history downloaded" });
+      },
+    },
+    {
+      id: "leave",
+      title: "Leave Requests",
+      description: "All leave requests with status",
+      icon: FileSpreadsheet,
+      loading: leaveLoading,
+      rowCount: leaveRecords?.length,
+      onDownloadCSV: () => {
+        if (!leaveRecords?.length) {
+          addToast({ title: "No data to export", variant: "destructive" });
+          return;
+        }
+        downloadCSV(
+          "leave_requests",
+          ["Employee", "Type", "Start Date", "End Date", "Status"],
+          leaveRecords.map((r) => [
+            r.employeeId,
+            r.leaveType,
+            formatDate(r.startDate),
+            formatDate(r.endDate),
+            r.status,
+          ])
+        );
+        addToast({ title: "Leave report downloaded" });
+      },
+      onDownloadJSON: () => {
+        if (!leaveRecords?.length) {
+          addToast({ title: "No data to export", variant: "destructive" });
+          return;
+        }
+        downloadJSON("leave_requests", leaveRecords);
+        addToast({ title: "Leave report downloaded" });
       },
     },
   ];
-
-  const handleGenerate = async (report: ReportGenerator) => {
-    setGenerating(report.title);
-    try {
-      const data = await report.apiCall();
-      const text = report.format(data);
-      const blob = new Blob([text], { type: "text/plain" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${report.title.replace(/\s+/g, "_").toLowerCase()}.txt`;
-      a.click();
-      URL.revokeObjectURL(url);
-      addToast({ title: `${report.title} downloaded` });
-    } catch {
-      addToast({ title: `Failed to generate ${report.title}`, variant: "destructive" });
-    } finally {
-      setGenerating(null);
-    }
-  };
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Reports</h1>
         <p className="text-muted-foreground">
-          Generate and export workforce reports
+          Generate and export workforce reports in CSV or JSON
         </p>
       </div>
 
-      <Card className="glass-panel">
-        <CardHeader>
-          <CardTitle className="text-base">Available Reports</CardTitle>
-          <CardDescription>
-            Generate reports from live data
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-4 sm:grid-cols-2">
-            {reportTypes.map((report) => (
-              <div
-                key={report.title}
-                className="flex items-start gap-4 rounded-lg border p-4"
-              >
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-                  <FileText className="h-5 w-5 text-primary" />
+      <div className="grid gap-4 sm:grid-cols-2">
+        {reports.map((report) => (
+          <Card key={report.id} className="glass-panel">
+            <CardHeader className="pb-3">
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                    <report.icon className="h-5 w-5 text-primary" />
+                  </div>
+                  <div>
+                    <CardTitle className="text-base">{report.title}</CardTitle>
+                    <CardDescription>{report.description}</CardDescription>
+                  </div>
                 </div>
-                <div className="flex-1">
-                  <h3 className="font-medium">{report.title}</h3>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {report.description}
-                  </p>
+                {!report.loading && report.rowCount !== undefined && (
+                  <Badge variant="secondary">{report.rowCount} rows</Badge>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent>
+              {report.loading ? (
+                <div className="space-y-2">
+                  <Skeleton className="h-8 w-full" />
+                  <Skeleton className="h-8 w-2/3" />
+                </div>
+              ) : (
+                <div className="flex gap-2">
                   <Button
                     variant="outline"
                     size="sm"
-                    className="mt-3"
-                    onClick={() => handleGenerate(report)}
-                    disabled={generating === report.title}
+                    onClick={() => {
+                      setGenerating(`csv-${report.id}`);
+                      report.onDownloadCSV();
+                      setGenerating(null);
+                    }}
+                    disabled={generating === `csv-${report.id}`}
                   >
-                    {generating === report.title ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Generating...
-                      </>
+                    {generating === `csv-${report.id}` ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
-                      <>
-                        <Download className="h-4 w-4" />
-                        Download
-                      </>
+                      <Download className="h-4 w-4" />
                     )}
+                    Export CSV
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setGenerating(`json-${report.id}`);
+                      report.onDownloadJSON();
+                      setGenerating(null);
+                    }}
+                    disabled={generating === `json-${report.id}`}
+                  >
+                    {generating === `json-${report.id}` ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <FileText className="h-4 w-4" />
+                    )}
+                    Export JSON
                   </Button>
                 </div>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+              )}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }

@@ -16,8 +16,9 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToastStore } from "@/stores/toast-store";
-import { Plus } from "lucide-react";
+import { Download, Plus } from "lucide-react";
 import { formatDate } from "@/lib/utils";
+import { downloadCSV } from "@/lib/csv";
 
 interface LeaveRecord {
   id: number;
@@ -126,13 +127,41 @@ export default function LeavePage() {
         </Button>
       </div>
 
-      <Card className="glass-panel">
-        <CardHeader>
-          <CardTitle className="text-base">Leave Requests</CardTitle>
-          <CardDescription>
-            {isLoading ? "Loading..." : `${requests?.length ?? 0} requests`}
-          </CardDescription>
-        </CardHeader>
+          <Card className="glass-panel">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base">Leave Requests</CardTitle>
+                  <CardDescription>
+                    {isLoading ? "Loading..." : `${requests?.length ?? 0} requests`}
+                  </CardDescription>
+                </div>
+                {requests && requests.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      downloadCSV(
+                        "leave_requests",
+                        ["Employee", "Type", "Start", "End", "Days", "Status"],
+                        requests.map((r) => [
+                          r.employeeId,
+                          r.leaveType,
+                          formatDate(r.startDate),
+                          formatDate(r.endDate),
+                          String(calcDays(r.startDate, r.endDate)),
+                          r.status,
+                        ])
+                      );
+                      addToast({ title: "Leave data exported" });
+                    }}
+                  >
+                    <Download className="h-4 w-4" />
+                    Export CSV
+                  </Button>
+                )}
+              </div>
+            </CardHeader>
         <CardContent>
           <div className="overflow-x-auto rounded-lg border">
             <table className="w-full text-sm">

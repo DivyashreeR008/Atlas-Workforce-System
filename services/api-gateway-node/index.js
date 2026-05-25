@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const http = require('http');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
@@ -274,12 +275,37 @@ app.use('/api/analytics', proxyService(services.analytics, '/api/analytics', { '
 app.use('/api/attendance', proxyService(services.attendance, '/api/attendance'));
 app.use('/api/leave', proxyService(services.leave, '/api/leave', null, true));
 app.use('/api/payroll', proxyService(services.payroll, '/api/payroll', null, true));
-app.use('/api/notification', proxyService(services.notification, '/api/notification'));
+app.use('/api/notification', proxyService(services.notification, '/api/notification', { '^/api/notification': '' }));
+
+// WebSocket proxy support for notification service
+const server = app.listen(PORT, () => {
+  console.log(`API Gateway listening on port ${PORT}`);
+});
+
+server.on('upgrade', (req, socket, head) => {
+  const pathname = new URL(req.url, 'http://localhost').pathname;
+  // Match WebSocket connections: /ws or /api/notification/ws
+  const isWs = pathname === '/ws' || pathname.endsWith('/notification/ws');
+  if (isWs) {
+    const target = new URL(services.notification);
+    target.pathname = '/ws';
+    target.search = new URL(req.url, 'http://localhost').search;
+    const proxyReq = http.request(target.toString(), { method: 'GET', headers: req.headers });
+    proxyReq.on('upgrade', (proxyRes, proxySocket) => {
+      socket.write('HTTP/1.1 101 Switching Protocols\r\n' +
+        'Upgrade: websocket\r\n' +
+        'Connection: Upgrade\r\n' +
+        'Sec-WebSocket-Accept: ' + proxyRes.headers['sec-websocket-accept'] + '\r\n' +
+        '\r\n');
+      socket.pipe(proxySocket).pipe(socket);
+    });
+    proxyReq.on('error', () => socket.destroy());
+    proxyReq.end();
+  } else {
+    socket.destroy();
+  }
+});
 
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'API Gateway is running' });
-});
-
-app.listen(PORT, () => {
-  console.log(`API Gateway listening on port ${PORT}`);
 });

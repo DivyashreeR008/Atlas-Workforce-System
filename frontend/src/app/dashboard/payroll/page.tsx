@@ -16,8 +16,9 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToastStore } from "@/stores/toast-store";
-import { Plus } from "lucide-react";
+import { Download, Plus } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
+import { downloadCSV } from "@/lib/csv";
 
 interface PayrollRecord {
   id: number;
@@ -140,10 +141,38 @@ export default function PayrollPage() {
 
       <Card className="glass-panel">
         <CardHeader>
-          <CardTitle className="text-base">Payroll History</CardTitle>
-          <CardDescription>
-            {isLoading ? "Loading..." : `${records?.length ?? 0} payroll records`}
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-base">Payroll History</CardTitle>
+              <CardDescription>
+                {isLoading ? "Loading..." : `${records?.length ?? 0} payroll records`}
+              </CardDescription>
+            </div>
+            {records && records.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  downloadCSV(
+                    "payroll_history",
+                    ["Employee", "Period", "Gross", "Tax", "Net", "Status"],
+                    records.map((r) => [
+                      r.employeeId,
+                      r.period,
+                      formatCurrency(r.baseSalary + r.allowances),
+                      formatCurrency(r.tax),
+                      formatCurrency(r.netSalary),
+                      r.status,
+                    ])
+                  );
+                  addToast({ title: "Payroll data exported" });
+                }}
+              >
+                <Download className="h-4 w-4" />
+                Export CSV
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto rounded-lg border">

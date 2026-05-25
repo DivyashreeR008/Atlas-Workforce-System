@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 import pandas as pd
 import os
 import uvicorn
@@ -9,7 +10,29 @@ import json
 import requests
 from urllib.parse import urljoin
 
-app = FastAPI(title="Analytics Service API", version="1.0.0")
+app = FastAPI(title="Analytics Service API", version="2.0.0")
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title="Atlas Analytics Service",
+        version="2.0.0",
+        description="Workforce analytics, reporting, and AI-powered insights. Part of the Atlas Workforce System.",
+        routes=app.routes,
+    )
+    openapi_schema["servers"] = [{"url": "http://localhost:8003", "description": "Local development"}]
+    openapi_schema["tags"] = [
+        {"name": "analytics", "description": "Analytics and reporting endpoints"},
+        {"name": "ai", "description": "AI-powered insights"},
+        {"name": "health", "description": "Service health check"},
+    ]
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 
@@ -40,17 +63,19 @@ api_key = os.environ.get("OPENAI_API_KEY")
 client = OpenAI(api_key=api_key) if api_key and api_key != "dummy_key_for_now" else None
 
 
-@app.get("/health")
+@app.get("/health", tags=["health"])
 def health_check():
+    """Check if the analytics service is healthy."""
     return {"status": "Analytics Service is running"}
 
 
 EMPLOYEE_SERVICE_URL = os.environ.get("EMPLOYEE_SERVICE_URL", "http://employee-service:8001")
 
-@app.get("/analytics/department")
-def get_department_analytics(x_tenant_id: str = Header("default")):
+
+@app.get("/analytics/department", tags=["analytics"], summary="Department headcount breakdown")
+def get_department_analytics(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
+    """Returns headcount grouped by department for the given tenant."""
     try:
-        # Fetch employee data from the employee service API
         resp = requests.get(
             urljoin(EMPLOYEE_SERVICE_URL, "/employees?limit=1000"),
             headers={"X-Tenant-Id": x_tenant_id},
@@ -74,8 +99,9 @@ def get_department_analytics(x_tenant_id: str = Header("default")):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/analytics/payroll")
-def get_payroll_analytics(x_tenant_id: str = Header("default")):
+@app.get("/analytics/payroll", tags=["analytics"], summary="Payroll trends")
+def get_payroll_analytics(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
+    """Returns aggregated payroll data grouped by period."""
     if not engine:
         raise HTTPException(status_code=500, detail="Database connection failed")
 
@@ -93,8 +119,9 @@ def get_payroll_analytics(x_tenant_id: str = Header("default")):
         return []
 
 
-@app.get("/analytics/performance")
+@app.get("/analytics/performance", tags=["analytics"], summary="Performance prediction")
 def get_performance_prediction():
+    """Returns mock performance prediction data based on experience and project completion."""
     data = {
         "employee_id": [1, 2, 3],
         "years_experience": [2, 5, 10],
@@ -114,16 +141,15 @@ def get_performance_prediction():
     }
 
 
-@app.post("/analytics/ai-insights")
-def get_ai_insights(x_tenant_id: str = Header("default")):
+@app.post("/analytics/ai-insights", tags=["ai"], summary="AI-powered workforce insights")
+def get_ai_insights(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
+    """Generates strategic HR insights using AI based on current workforce data."""
     try:
-        # Fetch some high level stats to feed to OpenAI
         dept_data = get_department_analytics(x_tenant_id=x_tenant_id)
         payroll_data = get_payroll_analytics(x_tenant_id=x_tenant_id)
 
         context = f"Department Headcounts: {json.dumps(dept_data)}. Payroll Trends: {json.dumps(payroll_data)}."
 
-        # If no real API key is set, return a mock response to avoid failing in local dev
         if not client:
             return {
                 "insight": (

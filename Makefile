@@ -38,9 +38,13 @@ clean:
 
 test:
 	@echo "Running all backend tests..."
+	cd services/api-gateway-node && npm test || true
 	cd services/auth-service && npm test || true
+	cd services/employee-python-service && python -m pytest -v || true
+	cd services/analytics-python-service && python -m pytest -v || true
 	cd services/payroll-java-service && mvn test || true
 	cd services/leave-service && mvn test || true
+	@echo "All backend tests completed."
 
 test-e2e:
 	@echo "Running Playwright End-to-End test suite..."
