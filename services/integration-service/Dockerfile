@@ -1,8 +1,11 @@
 FROM python:3.10-alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache gcc musl-dev libffi-dev postgresql-dev
+COPY services/atlas_observability/ ./services/atlas_observability/
+RUN pip install -e ./services/atlas_observability
 COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
+RUN grep -v "atlas_observability" requirements.txt > req_clean.txt && \
+    pip install --user --no-cache-dir -r req_clean.txt
 
 FROM python:3.10-alpine
 WORKDIR /app

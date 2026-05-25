@@ -2,8 +2,11 @@ FROM python:3.10-slim AS builder
 
 WORKDIR /app
 
+COPY services/atlas_observability/ ./services/atlas_observability/
+RUN pip install -e ./services/atlas_observability
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN grep -v "atlas_observability" requirements.txt > req_clean.txt && \
+    pip install --no-cache-dir -r req_clean.txt
 
 FROM python:3.10-slim AS runtime
 

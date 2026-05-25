@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { aiApi } from "@/lib/api";

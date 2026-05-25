@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/atlas-workforce/lms-service/middleware"
 	"github.com/atlas-workforce/lms-service/models"
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -153,8 +155,9 @@ func (h *LearningAnalyticsHandler) CompetencyMatrix(c *fiber.Ctx) error {
 	var results []CompetencyResult
 	for _, fw := range frameworks {
 		comps := []string{}
-		if c, ok := fw.Competencies.([]interface{}); ok {
-			for _, comp := range c {
+		var compList []interface{}
+		if err := json.Unmarshal(fw.Competencies, &compList); err == nil {
+			for _, comp := range compList {
 				if m, ok := comp.(map[string]interface{}); ok {
 					if s, ok := m["skill"].(string); ok {
 						comps = append(comps, s)

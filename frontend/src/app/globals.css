@@ -164,11 +164,15 @@
   }
 
   .glass-card-hover {
-    @apply glass-card cursor-pointer hover:border-primary/20 hover:shadow-primary/5;
+    @apply rounded-xl border border-border/50 bg-card/60 shadow-sm backdrop-blur-lg transition-all duration-200 cursor-pointer hover:shadow-md hover:bg-card/80 hover:border-primary/20 hover:shadow-primary/5;
   }
 
   .frosted {
-    @apply backdrop-blur-2xl bg-background/30 border border-white/10 dark:border-white/5;
+    @apply backdrop-blur-2xl bg-background/30 border border-white/10;
+  }
+
+  .dark .frosted {
+    @apply border-white/5;
   }
 
   .frosted-dark {

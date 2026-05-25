@@ -7,8 +7,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc build-essential && \
     rm -rf /var/lib/apt/lists/*
 
+COPY services/atlas_observability/ ./services/atlas_observability/
+RUN pip install -e ./services/atlas_observability
 COPY requirements.txt .
-RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.txt
+RUN grep -v "atlas_observability" requirements.txt > req_clean.txt && \
+    pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r req_clean.txt
 
 # ── Runtime stage ─────────────────────────────
 FROM python:3.10-slim AS runtime

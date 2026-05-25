@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { BookOpen, GraduationCap, TrendingUp, Award, AlertTriangle, Clock } from "lucide-react";

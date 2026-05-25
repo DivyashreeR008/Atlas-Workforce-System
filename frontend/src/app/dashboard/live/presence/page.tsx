@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useSSEChannel } from "@/hooks/use-realtime";
 import type { PresencePayload as PresenceUser } from "@/types";
 import { LiveIndicator } from "@/components/live/live-indicator";

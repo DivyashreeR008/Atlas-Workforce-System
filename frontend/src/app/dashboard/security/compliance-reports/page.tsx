@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { FileText, Download, Shield, CheckCircle2, AlertTriangle, XCircle, ExternalLink } from "lucide-react";

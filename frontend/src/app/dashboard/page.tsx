@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useQuery } from "@tanstack/react-query";
 import { analyticsApi, employeeApi, attendanceApi } from "@/lib/api";
 import { KpiCard } from "@/components/dashboard/kpi-card";
