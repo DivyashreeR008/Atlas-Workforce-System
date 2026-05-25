@@ -2,8 +2,11 @@
 FROM python:3.10-slim AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends gcc g++ libpq-dev && rm -rf /var/lib/apt/lists/*
+COPY services/atlas_observability/ ./services/atlas_observability/
+RUN pip install -e ./services/atlas_observability
 COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
+RUN grep -v "atlas_observability" requirements.txt > req_clean.txt && \
+    pip install --user --no-cache-dir -r req_clean.txt
 
 # Stage 2: Final minimal runner
 FROM python:3.10-slim

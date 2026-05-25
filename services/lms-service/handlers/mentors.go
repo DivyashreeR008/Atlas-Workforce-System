@@ -110,7 +110,6 @@ func (h *MentorHandler) Delete(c *fiber.Ctx) error {
 
 func (h *MentorHandler) Match(c *fiber.Ctx) error {
 	tenantID := middleware.GetTenant(c)
-	employeeID := c.Query("employee_id")
 	skill := c.Query("skill")
 
 	var mentors []models.MentorProfile

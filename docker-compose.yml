@@ -82,7 +82,9 @@ services:
       - atlas-network
 
   employee-lifecycle-service:
-    build: ./services/employee-lifecycle-service
+    build:
+      context: .
+      dockerfile: services/employee-lifecycle-service/Dockerfile
     container_name: atlas-employee-lifecycle-service
     ports:
       - "8020:8020"
@@ -96,7 +98,9 @@ services:
         condition: service_healthy
 
   integration-service:
-    build: ./services/integration-service
+    build:
+      context: .
+      dockerfile: services/integration-service/Dockerfile
     container_name: atlas-integration-service
     ports:
       - "8016:8016"
@@ -178,7 +182,9 @@ services:
         condition: service_healthy
 
   employee-service:
-    build: ./services/employee-python-service
+    build:
+      context: .
+      dockerfile: services/employee-python-service/Dockerfile
     container_name: atlas-employee-service
     ports:
       - "8001:8001"
@@ -209,7 +215,9 @@ services:
         condition: service_healthy
 
   analytics-service:
-    build: ./services/analytics-python-service
+    build:
+      context: .
+      dockerfile: services/analytics-python-service/Dockerfile
     container_name: atlas-analytics-service
     ports:
       - "8003:8003"
@@ -263,7 +271,9 @@ services:
         condition: service_healthy
 
   audit-compliance-service:
-    build: ./services/audit-compliance-service
+    build:
+      context: .
+      dockerfile: services/audit-compliance-service/Dockerfile
     container_name: atlas-audit-compliance-service
     ports:
       - "8011:8011"
@@ -278,7 +288,9 @@ services:
         condition: service_healthy
 
   ats-service:
-    build: ./services/ats-service
+    build:
+      context: .
+      dockerfile: services/ats-service/Dockerfile
     container_name: atlas-ats-service
     ports:
       - "8012:8012"
@@ -325,7 +337,9 @@ services:
         condition: service_healthy
 
   security-service:
-    build: ./services/security-service
+    build:
+      context: .
+      dockerfile: services/security-service/Dockerfile
     container_name: atlas-security-service
     ports:
       - "8050:8050"
@@ -340,7 +354,9 @@ services:
         condition: service_healthy
 
   ai-copilot-service:
-    build: ./services/ai-copilot-service
+    build:
+      context: .
+      dockerfile: services/ai-copilot-service/Dockerfile
     container_name: atlas-ai-copilot-service
     ports:
       - "8015:8015"
@@ -353,7 +369,9 @@ services:
       - redis
 
   ai-service:
-    build: ./services/ai-service
+    build:
+      context: .
+      dockerfile: services/ai-service/Dockerfile
     container_name: atlas-ai-service
     ports:
       - "8065:8065"
