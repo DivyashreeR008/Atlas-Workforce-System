@@ -14,3 +14,23 @@ scrape_configs:
   - job_name: 'auth-service'
     static_configs:
       - targets: ['auth-service:8010']
+
+  - job_name: 'audit-compliance-service'
+    static_configs:
+      - targets: ['audit-compliance-service:8011']
+
+  - job_name: 'ats-service'
+    static_configs:
+      - targets: ['ats-service:8012']
+
+  - job_name: 'lms-service'
+    static_configs:
+      - targets: ['lms-service:8013']
+
+  - job_name: 'performance-service'
+    static_configs:
+      - targets: ['performance-service:8014']
+
+  - job_name: 'ai-copilot-service'
+    static_configs:
+      - targets: ['ai-copilot-service:8015']

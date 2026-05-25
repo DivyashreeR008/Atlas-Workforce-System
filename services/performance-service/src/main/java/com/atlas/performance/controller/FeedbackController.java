@@ -1,0 +1,58 @@
+package com.atlas.performance.controller;
+
+import com.atlas.performance.model.Feedback360;
+import com.atlas.performance.service.PerformanceService;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/v1/feedback")
+@CrossOrigin(origins = "${ALLOWED_ORIGINS:http://localhost:3000}")
+public class FeedbackController {
+
+    private final PerformanceService service;
+
+    public FeedbackController(PerformanceService service) {
+        this.service = service;
+    }
+
+    @GetMapping
+    public ResponseEntity<List<Feedback360>> listFeedback(
+            @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId,
+            @RequestParam(required = false) String employeeId,
+            @RequestParam(required = false) String reviewerId) {
+        return ResponseEntity.ok(service.getFeedbackList(tenantId, employeeId, reviewerId));
+    }
+
+    @PostMapping
+    public ResponseEntity<?> submitFeedback(
+            @RequestBody Feedback360 feedback,
+            @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
+        try {
+            return ResponseEntity.ok(service.submitFeedback(tenantId, feedback));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<?> getFeedback(
+            @PathVariable String id,
+            @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
+        try {
+            return ResponseEntity.ok(service.getFeedback(tenantId, id));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/employee/{employeeId}/summary")
+    public ResponseEntity<Map<String, Object>> getFeedbackSummary(
+            @PathVariable String employeeId,
+            @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
+        return ResponseEntity.ok(service.getFeedbackSummary(tenantId, employeeId));
+    }
+}

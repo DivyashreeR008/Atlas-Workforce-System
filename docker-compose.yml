@@ -68,6 +68,12 @@ services:
       - ATTENDANCE_SERVICE_URL=http://attendance-service:8005
       - LEAVE_SERVICE_URL=http://leave-service:8006
       - REDIS_URL=redis://redis:6379
+      - ATS_SERVICE_URL=http://ats-service:8012
+      - LMS_SERVICE_URL=http://lms-service:8013
+      - PERFORMANCE_SERVICE_URL=http://performance-service:8014
+      - AI_COPILOT_SERVICE_URL=http://ai-copilot-service:8015
+      - AUDIT_COMPLIANCE_SERVICE_URL=http://audit-compliance-service:8011
+      - AUDIT_INTERNAL_KEY=${AUDIT_INTERNAL_KEY:-atlas-internal-key-change-me}
     networks:
       - atlas-network
     depends_on:
@@ -77,6 +83,11 @@ services:
       - attendance-service
       - leave-service
       - redis
+      - audit-compliance-service
+      - ats-service
+      - lms-service
+      - performance-service
+      - ai-copilot-service
 
   auth-service:
     build: ./services/auth-service
@@ -179,6 +190,81 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  audit-compliance-service:
+    build: ./services/audit-compliance-service
+    container_name: atlas-audit-compliance-service
+    ports:
+      - "8011:8011"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+      - INTERNAL_API_KEY=${AUDIT_INTERNAL_KEY:-atlas-internal-key-change-me}
+    networks:
+      - atlas-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ats-service:
+    build: ./services/ats-service
+    container_name: atlas-ats-service
+    ports:
+      - "8012:8012"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+    networks:
+      - atlas-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  lms-service:
+    build: ./services/lms-service
+    container_name: atlas-lms-service
+    ports:
+      - "8013:8013"
+    environment:
+      - DB_HOST=postgres
+      - DB_USER=${POSTGRES_USER:-atlas_user}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-atlas_password}
+      - DB_NAME=${POSTGRES_DB:-atlas_db}
+      - DB_PORT=5432
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+    networks:
+      - atlas-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  performance-service:
+    build: ./services/performance-service
+    container_name: atlas-performance-service
+    ports:
+      - "8014:8014"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-atlas_db}
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-atlas_user}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-atlas_password}
+    networks:
+      - atlas-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ai-copilot-service:
+    build: ./services/ai-copilot-service
+    container_name: atlas-ai-copilot-service
+    ports:
+      - "8015:8015"
+    environment:
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    networks:
+      - atlas-network
+    depends_on:
+      - redis
 
   frontend:
     build: ./frontend

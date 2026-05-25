@@ -219,4 +219,129 @@ spec:
         envFrom:
         - secretRef:
             name: atlas-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-compliance-service
+  labels:
+    app: audit-compliance-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: audit-compliance-service
+  template:
+    metadata:
+      labels:
+        app: audit-compliance-service
+    spec:
+      containers:
+      - name: audit-compliance-service
+        image: atlas/audit-compliance-service:latest
+        ports:
+        - containerPort: 8011
+        envFrom:
+        - secretRef:
+            name: atlas-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ats-service
+  labels:
+    app: ats-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ats-service
+  template:
+    metadata:
+      labels:
+        app: ats-service
+    spec:
+      containers:
+      - name: ats-service
+        image: atlas/ats-service:latest
+        ports:
+        - containerPort: 8012
+        envFrom:
+        - secretRef:
+            name: atlas-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lms-service
+  labels:
+    app: lms-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lms-service
+  template:
+    metadata:
+      labels:
+        app: lms-service
+    spec:
+      containers:
+      - name: lms-service
+        image: atlas/lms-service:latest
+        ports:
+        - containerPort: 8013
+        envFrom:
+        - secretRef:
+            name: atlas-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: performance-service
+  labels:
+    app: performance-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: performance-service
+  template:
+    metadata:
+      labels:
+        app: performance-service
+    spec:
+      containers:
+      - name: performance-service
+        image: atlas/performance-service:latest
+        ports:
+        - containerPort: 8014
+        envFrom:
+        - secretRef:
+            name: atlas-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-copilot-service
+  labels:
+    app: ai-copilot-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-copilot-service
+  template:
+    metadata:
+      labels:
+        app: ai-copilot-service
+    spec:
+      containers:
+      - name: ai-copilot-service
+        image: atlas/ai-copilot-service:latest
+        ports:
+        - containerPort: 8015
+        envFrom:
+        - secretRef:
+            name: atlas-secrets
 

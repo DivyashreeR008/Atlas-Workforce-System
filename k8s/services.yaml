@@ -96,4 +96,59 @@ spec:
   ports:
   - port: 8006
     targetPort: 8006
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: audit-compliance-service
+spec:
+  selector:
+    app: audit-compliance-service
+  ports:
+  - port: 8011
+    targetPort: 8011
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ats-service
+spec:
+  selector:
+    app: ats-service
+  ports:
+  - port: 8012
+    targetPort: 8012
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lms-service
+spec:
+  selector:
+    app: lms-service
+  ports:
+  - port: 8013
+    targetPort: 8013
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: performance-service
+spec:
+  selector:
+    app: performance-service
+  ports:
+  - port: 8014
+    targetPort: 8014
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-copilot-service
+spec:
+  selector:
+    app: ai-copilot-service
+  ports:
+  - port: 8015
+    targetPort: 8015
 

@@ -7,11 +7,14 @@ const crypto = require('crypto');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { authenticator } = require('otplib');
+const { v4: uuidv4 } = require('uuid');
+const axios = require('axios');
 
 const app = express();
 app.use(helmet());
 app.use(cookieParser());
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
   .split(',')
@@ -39,6 +42,11 @@ const ACCESS_EXPIRY = '15m';
 const REFRESH_EXPIRY_DAYS = 7;
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
+const AUDIT_SERVICE_URL = process.env.AUDIT_SERVICE_URL || 'http://audit-compliance-service:8011';
+const AUDIT_INTERNAL_KEY = process.env.AUDIT_INTERNAL_KEY || 'atlas-internal-key-change-in-prod';
+const SAML_IDP_SSO_URL = process.env.SAML_IDP_SSO_URL || 'https://idp.example.com/sso';
+const SAML_IDP_ENTITY_ID = process.env.SAML_IDP_ENTITY_ID || 'https://idp.example.com/metadata';
+const SCIM_API_KEY = process.env.SCIM_API_KEY || 'change-scim-api-key-in-production';
 
 if (!JWT_SECRET && NODE_ENV === 'production') {
   console.error('FATAL: JWT_SECRET is required in production');
@@ -47,8 +55,8 @@ if (!JWT_SECRET && NODE_ENV === 'production') {
 
 const jwtSecret = JWT_SECRET || 'dev-only-secret-change-in-production';
 
-const sslConfig = process.env.POSTGRES_SSL === 'true' || NODE_ENV === 'production' 
-  ? { rejectUnauthorized: false } 
+const sslConfig = process.env.POSTGRES_SSL === 'true' || NODE_ENV === 'production'
+  ? { rejectUnauthorized: false }
   : false;
 
 const pool = new Pool({
@@ -80,6 +88,14 @@ function signAccessToken(user) {
     { id: user.id, email: user.email, role: user.role, tenant_id: user.tenant_id || 'default' },
     jwtSecret,
     { expiresIn: ACCESS_EXPIRY }
+  );
+}
+
+function signMfaToken(userId) {
+  return jwt.sign(
+    { id: userId, mfa_validated: true, purpose: 'mfa_step_up' },
+    jwtSecret,
+    { expiresIn: '5m' }
   );
 }
 
@@ -185,6 +201,137 @@ function requireRole(...roles) {
   };
 }
 
+function requireScimAuth(req, res, next) {
+  const apiKey = req.headers['x-api-key'];
+  const authHeader = req.headers.authorization;
+
+  if (apiKey && apiKey === SCIM_API_KEY) {
+    return next();
+  }
+
+  if (authHeader?.startsWith('Bearer ')) {
+    try {
+      const payload = jwt.verify(authHeader.slice(7), jwtSecret);
+      req.user = payload;
+      return next();
+    } catch {
+      // Fall through to error
+    }
+  }
+
+  return res.status(401).json({
+    schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+    detail: 'Authentication required',
+    status: '401'
+  });
+}
+
+const rateLimitStore = new Map();
+
+function createUserRateLimiter(action, maxRequests = 20, windowMs = 15 * 60 * 1000) {
+  return (req, res, next) => {
+    const identifier = req.user?.id || req.ip;
+    const key = `${identifier}:${action}`;
+    const now = Date.now();
+
+    let entry = rateLimitStore.get(key);
+    if (!entry) {
+      entry = { count: 1, startTime: now };
+      rateLimitStore.set(key, entry);
+    } else {
+      if (now - entry.startTime > windowMs) {
+        entry.count = 1;
+        entry.startTime = now;
+      } else {
+        entry.count++;
+      }
+    }
+
+    res.setHeader('X-RateLimit-Limit', maxRequests);
+    res.setHeader('X-RateLimit-Remaining', Math.max(0, maxRequests - entry.count));
+    res.setHeader('X-RateLimit-Reset', Math.ceil((entry.startTime + windowMs) / 1000));
+
+    if (entry.count > maxRequests) {
+      return res.status(429).json({
+        message: 'Too many requests. Please try again later.',
+        retryAfter: Math.ceil((entry.startTime + windowMs - now) / 1000)
+      });
+    }
+
+    next();
+  };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rateLimitStore.entries()) {
+    if (now - entry.startTime > 30 * 60 * 1000) {
+      rateLimitStore.delete(key);
+    }
+  }
+}, 60 * 1000);
+
+async function sendAuditEvent(eventType, userId, email, details = {}) {
+  try {
+    await axios.post(`${AUDIT_SERVICE_URL}/api/v1/audit/log`, {
+      event_type: eventType,
+      user_id: userId,
+      email,
+      timestamp: new Date().toISOString(),
+      details,
+      service: 'auth-service'
+    }, {
+      headers: { 'X-Internal-Key': AUDIT_INTERNAL_KEY },
+      timeout: 3000
+    });
+  } catch (err) {
+    console.error(`Audit log failed for ${eventType}:`, err.message);
+  }
+}
+
+function formatScimUser(user, baseUrl) {
+  const nameParts = (user.name || '').split(' ');
+  return {
+    schemas: ['urn:ietf:params:scim:schemas:core:2.0:User'],
+    id: String(user.id),
+    userName: user.email,
+    name: {
+      formatted: user.name || '',
+      givenName: nameParts[0] || '',
+      familyName: nameParts.slice(1).join(' ') || ''
+    },
+    emails: [
+      {
+        value: user.email,
+        primary: true,
+        type: 'work'
+      }
+    ],
+    roles: [
+      {
+        value: user.role || 'employee',
+        type: 'default'
+      }
+    ],
+    active: user.active !== false,
+    meta: {
+      resourceType: 'User',
+      created: user.created_at || new Date().toISOString(),
+      lastModified: user.updated_at || user.created_at || new Date().toISOString(),
+      version: `W/"${user.id}"`,
+      location: `${baseUrl}/scim/v2/Users/${user.id}`
+    }
+  };
+}
+
+async function sendScimError(res, status, detail) {
+  return res.status(status).json({
+    schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+    detail,
+    status: String(status)
+  });
+}
+
 async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -195,15 +342,25 @@ async function initDB() {
       role VARCHAR(50) DEFAULT 'employee',
       department VARCHAR(100),
       position VARCHAR(100),
-      tenant_id VARCHAR(50) DEFAULT 'default'
+      tenant_id VARCHAR(50) DEFAULT 'default',
+      active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
 
+  const columnsToAdd = [
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true;",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();"
+  ];
+  for (const sql of columnsToAdd) {
+    try { await pool.query(sql); } catch (err) { /* column may exist */ }
+  }
+
   try {
     await pool.query("ALTER TABLE users ADD COLUMN tenant_id VARCHAR(50) DEFAULT 'default';");
-  } catch (err) {
-    // Column might already exist
-  }
+  } catch (err) { /* column may exist */ }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS refresh_tokens (
@@ -220,6 +377,58 @@ async function initDB() {
       email VARCHAR(255) PRIMARY KEY,
       attempts INTEGER DEFAULT 0,
       locked_until TIMESTAMP
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_mfa (
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      mfa_secret VARCHAR(255) NOT NULL,
+      backup_codes JSONB DEFAULT '[]'::jsonb,
+      mfa_enabled BOOLEAN DEFAULT false
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_devices (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      device_id VARCHAR(255) NOT NULL,
+      device_name VARCHAR(200),
+      device_type VARCHAR(50),
+      os VARCHAR(50),
+      browser VARCHAR(50),
+      ip_address VARCHAR(45),
+      fingerprint VARCHAR(255),
+      is_trusted BOOLEAN DEFAULT false,
+      last_used_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, device_id)
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      id UUID PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash VARCHAR(64),
+      ip_address VARCHAR(45),
+      user_agent TEXT,
+      device_id VARCHAR(255),
+      is_active BOOLEAN DEFAULT true,
+      expires_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS passwordless_tokens (
+      token VARCHAR(64) PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      email VARCHAR(255) NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      used BOOLEAN DEFAULT false,
+      created_at TIMESTAMP DEFAULT NOW()
     );
   `);
 
@@ -250,7 +459,7 @@ initDB().catch((err) => {
   console.error('Database initialization failed:', err);
 });
 
-app.post('/register', async (req, res) => {
+app.post('/register', createUserRateLimiter('register', 10), async (req, res) => {
   const { email, password, name, role, department, position, tenant_id } = req.body;
   if (!email || !password || !name) {
     return res.status(400).json({ message: 'Email, password, and name are required' });
@@ -281,6 +490,11 @@ app.post('/register', async (req, res) => {
       ]
     );
 
+    await sendAuditEvent('auth.register', result.rows[0].id, email, {
+      role: role || 'employee',
+      tenant_id: tenant_id || 'default'
+    });
+
     res.status(201).json({
       message: 'User registered successfully',
       user: sanitizeUser(result.rows[0]),
@@ -291,7 +505,7 @@ app.post('/register', async (req, res) => {
   }
 });
 
-app.post('/login', async (req, res) => {
+app.post('/login', createUserRateLimiter('login', 20), async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ message: 'Email and password are required' });
@@ -312,6 +526,10 @@ app.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
+    if (!user.active) {
+      return res.status(403).json({ message: 'Account is deactivated' });
+    }
+
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       await recordFailedAttempt(email);
@@ -320,8 +538,40 @@ app.post('/login', async (req, res) => {
 
     await clearFailedAttempts(email);
 
+    const deviceId = req.headers['x-device-id'];
+    const deviceFingerprint = req.headers['x-device-fingerprint'];
+
+    let deviceTrusted = false;
+    if (deviceId && deviceFingerprint) {
+      const deviceResult = await pool.query(
+        'SELECT is_trusted FROM user_devices WHERE user_id = $1 AND device_id = $2 AND fingerprint = $3',
+        [user.id, deviceId, deviceFingerprint]
+      );
+      if (deviceResult.rows[0]) {
+        deviceTrusted = deviceResult.rows[0].is_trusted;
+        await pool.query(
+          'UPDATE user_devices SET last_used_at = NOW(), ip_address = $1 WHERE user_id = $2 AND device_id = $3',
+          [req.ip, user.id, deviceId]
+        );
+      }
+    }
+
+    const mfaResult = await pool.query(
+      'SELECT mfa_enabled FROM user_mfa WHERE user_id = $1',
+      [user.id]
+    );
+    const mfaRequired = mfaResult.rows[0]?.mfa_enabled || false;
+
     const token = signAccessToken(user);
     const refreshToken = await createRefreshToken(user.id);
+
+    const sessionId = uuidv4();
+    await pool.query(
+      `INSERT INTO sessions (id, user_id, token_hash, ip_address, user_agent, device_id, is_active, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, true, $7)`,
+      [sessionId, user.id, hashToken(refreshToken), req.ip, req.headers['user-agent'] || '', deviceId || null,
+       new Date(Date.now() + REFRESH_EXPIRY_DAYS * 24 * 60 * 60 * 1000)]
+    );
 
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
@@ -330,11 +580,23 @@ app.post('/login', async (req, res) => {
       maxAge: REFRESH_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
     });
 
+    await sendAuditEvent('auth.login', user.id, email, {
+      device_trusted: deviceTrusted,
+      mfa_required: mfaRequired,
+      device_id: deviceId,
+      ip_address: req.ip,
+      user_agent: req.headers['user-agent'],
+      session_id: sessionId
+    });
+
     res.status(200).json({
       message: 'Logged in successfully',
       token,
       refreshToken,
+      session_id: sessionId,
       user: sanitizeUser(user),
+      device_trusted: deviceTrusted,
+      mfa_required: mfaRequired
     });
   } catch (error) {
     console.error(error);
@@ -385,13 +647,808 @@ app.post('/refresh', async (req, res) => {
 
 app.post('/logout', async (req, res) => {
   const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+  const sessionId = req.headers['x-session-id'];
+  let userId = null;
+  let userEmail = null;
+
   try {
-    await revokeRefreshToken(refreshToken);
+    if (refreshToken) {
+      const row = await verifyRefreshToken(refreshToken);
+      if (row) {
+        userId = row.id;
+        userEmail = row.email;
+      }
+      await revokeRefreshToken(refreshToken);
+    }
+
+    if (sessionId) {
+      await pool.query('UPDATE sessions SET is_active = false WHERE id = $1', [sessionId]);
+    } else if (refreshToken) {
+      await pool.query('UPDATE sessions SET is_active = false WHERE token_hash = $1', [hashToken(refreshToken)]);
+    }
+
     res.clearCookie('refreshToken');
+
+    if (userId) {
+      await sendAuditEvent('auth.logout', userId, userEmail, {
+        session_id: sessionId,
+        ip_address: req.ip
+      });
+    }
+
     res.status(200).json({ message: 'Logged out successfully' });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server error during logout' });
+  }
+});
+
+app.post('/mfa/setup', requireRole(), createUserRateLimiter('mfa_setup', 5), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const secret = authenticator.generateSecret();
+    const backupCodes = Array.from({ length: 10 }, () => crypto.randomBytes(5).toString('hex').slice(0, 8).toUpperCase());
+
+    await pool.query(`
+      INSERT INTO user_mfa (user_id, mfa_secret, backup_codes, mfa_enabled)
+      VALUES ($1, $2, $3::jsonb, false)
+      ON CONFLICT (user_id) DO UPDATE SET
+        mfa_secret = EXCLUDED.mfa_secret,
+        backup_codes = EXCLUDED.backup_codes,
+        mfa_enabled = false
+    `, [userId, secret, JSON.stringify(backupCodes)]);
+
+    const otpauth = authenticator.keyuri(req.user.email, 'Atlas Workforce', secret);
+
+    res.json({
+      secret,
+      qr_code_uri: otpauth,
+      backup_codes: backupCodes
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'MFA setup failed' });
+  }
+});
+
+app.post('/mfa/verify', requireRole(), createUserRateLimiter('mfa_verify', 10), async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ message: 'Token is required' });
+    }
+
+    const userId = req.user.id;
+    const result = await pool.query('SELECT * FROM user_mfa WHERE user_id = $1', [userId]);
+    if (!result.rows[0] || !result.rows[0].mfa_secret) {
+      return res.status(400).json({ message: 'MFA not set up. Call /mfa/setup first.' });
+    }
+
+    const isValid = authenticator.check(token, result.rows[0].mfa_secret);
+    if (!isValid) {
+      return res.status(400).json({ message: 'Invalid token' });
+    }
+
+    await pool.query('UPDATE user_mfa SET mfa_enabled = true WHERE user_id = $1', [userId]);
+    await sendAuditEvent('auth.mfa_enabled', userId, req.user.email);
+
+    res.json({ message: 'MFA enabled successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'MFA verification failed' });
+  }
+});
+
+app.post('/mfa/validate', requireRole(), createUserRateLimiter('mfa_validate', 10), async (req, res) => {
+  try {
+    const { token, backup_code } = req.body;
+    if (!token && !backup_code) {
+      return res.status(400).json({ message: 'Token or backup code is required' });
+    }
+
+    const userId = req.user.id;
+    const result = await pool.query('SELECT * FROM user_mfa WHERE user_id = $1 AND mfa_enabled = true', [userId]);
+    if (!result.rows[0]) {
+      return res.status(400).json({ message: 'MFA is not enabled for this user' });
+    }
+
+    const mfa = result.rows[0];
+
+    if (token) {
+      const isValid = authenticator.check(token, mfa.mfa_secret);
+      if (isValid) {
+        const mfaToken = signMfaToken(userId);
+        await sendAuditEvent('auth.mfa_validate', userId, req.user.email, { method: 'totp' });
+        return res.json({ message: 'Token validated', validated: true, mfa_token: mfaToken });
+      }
+    }
+
+    if (backup_code) {
+      const codes = typeof mfa.backup_codes === 'string' ? JSON.parse(mfa.backup_codes) : mfa.backup_codes;
+      if (Array.isArray(codes)) {
+        const idx = codes.indexOf(backup_code);
+        if (idx !== -1) {
+          codes.splice(idx, 1);
+          await pool.query('UPDATE user_mfa SET backup_codes = $1::jsonb WHERE user_id = $2', [JSON.stringify(codes), userId]);
+          const mfaToken = signMfaToken(userId);
+          await sendAuditEvent('auth.mfa_validate', userId, req.user.email, { method: 'backup_code' });
+          return res.json({ message: 'Backup code accepted', validated: true, mfa_token: mfaToken });
+        }
+      }
+    }
+
+    res.status(400).json({ message: 'Invalid token or backup code' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'MFA validation failed' });
+  }
+});
+
+app.post('/mfa/disable', requireRole(), async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({ message: 'Password is required to disable MFA' });
+    }
+
+    const userId = req.user.id;
+    const userResult = await pool.query('SELECT password FROM users WHERE id = $1', [userId]);
+    if (!userResult.rows[0]) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const isMatch = await bcrypt.compare(password, userResult.rows[0].password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Invalid password' });
+    }
+
+    await pool.query('DELETE FROM user_mfa WHERE user_id = $1', [userId]);
+    await sendAuditEvent('auth.mfa_disabled', userId, req.user.email);
+
+    res.json({ message: 'MFA disabled successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Failed to disable MFA' });
+  }
+});
+
+app.get('/mfa/status', requireRole(), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const result = await pool.query('SELECT mfa_enabled FROM user_mfa WHERE user_id = $1', [userId]);
+
+    res.json({
+      mfa_enabled: result.rows[0]?.mfa_enabled || false,
+      mfa_setup: !!result.rows[0]
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Failed to get MFA status' });
+  }
+});
+
+app.post('/devices/register', requireRole(), createUserRateLimiter('device_register', 20), async (req, res) => {
+  try {
+    const { device_id, device_name, device_type, os, browser, fingerprint } = req.body;
+    if (!device_id || !fingerprint) {
+      return res.status(400).json({ message: 'device_id and fingerprint are required' });
+    }
+
+    const userId = req.user.id;
+
+    const existing = await pool.query(
+      'SELECT id, is_trusted FROM user_devices WHERE user_id = $1 AND device_id = $2',
+      [userId, device_id]
+    );
+
+    if (existing.rows.length > 0) {
+      const result = await pool.query(`
+        UPDATE user_devices
+        SET device_name = COALESCE($1, device_name),
+            device_type = COALESCE($2, device_type),
+            os = COALESCE($3, os),
+            browser = COALESCE($4, browser),
+            fingerprint = $5,
+            ip_address = $6,
+            last_used_at = NOW()
+        WHERE id = $7
+        RETURNING id, device_id, device_name, device_type, os, browser, ip_address, is_trusted, last_used_at, created_at
+      `, [device_name, device_type, os, browser, fingerprint, req.ip, existing.rows[0].id]);
+
+      return res.json(result.rows[0]);
+    }
+
+    const result = await pool.query(`
+      INSERT INTO user_devices (user_id, device_id, device_name, device_type, os, browser, ip_address, fingerprint, last_used_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+      RETURNING id, device_id, device_name, device_type, os, browser, ip_address, is_trusted, last_used_at, created_at
+    `, [userId, device_id, device_name, device_type, os, browser, req.ip, fingerprint]);
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Device registration failed' });
+  }
+});
+
+app.get('/devices', requireRole(), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const result = await pool.query(
+      'SELECT id, device_id, device_name, device_type, os, browser, ip_address, is_trusted, last_used_at, created_at FROM user_devices WHERE user_id = $1 ORDER BY last_used_at DESC NULLS LAST',
+      [userId]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Failed to list devices' });
+  }
+});
+
+app.put('/devices/:id/trust', requireRole(), async (req, res) => {
+  try {
+    const deviceId = parseInt(req.params.id);
+    if (isNaN(deviceId)) {
+      return res.status(400).json({ message: 'Invalid device id' });
+    }
+
+    const userId = req.user.id;
+    const result = await pool.query(
+      'UPDATE user_devices SET is_trusted = NOT is_trusted WHERE id = $1 AND user_id = $2 RETURNING id, device_id, device_name, device_type, os, browser, is_trusted, last_used_at',
+      [deviceId, userId]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ message: 'Device not found' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Failed to update device trust' });
+  }
+});
+
+app.delete('/devices/:id', requireRole(), async (req, res) => {
+  try {
+    const deviceId = parseInt(req.params.id);
+    if (isNaN(deviceId)) {
+      return res.status(400).json({ message: 'Invalid device id' });
+    }
+
+    const userId = req.user.id;
+    const result = await pool.query(
+      'DELETE FROM user_devices WHERE id = $1 AND user_id = $2 RETURNING id',
+      [deviceId, userId]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ message: 'Device not found' });
+    }
+
+    res.json({ message: 'Device removed' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Failed to remove device' });
+  }
+});
+
+app.post('/devices/verify', requireRole(), createUserRateLimiter('device_verify', 30), async (req, res) => {
+  try {
+    const { device_id, fingerprint } = req.body;
+    if (!device_id || !fingerprint) {
+      return res.status(400).json({ message: 'device_id and fingerprint are required' });
+    }
+
+    const userId = req.user.id;
+    const result = await pool.query(
+      'SELECT id, is_trusted, fingerprint FROM user_devices WHERE user_id = $1 AND device_id = $2',
+      [userId, device_id]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ message: 'Device not found' });
+    }
+
+    const match = result.rows[0].fingerprint === fingerprint;
+    if (match) {
+      await pool.query(
+        'UPDATE user_devices SET last_used_at = NOW(), ip_address = $1 WHERE id = $2',
+        [req.ip, result.rows[0].id]
+      );
+    }
+
+    res.json({
+      verified: match,
+      device: {
+        id: result.rows[0].id,
+        is_trusted: result.rows[0].is_trusted
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Device verification failed' });
+  }
+});
+
+app.get('/scim/v2/Users', requireScimAuth, async (req, res) => {
+  try {
+    const count = Math.min(parseInt(req.query.count) || 10, 100);
+    const startIndex = Math.max(parseInt(req.query.startIndex) || 1, 1);
+    const offset = startIndex - 1;
+
+    let whereClause = '';
+    let queryParams = [];
+
+    if (req.query.filter) {
+      const userNameMatch = req.query.filter.match(/userName\s+eq\s+"([^"]+)"/i);
+      const emailMatch = req.query.filter.match(/emails\[type\s+eq\s+"work"\].*value\s+eq\s+"([^"]+)"/i);
+      const filterValue = userNameMatch?.[1] || emailMatch?.[1];
+
+      if (filterValue) {
+        whereClause = 'WHERE email = $1';
+        queryParams.push(filterValue);
+      }
+    }
+
+    const countResult = await pool.query(
+      `SELECT COUNT(*) FROM users ${whereClause}`,
+      queryParams
+    );
+    const totalResults = parseInt(countResult.rows[0].count);
+
+    const result = await pool.query(
+      `SELECT * FROM users ${whereClause} ORDER BY id ASC LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`,
+      [...queryParams, count, offset]
+    );
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+
+    res.json({
+      schemas: ['urn:ietf:params:scim:api:messages:2.0:ListResponse'],
+      totalResults,
+      itemsPerPage: count,
+      startIndex,
+      Resources: result.rows.map(user => formatScimUser(user, baseUrl))
+    });
+  } catch (err) {
+    console.error(err);
+    return sendScimError(res, 500, 'Internal error');
+  }
+});
+
+app.post('/scim/v2/Users', requireScimAuth, async (req, res) => {
+  try {
+    const { userName, name, emails, roles, active, externalId } = req.body;
+
+    if (!userName) {
+      return sendScimError(res, 400, 'userName is required');
+    }
+
+    const email = emails?.[0]?.value || userName;
+    const givenName = name?.givenName || '';
+    const familyName = name?.familyName || '';
+    const displayName = name?.formatted || `${givenName} ${familyName}`.trim() || email;
+    const role = roles?.[0]?.value || 'employee';
+    const userActive = active !== undefined ? active : true;
+
+    const exists = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (exists.rows.length > 0) {
+      return sendScimError(res, 409, 'User already exists');
+    }
+
+    const tempPassword = crypto.randomBytes(16).toString('hex');
+    const hashedPassword = await bcrypt.hash(tempPassword, 10);
+
+    const result = await pool.query(
+      'INSERT INTO users (email, password, name, role, active) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [email, hashedPassword, displayName, role, userActive]
+    );
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const scimUser = formatScimUser(result.rows[0], baseUrl);
+
+    await sendAuditEvent('scim.user_created', result.rows[0].id, email, {
+      method: 'scim',
+      source: externalId || 'SCIM provisioned'
+    });
+
+    res.status(201).json(scimUser);
+  } catch (err) {
+    console.error(err);
+    if (err.code === '23505') {
+      return sendScimError(res, 409, 'User already exists');
+    }
+    return sendScimError(res, 500, 'Internal error');
+  }
+});
+
+app.get('/scim/v2/Users/:id', requireScimAuth, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM users WHERE id = $1', [req.params.id]);
+    if (!result.rows[0]) {
+      return sendScimError(res, 404, 'User not found');
+    }
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    res.json(formatScimUser(result.rows[0], baseUrl));
+  } catch (err) {
+    console.error(err);
+    return sendScimError(res, 500, 'Internal error');
+  }
+});
+
+app.put('/scim/v2/Users/:id', requireScimAuth, async (req, res) => {
+  try {
+    const { userName, name, emails, roles, active } = req.body;
+
+    const email = emails?.[0]?.value || userName;
+    const givenName = name?.givenName || '';
+    const familyName = name?.familyName || '';
+    const displayName = name?.formatted || `${givenName} ${familyName}`.trim() || email;
+    const role = roles?.[0]?.value;
+
+    const updateFields = [];
+    const updateValues = [];
+    let paramIdx = 1;
+
+    if (email) { updateFields.push(`email = $${paramIdx++}`); updateValues.push(email); }
+    if (displayName) { updateFields.push(`name = $${paramIdx++}`); updateValues.push(displayName); }
+    if (role) { updateFields.push(`role = $${paramIdx++}`); updateValues.push(role); }
+    if (active !== undefined) { updateFields.push(`active = $${paramIdx++}`); updateValues.push(active); }
+    updateFields.push(`updated_at = NOW()`);
+
+    if (updateFields.length === 1) {
+      return sendScimError(res, 400, 'No attributes to update');
+    }
+
+    updateValues.push(req.params.id);
+    const query = `UPDATE users SET ${updateFields.join(', ')} WHERE id = $${paramIdx} RETURNING *`;
+
+    const result = await pool.query(query, updateValues);
+    if (!result.rows[0]) {
+      return sendScimError(res, 404, 'User not found');
+    }
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    res.json(formatScimUser(result.rows[0], baseUrl));
+  } catch (err) {
+    console.error(err);
+    return sendScimError(res, 500, 'Internal error');
+  }
+});
+
+app.patch('/scim/v2/Users/:id', requireScimAuth, async (req, res) => {
+  try {
+    const { Operations } = req.body;
+    if (!Operations || !Array.isArray(Operations)) {
+      return sendScimError(res, 400, 'Operations array is required');
+    }
+
+    const updateFields = [];
+    const updateValues = [];
+    let paramIdx = 1;
+
+    for (const op of Operations) {
+      if (op.op === 'replace') {
+        if (op.path === 'active') {
+          updateFields.push(`active = $${paramIdx++}`);
+          updateValues.push(op.value === true || op.value === 'true');
+        } else if (op.path === 'name.formatted') {
+          updateFields.push(`name = $${paramIdx++}`);
+          updateValues.push(op.value);
+        } else if (op.path === 'emails[0].value' || op.path === 'userName') {
+          updateFields.push(`email = $${paramIdx++}`);
+          updateValues.push(op.value);
+        } else if (op.path === 'roles[0].value') {
+          updateFields.push(`role = $${paramIdx++}`);
+          updateValues.push(op.value);
+        } else if (!op.path && op.value && typeof op.value === 'object') {
+          if (op.value.active !== undefined) {
+            updateFields.push(`active = $${paramIdx++}`);
+            updateValues.push(op.value.active);
+          }
+          if (op.value.name?.formatted) {
+            updateFields.push(`name = $${paramIdx++}`);
+            updateValues.push(op.value.name.formatted);
+          }
+          if (op.value.emails?.[0]?.value) {
+            updateFields.push(`email = $${paramIdx++}`);
+            updateValues.push(op.value.emails[0].value);
+          }
+          if (op.value.roles?.[0]?.value) {
+            updateFields.push(`role = $${paramIdx++}`);
+            updateValues.push(op.value.roles[0].value);
+          }
+          if (op.value.userName) {
+            updateFields.push(`email = $${paramIdx++}`);
+            updateValues.push(op.value.userName);
+          }
+        }
+      }
+    }
+
+    if (updateFields.length === 0) {
+      return sendScimError(res, 400, 'No valid replace operations found');
+    }
+
+    updateFields.push('updated_at = NOW()');
+    updateValues.push(req.params.id);
+
+    const query = `UPDATE users SET ${updateFields.join(', ')} WHERE id = $${paramIdx} RETURNING *`;
+
+    const result = await pool.query(query, updateValues);
+    if (!result.rows[0]) {
+      return sendScimError(res, 404, 'User not found');
+    }
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    res.json(formatScimUser(result.rows[0], baseUrl));
+  } catch (err) {
+    console.error(err);
+    return sendScimError(res, 500, 'Internal error');
+  }
+});
+
+app.delete('/scim/v2/Users/:id', requireScimAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'UPDATE users SET active = false, updated_at = NOW() WHERE id = $1 RETURNING id',
+      [req.params.id]
+    );
+
+    if (!result.rows[0]) {
+      return sendScimError(res, 404, 'User not found');
+    }
+
+    await sendAuditEvent('scim.user_deactivated', parseInt(req.params.id), null, {
+      method: 'scim'
+    });
+
+    res.status(204).send();
+  } catch (err) {
+    console.error(err);
+    return sendScimError(res, 500, 'Internal error');
+  }
+});
+
+app.post('/saml/acs', createUserRateLimiter('saml_acs', 20), async (req, res) => {
+  try {
+    const { SAMLResponse } = req.body;
+    if (!SAMLResponse) {
+      return res.status(400).json({ message: 'SAMLResponse is required' });
+    }
+
+    const decoded = Buffer.from(SAMLResponse, 'base64').toString('utf-8');
+
+    const nameIdMatch = decoded.match(/<saml2:NameID[^>]*>([^<]+)<\/saml2:NameID>/);
+    const emailMatch = decoded.match(/<saml2:Attribute[^>]*?Name="[^"]*email[^"]*"[^>]*>[\s\S]*?<saml2:AttributeValue[^>]*>([^<]+)<\/saml2:AttributeValue>/i);
+    const firstNameMatch = decoded.match(/<saml2:Attribute[^>]*?Name="[^"]*firstName[^"]*"[^>]*>[\s\S]*?<saml2:AttributeValue[^>]*>([^<]+)<\/saml2:AttributeValue>/i);
+    const lastNameMatch = decoded.match(/<saml2:Attribute[^>]*?Name="[^"]*lastName[^"]*"[^>]*>[\s\S]*?<saml2:AttributeValue[^>]*>([^<]+)<\/saml2:AttributeValue>/i);
+
+    const emailSimpleMatch = decoded.match(/<NameID[^>]*>([^<]+)<\/NameID>/);
+    const email = emailMatch?.[1] || nameIdMatch?.[1] || emailSimpleMatch?.[1];
+    const firstName = firstNameMatch?.[1] || '';
+    const lastName = lastNameMatch?.[1] || '';
+    const displayName = `${firstName} ${lastName}`.trim() || email;
+
+    if (!email) {
+      return res.status(400).json({ message: 'Could not extract user identity from SAML response' });
+    }
+
+    let userResult = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    let userData;
+
+    if (userResult.rows.length === 0) {
+      const tempPassword = crypto.randomBytes(16).toString('hex');
+      const hashedPassword = await bcrypt.hash(tempPassword, 10);
+      userResult = await pool.query(
+        'INSERT INTO users (email, password, name) VALUES ($1, $2, $3) RETURNING *',
+        [email, hashedPassword, displayName || email]
+      );
+      userData = userResult.rows[0];
+    } else {
+      userData = userResult.rows[0];
+    }
+
+    if (!userData.active) {
+      return res.status(403).json({ message: 'Account is deactivated' });
+    }
+
+    const token = signAccessToken(userData);
+    const refreshToken = await createRefreshToken(userData.id);
+
+    await sendAuditEvent('auth.saml_login', userData.id, email, {
+      ip_address: req.ip
+    });
+
+    res.json({
+      message: 'SAML login successful',
+      token,
+      refreshToken,
+      user: sanitizeUser(userData)
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'SAML ACS processing error' });
+  }
+});
+
+app.get('/saml/metadata', (req, res) => {
+  const entityId = `${req.protocol}://${req.get('host')}/saml/metadata`;
+  const acsUrl = `${req.protocol}://${req.get('host')}/saml/acs`;
+
+  const metadata = `<?xml version="1.0"?>
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="${entityId}">
+  <SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress</NameIDFormat>
+    <AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${acsUrl}" index="0"/>
+  </SPSSODescriptor>
+</EntityDescriptor>`;
+
+  res.type('application/xml');
+  res.send(metadata);
+});
+
+app.post('/saml/login', createUserRateLimiter('saml_login', 20), async (req, res) => {
+  try {
+    const entityId = `${req.protocol}://${req.get('host')}/saml/metadata`;
+    const acsUrl = `${req.protocol}://${req.get('host')}/saml/acs`;
+
+    const samlRequest = `<?xml version="1.0"?>
+<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_${crypto.randomBytes(16).toString('hex')}" Version="2.0" IssueInstant="${new Date().toISOString()}" Destination="${SAML_IDP_SSO_URL}" AssertionConsumerServiceURL="${acsUrl}" ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST">
+  <saml:Issuer>${entityId}</saml:Issuer>
+  <samlp:NameIDPolicy Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress" AllowCreate="true"/>
+</samlp:AuthnRequest>`;
+
+    const encodedRequest = Buffer.from(samlRequest).toString('base64');
+
+    res.json({
+      redirect_url: `${SAML_IDP_SSO_URL}?SAMLRequest=${encodeURIComponent(encodedRequest)}`,
+      saml_request: encodedRequest,
+      entity_id: entityId,
+      acs_url: acsUrl
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'SAML login initiation failed' });
+  }
+});
+
+app.post('/auth/passwordless/request', createUserRateLimiter('passwordless_request', 5), async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    const userResult = await pool.query('SELECT id, email FROM users WHERE email = $1 AND active = true', [email]);
+    if (!userResult.rows[0]) {
+      return res.status(404).json({ message: 'User not found or inactive' });
+    }
+
+    const user = userResult.rows[0];
+    const token = crypto.randomBytes(32).toString('hex');
+    const tokenHash = hashToken(token);
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+    await pool.query(
+      'INSERT INTO passwordless_tokens (token, user_id, email, expires_at) VALUES ($1, $2, $3, $4)',
+      [tokenHash, user.id, email, expiresAt]
+    );
+
+    await sendAuditEvent('auth.passwordless_requested', user.id, email);
+
+    res.json({
+      message: 'Magic link sent',
+      token,
+      expires_in: 900
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to generate magic link' });
+  }
+});
+
+app.post('/auth/passwordless/verify', createUserRateLimiter('passwordless_verify', 10), async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ message: 'Token is required' });
+    }
+
+    const tokenHash = hashToken(token);
+    const result = await pool.query(
+      'SELECT * FROM passwordless_tokens WHERE token = $1 AND used = false AND expires_at > NOW()',
+      [tokenHash]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(400).json({ message: 'Invalid or expired token' });
+    }
+
+    await pool.query('UPDATE passwordless_tokens SET used = true WHERE token = $1', [tokenHash]);
+
+    const userResult = await pool.query('SELECT * FROM users WHERE id = $1', [result.rows[0].user_id]);
+    const user = userResult.rows[0];
+
+    if (!user || !user.active) {
+      return res.status(403).json({ message: 'Account is deactivated' });
+    }
+
+    const accessToken = signAccessToken(user);
+    const refreshToken = await createRefreshToken(user.id);
+
+    await sendAuditEvent('auth.passwordless_login', user.id, user.email);
+
+    res.json({
+      message: 'Logged in successfully',
+      token: accessToken,
+      refreshToken,
+      user: sanitizeUser(user)
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Magic link verification failed' });
+  }
+});
+
+app.get('/sessions', requireRole(), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const result = await pool.query(
+      'SELECT id, ip_address, user_agent, device_id, is_active, created_at, expires_at FROM sessions WHERE user_id = $1 ORDER BY created_at DESC',
+      [userId]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Failed to list sessions' });
+  }
+});
+
+app.delete('/sessions/:id', requireRole(), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const result = await pool.query(
+      'UPDATE sessions SET is_active = false WHERE id = $1::uuid AND user_id = $2 RETURNING id',
+      [req.params.id, userId]
+    );
+    if (!result.rows[0]) {
+      return res.status(404).json({ message: 'Session not found' });
+    }
+    res.json({ message: 'Session revoked' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Failed to revoke session' });
+  }
+});
+
+app.delete('/sessions', requireRole(), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const currentSessionId = req.headers['x-session-id'];
+
+    if (currentSessionId) {
+      await pool.query(
+        'UPDATE sessions SET is_active = false WHERE user_id = $1 AND id != $2::uuid',
+        [userId, currentSessionId]
+      );
+    } else {
+      await pool.query(
+        'UPDATE sessions SET is_active = false WHERE user_id = $1',
+        [userId]
+      );
+    }
+
+    await sendAuditEvent('auth.sessions_revoked', userId, req.user.email, {
+      except_session_id: currentSessionId
+    });
+
+    res.json({ message: 'Other sessions revoked' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Failed to revoke sessions' });
   }
 });
 
