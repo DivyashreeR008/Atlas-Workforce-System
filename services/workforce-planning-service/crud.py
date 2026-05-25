@@ -24,7 +24,8 @@ def _now():
 
 
 def get_dashboard_stats(db: Session, tenant_id: str):
-    total_headcount = db.query(CapacityPlan).filter(CapacityPlan.tenant_id == tenant_id).with_entities(CapacityPlan.allocated).count() or 0
+    total_headcount = db.query(CapacityPlan.allocated).filter(CapacityPlan.tenant_id == tenant_id).all()
+    total_headcount = sum(row[0] for row in total_headcount) if total_headcount else 0
     cap = db.query(CapacityPlan).filter(CapacityPlan.tenant_id == tenant_id)
     total_capacity = sum(c.total_capacity for c in cap.all()) if cap.count() else 0
     total_allocated = sum(c.allocated for c in cap.all()) if cap.count() else 0
@@ -446,7 +447,6 @@ def delete_simulation(db: Session, sim_id: UUID, tenant_id: str) -> bool:
 
 
 def run_simulation(db: Session, tenant_id: str, sim_type: str, parameters: dict):
-    import random
     if sim_type == "HEADCOUNT":
         current = parameters.get("current_headcount", 100)
         growth_rate = parameters.get("growth_rate", 0.05)

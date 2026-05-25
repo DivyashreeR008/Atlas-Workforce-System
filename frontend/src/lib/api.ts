@@ -906,6 +906,7 @@ export const workforcePlanningApi = {
   strategicPlans: {
     list: (params?: { page?: number; page_size?: number; status?: string }) =>
       api.get("/workforce/strategic-plans", { params }),
+    get: (id: string) => api.get(`/workforce/strategic-plans/${id}`),
     create: (data: Partial<import("@/types").StrategicPlan>) => api.post("/workforce/strategic-plans", data),
     update: (id: string, data: Partial<import("@/types").StrategicPlan>) =>
       api.put(`/workforce/strategic-plans/${id}`, data),

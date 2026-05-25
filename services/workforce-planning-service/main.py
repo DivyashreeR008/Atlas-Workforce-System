@@ -96,6 +96,16 @@ def list_strategic_plans(page: int = 1, page_size: int = 20, status: str = None,
     return crud.list_strategic_plans(db, x_tenant_id, page, page_size, status)
 
 
+@app.get("/api/v1/workforce/strategic-plans/{plan_id}", tags=["Dashboard"])
+def get_strategic_plan(plan_id, x_tenant_id: str = Header("default", alias="X-Tenant-Id"), db: Session = Depends(get_db)):
+    from uuid import UUID
+    result = crud.get_strategic_plan(db, UUID(plan_id), x_tenant_id)
+    if not result:
+        from fastapi import HTTPException
+        raise HTTPException(404, detail="Strategic plan not found")
+    return result
+
+
 @app.post("/api/v1/workforce/strategic-plans", tags=["Dashboard"], status_code=201)
 def create_strategic_plan(payload: dict, x_tenant_id: str = Header("default", alias="X-Tenant-Id"), db: Session = Depends(get_db)):
     from schemas import StrategicPlanCreate
