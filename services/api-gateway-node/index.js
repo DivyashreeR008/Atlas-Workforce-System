@@ -144,6 +144,8 @@ const services = {
     process.env.AUDIT_COMPLIANCE_SERVICE_URL || 'http://audit-compliance-service:8011',
   compliance:
     process.env.AUDIT_COMPLIANCE_SERVICE_URL || 'http://audit-compliance-service:8011',
+  integration:
+    process.env.INTEGRATION_SERVICE_URL || 'http://integration-service:8016',
 };
 
 const PUBLIC_AUTH_PATHS = ['/api/auth/login', '/api/auth/register'];
@@ -291,6 +293,7 @@ function authMiddleware(req, res, next) {
     '/api/copilot',
     '/api/audit',
     '/api/compliance',
+    '/api/integration',
   ];
 
   const needsAuth = protectedPrefixes.some(
@@ -465,6 +468,8 @@ app.use('/api/performance', proxyService(services.performance, '/api/performance
 app.use('/api/copilot', proxyService(services.copilot, '/api/copilot', { '^/api/copilot': '' }));
 app.use('/api/audit', proxyService(services.audit, '/api/audit', { '^/api/audit': '' }));
 app.use('/api/compliance', proxyService(services.compliance, '/api/compliance', { '^/api/compliance': '/api/v1' }));
+
+app.use('/api/integration', proxyService(services.integration, '/api/integration', { '^/api/integration': '/api/v1/integration' }));
 
 const server = app.listen(PORT, () => {
   console.log(`API Gateway listening on port ${PORT}`);

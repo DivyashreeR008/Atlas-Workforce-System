@@ -475,3 +475,313 @@ export interface AIInsight {
   category: string;
   timestamp: string;
 }
+
+// Module 1 — Executive Command Center Types
+export interface CommandCenterOverview {
+  totalHeadcount: number;
+  headcountChange: number;
+  payrollMtd: number;
+  payrollChange: number;
+  openPositions: number;
+  positionsChange: number;
+  trainingCompletion: number;
+  trainingChange: number;
+  satisfactionScore: number;
+  satisfactionChange: number;
+  orgHealthScore: number;
+  productivityScore: number;
+  riskScore: number;
+  newHiresThisMonth: number;
+  departuresThisMonth: number;
+  avgTenure: number;
+  avgTimeToHire: number;
+}
+
+export interface OrgHealthDetail {
+  overall: number;
+  dimensions: OrgHealthDimension[];
+  trend: OrgHealthTrend[];
+}
+
+export interface OrgHealthDimension {
+  name: string;
+  score: number;
+  change: number;
+  status: "healthy" | "moderate" | "needs-attention";
+}
+
+export interface OrgHealthTrend {
+  month: string;
+  score: number;
+}
+
+export interface DepartmentHeatmap {
+  departments: DepartmentHeatmapItem[];
+  avgProductivity: number;
+  avgEngagement: number;
+  overallHealth: string;
+}
+
+export interface DepartmentHeatmapItem {
+  name: string;
+  metrics: Record<string, number>;
+  headcount: number;
+  attrition: number;
+  budgetUtilization: number;
+  health: string;
+}
+
+export interface WorkforceCost {
+  totalPayroll: number;
+  totalBenefits: number;
+  totalTaxes: number;
+  totalCost: number;
+  byDepartment: CostByDepartment[];
+  costPerEmployee: number;
+  costTrend: CostTrend[];
+}
+
+export interface CostByDepartment {
+  department: string;
+  headcount: number;
+  payroll: number;
+  benefits: number;
+  total: number;
+  percentOfTotal: number;
+}
+
+export interface CostTrend {
+  month: string;
+  cost: number;
+}
+
+export interface AttritionRiskMap {
+  overallRiskScore: number;
+  atRiskCount: number;
+  highRiskCount: number;
+  byDepartment: RiskByDepartment[];
+  highRiskEmployees: HighRiskEmployee[];
+  trend: RiskTrend[];
+}
+
+export interface RiskByDepartment {
+  department: string;
+  riskScore: number;
+  atRisk: number;
+  highRisk: number;
+  avgTenure: number;
+  avgSatisfaction: number;
+}
+
+export interface HighRiskEmployee {
+  name: string;
+  department: string;
+  risk: number;
+  role: string;
+  reason: string;
+}
+
+export interface RiskTrend {
+  month: string;
+  rate: number;
+}
+
+export interface HiringPipeline {
+  openPositions: number;
+  activeCandidates: number;
+  interviewsThisWeek: number;
+  offersOutstanding: number;
+  timeToHireAvg: number;
+  acceptanceRate: number;
+  pipelineStages: PipelineStage[];
+  byDepartment: HiringByDept[];
+  upcomingInterviews: UpcomingInterview[];
+}
+
+export interface PipelineStage {
+  stage: string;
+  count: number;
+}
+
+export interface HiringByDept {
+  department: string;
+  openings: number;
+  candidates: number;
+  interviews: number;
+  offers: number;
+}
+
+export interface UpcomingInterview {
+  candidate: string;
+  position: string;
+  date: string;
+  interviewer: string;
+}
+
+export interface BudgetForecast {
+  totalBudget: number;
+  totalSpent: number;
+  remainingBudget: number;
+  burnRate: number;
+  projectedOverspend: boolean;
+  byDepartment: BudgetDept[];
+  monthlyBurn: MonthlyBurn[];
+}
+
+export interface BudgetDept {
+  department: string;
+  budget: number;
+  spent: number;
+  remaining: number;
+  utilization: number;
+  forecast: number;
+  onTrack: boolean;
+}
+
+export interface MonthlyBurn {
+  month: string;
+  budget: number;
+  actual: number;
+}
+
+export interface WorkforceUtilization {
+  overallUtilization: number;
+  billableUtilization: number;
+  byDepartment: UtilizationDept[];
+  trend: UtilizationTrend[];
+}
+
+export interface UtilizationDept {
+  department: string;
+  utilization: number;
+  billable: number;
+  capacity: number;
+  active: number;
+  idle: number;
+}
+
+export interface UtilizationTrend {
+  month: string;
+  utilization: number;
+}
+
+export interface DepartmentBenchmarking {
+  companyAvg: BenchmarkMetrics;
+  industryAvg: BenchmarkMetrics;
+  departments: BenchmarkDept[];
+}
+
+export interface BenchmarkMetrics {
+  productivity: number;
+  engagement: number;
+  retention: number;
+  attrition: number;
+  costPerEmployee: number;
+}
+
+export interface BenchmarkDept {
+  name: string;
+  productivity: number;
+  engagement: number;
+  retention: number;
+  attrition: number;
+  costPerHead: number;
+  benchmark: "above" | "match" | "below";
+}
+
+export interface AiBriefing {
+  generatedAt: string;
+  executiveSummary: string;
+  keyFindings: AiFinding[];
+  recommendations: AiRecommendation[];
+  riskFlags: AiRiskFlag[];
+}
+
+export interface AiFinding {
+  severity: "positive" | "warning" | "critical";
+  area: string;
+  message: string;
+  metric: string;
+}
+
+export interface AiRecommendation {
+  priority: "high" | "medium" | "low";
+  action: string;
+  impact: string;
+  timeline: string;
+}
+
+export interface AiRiskFlag {
+  type: string;
+  severity: string;
+  message: string;
+  affectedDept: string;
+}
+
+export interface RiskDashboard {
+  overallRiskScore: number;
+  riskLevel: string;
+  categories: RiskCategory[];
+  trend: RiskTrendItem[];
+}
+
+export interface RiskCategory {
+  name: string;
+  score: number;
+  level: string;
+  trend: string;
+}
+
+export interface RiskTrendItem {
+  month: string;
+  score: number;
+}
+
+export interface IntegrationWebhook {
+  id: string;
+  name: string;
+  url: string;
+  event_types: string[];
+  retry_count: number;
+  timeout_sec: number;
+  enabled: boolean;
+  last_triggered_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntegrationWebhookDeliveryLog {
+  id: string;
+  webhook_id: string;
+  event_type: string;
+  status: string;
+  status_code: number | null;
+  response_body: string | null;
+  attempts: number;
+  max_attempts: number;
+  next_retry_at: string | null;
+  delivered_at: string | null;
+  created_at: string;
+}
+
+export interface IntegrationEventSubscription {
+  id: string;
+  event_type: string;
+  source_service: string | null;
+  kafka_topic: string | null;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntegrationDashboard {
+  total_webhooks: number;
+  active_webhooks: number;
+  total_subscriptions: number;
+  total_deliveries: number;
+  successful_deliveries: number;
+  failed_deliveries: number;
+  pending_deliveries: number;
+  outbox_pending: number;
+  outbox_failed: number;
+}

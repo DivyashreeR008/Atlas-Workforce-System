@@ -340,14 +340,67 @@ export const copilotApi = {
 };
 
 export const commandCenterApi = {
-  metrics: () => api.get("/command-center/metrics"),
+  overview: () => api.get("/command-center/overview"),
   orgHealth: () => api.get("/command-center/org-health"),
-  departmentPerformance: () => api.get("/command-center/department-performance"),
+  departmentHeatmap: () => api.get("/command-center/department-heatmap"),
+  workforceCost: () => api.get("/command-center/workforce-cost"),
+  attritionRiskMap: () => api.get("/command-center/attrition-risk-map"),
+  hiringPipeline: () => api.get("/command-center/hiring-pipeline"),
+  budgetForecast: () => api.get("/command-center/budget-forecast"),
+  utilization: () => api.get("/command-center/utilization"),
+  benchmarking: () => api.get("/command-center/benchmarking"),
+  aiBriefing: () => api.get("/command-center/ai-briefing"),
+  riskDashboard: () => api.get("/command-center/risk-dashboard"),
   activityFeed: (params?: { limit?: number }) =>
     api.get("/command-center/activity-feed", { params }),
-  insights: () => api.get("/command-center/insights"),
-  attritionRisks: () => api.get("/command-center/attrition-risks"),
   kpiHistory: (kpi: string) => api.get(`/command-center/kpi-history/${kpi}`),
+};
+
+export const integrationApi = {
+  dashboard: () => api.get("/integration/dashboard"),
+  webhooks: {
+    list: (params?: { page?: number; page_size?: number; enabled?: boolean }) =>
+      api.get("/integration/webhooks", { params }),
+    get: (id: string) => api.get(`/integration/webhooks/${id}`),
+    create: (data: {
+      name: string;
+      url: string;
+      event_types: string[];
+      secret?: string;
+      retry_count?: number;
+      timeout_sec?: number;
+    }) => api.post("/integration/webhooks", data),
+    update: (id: string, data: Record<string, unknown>) =>
+      api.put(`/integration/webhooks/${id}`, data),
+    delete: (id: string) => api.delete(`/integration/webhooks/${id}`),
+    deliveries: (id: string, params?: { status?: string; page?: number; page_size?: number }) =>
+      api.get(`/integration/webhooks/${id}/deliveries`, { params }),
+  },
+  subscriptions: {
+    list: (params?: { page?: number; page_size?: number; enabled?: boolean }) =>
+      api.get("/integration/subscriptions", { params }),
+    create: (data: {
+      event_type: string;
+      kafka_topic?: string;
+      source_service?: string;
+    }) => api.post("/integration/subscriptions", data),
+    update: (id: string, data: Record<string, unknown>) =>
+      api.put(`/integration/subscriptions/${id}`, data),
+    delete: (id: string) => api.delete(`/integration/subscriptions/${id}`),
+  },
+  outbox: {
+    list: (params?: { status?: string; page?: number; page_size?: number }) =>
+      api.get("/integration/outbox", { params }),
+  },
+  config: {
+    list: () => api.get("/integration/config"),
+    get: (key: string) => api.get(`/integration/config/${key}`),
+    create: (data: { key: string; value: unknown; description?: string }) =>
+      api.post("/integration/config", data),
+    update: (key: string, data: { value: unknown; description?: string }) =>
+      api.put(`/integration/config/${key}`, data),
+    delete: (key: string) => api.delete(`/integration/config/${key}`),
+  },
 };
 
 export const lmsApi = {

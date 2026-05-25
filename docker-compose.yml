@@ -52,6 +52,56 @@ services:
     networks:
       - atlas-network
 
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: atlas-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - atlas-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: atlas-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    networks:
+      - atlas-network
+
+  integration-service:
+    build: ./services/integration-service
+    container_name: atlas-integration-service
+    ports:
+      - "8016:8016"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      - INTERNAL_API_KEY=${AUDIT_INTERNAL_KEY:-atlas-internal-key-change-me}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+    networks:
+      - atlas-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+
   api-gateway:
     build: ./services/api-gateway-node
     container_name: atlas-api-gateway
@@ -73,6 +123,7 @@ services:
       - PERFORMANCE_SERVICE_URL=http://performance-service:8014
       - AI_COPILOT_SERVICE_URL=http://ai-copilot-service:8015
       - AUDIT_COMPLIANCE_SERVICE_URL=http://audit-compliance-service:8011
+      - INTEGRATION_SERVICE_URL=http://integration-service:8016
       - AUDIT_INTERNAL_KEY=${AUDIT_INTERNAL_KEY:-atlas-internal-key-change-me}
     networks:
       - atlas-network
