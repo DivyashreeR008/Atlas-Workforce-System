@@ -66,10 +66,13 @@ const navItems: ({ href: string; label: string; icon: React.ComponentType<{ clas
     label: "Performance",
     icon: Target,
     children: [
-      { href: "/dashboard/performance", label: "Goals" },
-      { href: "/dashboard/performance/reviews", label: "Reviews" },
-      { href: "/dashboard/performance/feedback", label: "Feedback" },
-      { href: "/dashboard/performance/succession", label: "Succession" },
+      { href: "/dashboard/performance", label: "Overview" },
+      { href: "/dashboard/performance?tab=okrs", label: "OKRs & KPIs" },
+      { href: "/dashboard/performance?tab=reviews", label: "Reviews" },
+      { href: "/dashboard/performance?tab=feedback", label: "Feedback" },
+      { href: "/dashboard/performance?tab=hipo", label: "HiPo Tracking" },
+      { href: "/dashboard/performance?tab=ai", label: "AI Insights" },
+      { href: "/dashboard/performance?tab=devplans", label: "Dev Plans" },
     ],
   },
   {

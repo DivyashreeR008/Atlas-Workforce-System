@@ -10,6 +10,18 @@ import type {
   SuccessionPlan,
   CompliancePolicy,
   ComplianceViolation,
+  GoalAlignment,
+  KpiTarget,
+  ContinuousFeedback,
+  ManagerReview,
+  PeerReview,
+  PerformanceCalibration,
+  PromotionReadiness,
+  TalentReviewBoard,
+  HiPoEmployee,
+  LeadershipReadiness,
+  CoachingRecommendation,
+  DevelopmentPlan,
 } from "@/types";
 import {
   clearAuth,
@@ -491,6 +503,8 @@ export const performanceApi = {
     delete: (id: string) => api.delete(`/performance/goals/${id}`),
     updateProgress: (id: string, progress: number) =>
       api.put(`/performance/goals/${id}/progress`, { progress }),
+    align: (id: string, data: Partial<GoalAlignment>) =>
+      api.post(`/performance/goals/${id}/align`, data),
   },
   reviews: {
     list: (params?: { employeeId?: string; status?: string; type?: string }) =>
@@ -516,6 +530,109 @@ export const performanceApi = {
     update: (id: string, data: Partial<SuccessionPlan>) =>
       api.put(`/performance/succession/${id}`, data),
     evaluate: (id: string) => api.post(`/performance/succession/${id}/evaluate`),
+  },
+  kpiTargets: {
+    list: (params?: { category?: string; owner?: string }) =>
+      api.get("/performance/kpi-targets", { params }),
+    get: (id: string) => api.get(`/performance/kpi-targets/${id}`),
+    create: (data: Partial<KpiTarget>) => api.post("/performance/kpi-targets", data),
+    update: (id: string, data: Partial<KpiTarget>) => api.put(`/performance/kpi-targets/${id}`, data),
+    delete: (id: string) => api.delete(`/performance/kpi-targets/${id}`),
+  },
+  continuousFeedback: {
+    list: (params?: { toId?: string; fromId?: string; type?: string }) =>
+      api.get("/performance/continuous-feedback", { params }),
+    create: (data: Partial<ContinuousFeedback>) => api.post("/performance/continuous-feedback", data),
+    acknowledge: (id: string) => api.post(`/performance/continuous-feedback/${id}/acknowledge`),
+    delete: (id: string) => api.delete(`/performance/continuous-feedback/${id}`),
+  },
+  managerReviews: {
+    list: (params?: { employeeId?: string; status?: string }) =>
+      api.get("/performance/manager-reviews", { params }),
+    get: (id: string) => api.get(`/performance/manager-reviews/${id}`),
+    create: (data: Partial<ManagerReview>) => api.post("/performance/manager-reviews", data),
+    update: (id: string, data: Partial<ManagerReview>) =>
+      api.put(`/performance/manager-reviews/${id}`, data),
+    submit: (id: string) => api.post(`/performance/manager-reviews/${id}/submit`),
+  },
+  peerReviews: {
+    list: (params?: { revieweeId?: string; reviewerId?: string; status?: string }) =>
+      api.get("/performance/peer-reviews", { params }),
+    get: (id: string) => api.get(`/performance/peer-reviews/${id}`),
+    create: (data: Partial<PeerReview>) => api.post("/performance/peer-reviews", data),
+    update: (id: string, data: Partial<PeerReview>) =>
+      api.put(`/performance/peer-reviews/${id}`, data),
+  },
+  calibrations: {
+    list: (params?: { status?: string }) =>
+      api.get("/performance/calibrations", { params }),
+    get: (id: string) => api.get(`/performance/calibrations/${id}`),
+    create: (data: Partial<PerformanceCalibration>) => api.post("/performance/calibrations", data),
+    update: (id: string, data: Partial<PerformanceCalibration>) =>
+      api.put(`/performance/calibrations/${id}`, data),
+    complete: (id: string) => api.post(`/performance/calibrations/${id}/complete`),
+  },
+  promotionReadiness: {
+    list: (params?: { employeeId?: string; overallRating?: string }) =>
+      api.get("/performance/promotion-readiness", { params }),
+    get: (id: string) => api.get(`/performance/promotion-readiness/${id}`),
+    create: (data: Partial<PromotionReadiness>) => api.post("/performance/promotion-readiness", data),
+    update: (id: string, data: Partial<PromotionReadiness>) =>
+      api.put(`/performance/promotion-readiness/${id}`, data),
+  },
+  talentReviewBoard: {
+    list: (params?: { status?: string }) =>
+      api.get("/performance/talent-review-board", { params }),
+    get: (id: string) => api.get(`/performance/talent-review-board/${id}`),
+    create: (data: Partial<TalentReviewBoard>) => api.post("/performance/talent-review-board", data),
+    update: (id: string, data: Partial<TalentReviewBoard>) =>
+      api.put(`/performance/talent-review-board/${id}`, data),
+    complete: (id: string) => api.post(`/performance/talent-review-board/${id}/complete`),
+  },
+  hiPo: {
+    list: (params?: { department?: string; status?: string }) =>
+      api.get("/performance/hipo", { params }),
+    get: (id: string) => api.get(`/performance/hipo/${id}`),
+    create: (data: Partial<HiPoEmployee>) => api.post("/performance/hipo", data),
+    update: (id: string, data: Partial<HiPoEmployee>) =>
+      api.put(`/performance/hipo/${id}`, data),
+  },
+  leadershipReadiness: {
+    list: (params?: { employeeId?: string; overallReadiness?: string }) =>
+      api.get("/performance/leadership-readiness", { params }),
+    get: (id: string) => api.get(`/performance/leadership-readiness/${id}`),
+    create: (data: Partial<LeadershipReadiness>) => api.post("/performance/leadership-readiness", data),
+    update: (id: string, data: Partial<LeadershipReadiness>) =>
+      api.put(`/performance/leadership-readiness/${id}`, data),
+  },
+  aiInsights: {
+    list: (params?: { employeeId?: string; insightType?: string }) =>
+      api.get("/performance/ai-insights", { params }),
+    get: (id: string) => api.get(`/performance/ai-insights/${id}`),
+    generate: (employeeId: string) => api.post(`/performance/ai-insights/generate/${employeeId}`),
+  },
+  coachingRecommendations: {
+    list: (params?: { employeeId?: string; priority?: string; status?: string }) =>
+      api.get("/performance/coaching-recommendations", { params }),
+    get: (id: string) => api.get(`/performance/coaching-recommendations/${id}`),
+    create: (data: Partial<CoachingRecommendation>) =>
+      api.post("/performance/coaching-recommendations", data),
+    update: (id: string, data: Partial<CoachingRecommendation>) =>
+      api.put(`/performance/coaching-recommendations/${id}`, data),
+  },
+  developmentPlans: {
+    list: (params?: { employeeId?: string; status?: string }) =>
+      api.get("/performance/development-plans", { params }),
+    get: (id: string) => api.get(`/performance/development-plans/${id}`),
+    create: (data: Partial<DevelopmentPlan>) => api.post("/performance/development-plans", data),
+    update: (id: string, data: Partial<DevelopmentPlan>) =>
+      api.put(`/performance/development-plans/${id}`, data),
+    delete: (id: string) => api.delete(`/performance/development-plans/${id}`),
+  },
+  goalAlignment: {
+    list: (params?: { goalId?: string }) =>
+      api.get("/performance/goal-alignment", { params }),
+    create: (data: Partial<GoalAlignment>) => api.post("/performance/goal-alignment", data),
   },
   dashboard: () => api.get("/performance/dashboard"),
 };

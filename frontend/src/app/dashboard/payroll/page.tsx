@@ -30,7 +30,7 @@ import type {
   PayrollAnomaly, Payslip, PayrollDashboardSummary,
 } from "@/types";
 
-const statusVariant: Record<string, "default" | "secondary" | "success" | "warning"> = {
+const statusVariant: Record<string, "default" | "secondary" | "success" | "warning" | "destructive"> = {
   DRAFT: "secondary", PROCESSING: "warning", PROCESSED: "success",
   PENDING: "secondary", APPROVED: "success", REJECTED: "destructive",
   ACTIVE: "success", GRANTED: "success",

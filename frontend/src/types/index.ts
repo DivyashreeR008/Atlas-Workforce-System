@@ -1910,3 +1910,195 @@ export interface LearningAnalyticsOverview {
 	marketplace_listings: number;
 	mentors: number;
 }
+
+// === Module 8 — Performance Management Types ===
+
+export type KpiDirection = "up" | "down" | "neutral";
+
+export interface KpiTarget {
+  id: string;
+  name: string;
+  category: string;
+  currentValue: number;
+  targetValue: number;
+  unit: string;
+  direction: KpiDirection;
+  owner: string;
+  frequency: "daily" | "weekly" | "monthly" | "quarterly" | "yearly";
+  trend: { date: string; value: number }[];
+}
+
+export interface GoalAlignment {
+  id: string;
+  goalId: string;
+  goalTitle: string;
+  alignedWith: string;
+  alignmentType: "company" | "department" | "team" | "individual";
+  alignmentScore: number;
+  notes: string;
+  createdAt: string;
+}
+
+export interface ContinuousFeedback {
+  id: string;
+  fromId: string;
+  fromName: string;
+  toId: string;
+  toName: string;
+  message: string;
+  type: "praise" | "constructive" | "suggestion" | "one-on-one";
+  context: string;
+  isAcknowledged: boolean;
+  acknowledgedAt?: string;
+  createdAt: string;
+}
+
+export interface ManagerReview {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  managerId: string;
+  managerName: string;
+  period: string;
+  ratings: { category: string; score: number; comment: string }[];
+  overallScore: number;
+  strengths: string[];
+  improvements: string[];
+  status: "draft" | "submitted" | "acknowledged";
+  createdAt: string;
+}
+
+export interface PeerReview {
+  id: string;
+  revieweeId: string;
+  revieweeName: string;
+  reviewerId: string;
+  reviewerName: string;
+  project: string;
+  collaboration: number;
+  communication: number;
+  technicalSkills: number;
+  reliability: number;
+  overallScore: number;
+  strengths: string;
+  improvements: string;
+  status: "pending" | "completed";
+  createdAt: string;
+}
+
+export interface PerformanceCalibration {
+  id: string;
+  name: string;
+  period: string;
+  participants: { employeeId: string; employeeName: string; department: string; rating: number; calibratedRating?: number }[];
+  facilitators: string[];
+  status: "draft" | "in-progress" | "completed";
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface PromotionReadiness {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  currentRole: string;
+  targetRole: string;
+  readinessScore: number;
+  criteria: { name: string; score: number; weight: number }[];
+  overallRating: "ready-now" | "ready-in-6-months" | "ready-in-1-year" | "not-ready";
+  recommendations: string;
+  createdAt: string;
+}
+
+export interface TalentReviewBoard {
+  id: string;
+  name: string;
+  date: string;
+  participants: string[];
+  employees: {
+    employeeId: string;
+    employeeName: string;
+    department: string;
+    performance: number;
+    potential: number;
+    box: "star" | "core" | "underperformer" | "high-potential" | "question-mark";
+    notes: string;
+  }[];
+  decisions: { employeeId: string; decision: string; actionItems: string }[];
+  status: "scheduled" | "in-progress" | "completed";
+  createdAt: string;
+}
+
+export interface HiPoEmployee {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  department: string;
+  currentRole: string;
+  performanceScore: number;
+  potentialScore: number;
+  reason: string[];
+  nominatedBy: string;
+  program: string;
+  status: "identified" | "in-program" | "graduated" | "exited";
+  mentorId?: string;
+  mentorName?: string;
+  createdAt: string;
+}
+
+export interface LeadershipReadiness {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  currentRole: string;
+  readinessScore: number;
+  dimensions: { name: string; score: number; maxScore: number; comments: string }[];
+  overallReadiness: "ready" | "development-needed" | "not-ready";
+  recommendedDevelopment: string[];
+  targetRole: string;
+  assessedBy: string;
+  assessedAt: string;
+}
+
+export interface AiPerformanceInsight {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  insightType: "strength" | "growth-area" | "pattern" | "prediction" | "anomaly";
+  category: string;
+  title: string;
+  description: string;
+  confidence: number;
+  supportingData: Record<string, unknown>;
+  recommendation: string;
+  createdAt: string;
+}
+
+export interface CoachingRecommendation {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  focusArea: string;
+  recommendation: string;
+  suggestedApproach: string;
+  resources: { title: string; type: "article" | "course" | "video" | "book" | "mentor"; url?: string }[];
+  priority: "critical" | "high" | "medium" | "low";
+  status: "pending" | "in-progress" | "completed";
+  createdAt: string;
+}
+
+export interface DevelopmentPlan {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  title: string;
+  goals: { title: string; category: string; targetDate: string; status: "not-started" | "in-progress" | "completed" }[];
+  skills: string[];
+  mentorship: { mentorId: string; mentorName: string; focus: string }[];
+  milestones: { title: string; dueDate: string; completed: boolean }[];
+  progress: number;
+  status: "draft" | "active" | "completed";
+  startDate: string;
+  endDate: string;
+  createdAt: string;
+}
