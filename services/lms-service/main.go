@@ -55,6 +55,15 @@ func main() {
 		&models.AssessmentAttempt{},
 		&models.LearningPath{},
 		&models.SkillMatrix{},
+		&models.ComplianceTraining{},
+		&models.LearningRecommendation{},
+		&models.MentorProfile{},
+		&models.MentorSession{},
+		&models.MarketplaceListing{},
+		&models.KnowledgeArticle{},
+		&models.SkillEndorsement{},
+		&models.CompetencyFramework{},
+		&models.LearningJourney{},
 	); err != nil {
 		log.Fatalf("Failed to auto-migrate: %v", err)
 	}
@@ -95,6 +104,16 @@ func setupRoutes(app *fiber.App) {
 	pathHandler := &handlers.LearningPathHandler{DB: db}
 	skillHandler := &handlers.SkillHandler{DB: db}
 	dashHandler := &handlers.DashboardHandler{DB: db}
+
+	complianceHandler := &handlers.ComplianceHandler{DB: db}
+	recHandler := &handlers.RecommendationHandler{DB: db}
+	journeyHandler := &handlers.JourneyHandler{DB: db}
+	mentorHandler := &handlers.MentorHandler{DB: db}
+	sessionHandler := &handlers.MentorSessionHandler{DB: db}
+	marketplaceHandler := &handlers.MarketplaceHandler{DB: db}
+	knowledgeHandler := &handlers.KnowledgeHandler{DB: db}
+	analyticsHandler := &handlers.LearningAnalyticsHandler{DB: db}
+	endorsementHandler := &handlers.SkillEndorsementHandler{DB: db}
 
 	v1 := app.Group("/api/v1")
 
@@ -149,4 +168,62 @@ func setupRoutes(app *fiber.App) {
 	dashboard := v1.Group("/dashboard")
 	dashboard.Get("/summary", dashHandler.Summary)
 	dashboard.Get("/employee/:employee_id", dashHandler.Employee)
+
+	// Learning & Development routes
+	learning := v1.Group("/learning")
+
+	compliance := learning.Group("/compliance")
+	compliance.Get("/", complianceHandler.List)
+	compliance.Post("/", complianceHandler.Create)
+	compliance.Put("/:id", complianceHandler.Update)
+	compliance.Delete("/:id", complianceHandler.Delete)
+	compliance.Get("/dashboard", complianceHandler.Dashboard)
+
+	recommendations := learning.Group("/recommendations")
+	recommendations.Get("/", recHandler.List)
+	recommendations.Post("/generate", recHandler.Generate)
+	recommendations.Put("/:id/acknowledge", recHandler.Acknowledge)
+
+	journeys := learning.Group("/journeys")
+	journeys.Get("/", journeyHandler.List)
+	journeys.Post("/", journeyHandler.Create)
+	journeys.Put("/:id", journeyHandler.Update)
+	journeys.Delete("/:id", journeyHandler.Delete)
+
+	mentors := learning.Group("/mentors")
+	mentors.Get("/", mentorHandler.List)
+	mentors.Post("/", mentorHandler.Create)
+	mentors.Put("/:id", mentorHandler.Update)
+	mentors.Delete("/:id", mentorHandler.Delete)
+	mentors.Get("/match", mentorHandler.Match)
+
+	sessions := learning.Group("/mentor-sessions")
+	sessions.Get("/", sessionHandler.List)
+	sessions.Post("/", sessionHandler.Create)
+	sessions.Put("/:id", sessionHandler.Update)
+
+	marketplace := learning.Group("/marketplace")
+	marketplace.Get("/", marketplaceHandler.List)
+	marketplace.Post("/", marketplaceHandler.Create)
+	marketplace.Put("/:id", marketplaceHandler.Update)
+	marketplace.Delete("/:id", marketplaceHandler.Delete)
+
+	knowledge := learning.Group("/knowledge")
+	knowledge.Get("/", knowledgeHandler.List)
+	knowledge.Get("/:id", knowledgeHandler.Get)
+	knowledge.Post("/", knowledgeHandler.Create)
+	knowledge.Put("/:id", knowledgeHandler.Update)
+	knowledge.Delete("/:id", knowledgeHandler.Delete)
+	knowledge.Post("/:id/useful", knowledgeHandler.MarkUseful)
+
+	analytics := learning.Group("/analytics")
+	analytics.Get("/overview", analyticsHandler.Overview)
+	analytics.Get("/departments", analyticsHandler.Department)
+	analytics.Get("/trends", analyticsHandler.Trends)
+	analytics.Get("/competency-matrix", analyticsHandler.CompetencyMatrix)
+
+	endorsements := learning.Group("/endorsements")
+	endorsements.Get("/", endorsementHandler.List)
+	endorsements.Post("/", endorsementHandler.Create)
+	endorsements.Delete("/:id", endorsementHandler.Delete)
 }

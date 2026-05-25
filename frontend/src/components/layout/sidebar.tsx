@@ -82,6 +82,13 @@ const navItems: ({ href: string; label: string; icon: React.ComponentType<{ clas
       { href: "/dashboard/lms/skills", label: "Skills" },
     ],
   },
+  {
+    label: "L&D",
+    icon: BookOpen,
+    children: [
+      { href: "/dashboard/learning-development", label: "Dashboard" },
+    ],
+  },
   { href: "/dashboard/copilot", label: "AI Copilot", icon: Bot },
   { href: "/dashboard/compliance", label: "Compliance", icon: Shield },
   { href: "/dashboard/integrations", label: "Integrations", icon: Cable },

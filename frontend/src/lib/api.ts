@@ -913,6 +913,104 @@ export const workforcePlanningApi = {
   },
 };
 
+export const ldApi = {
+  overview: () => api.get("/learning/analytics/overview"),
+  departments: () => api.get("/learning/analytics/departments"),
+  trends: (period?: string) => api.get("/learning/analytics/trends", { params: { period } }),
+
+  compliance: {
+    list: (params?: { employee_id?: string; status?: string; policy?: string; page?: number; page_size?: number }) =>
+      api.get("/learning/compliance", { params }),
+    create: (data: {
+      course_id?: string; employee_id: string; policy_name: string;
+      policy_category?: string; due_date?: string; is_mandatory?: boolean;
+    }) => api.post("/learning/compliance", data),
+    update: (id: string, data: { status?: string; score?: number; completed_date?: string }) =>
+      api.put(`/learning/compliance/${id}`, data),
+    delete: (id: string) => api.delete(`/learning/compliance/${id}`),
+    dashboard: () => api.get("/learning/compliance/dashboard"),
+  },
+
+  recommendations: {
+    list: (params?: { employee_id?: string; priority?: string }) =>
+      api.get("/learning/recommendations", { params }),
+    generate: (employee_id: string) => api.post("/learning/recommendations/generate", null, { params: { employee_id } }),
+    acknowledge: (id: string) => api.put(`/learning/recommendations/${id}/acknowledge`),
+  },
+
+  journeys: {
+    list: (employee_id?: string) => api.get("/learning/journeys", { params: { employee_id } }),
+    create: (data: Partial<import("@/types").LearningJourney>) => api.post("/learning/journeys", data),
+    update: (id: string, data: { current_step?: number; progress_pct?: number; status?: string }) =>
+      api.put(`/learning/journeys/${id}`, data),
+    delete: (id: string) => api.delete(`/learning/journeys/${id}`),
+  },
+
+  mentors: {
+    list: (params?: { department?: string; available?: string; expertise?: string }) =>
+      api.get("/learning/mentors", { params }),
+    create: (data: {
+      employee_id: string; full_name: string; department?: string;
+      role?: string; bio?: string; expertise?: string[]; max_mentees?: number;
+    }) => api.post("/learning/mentors", data),
+    update: (id: string, data: { bio?: string; is_available?: boolean; max_mentees?: number }) =>
+      api.put(`/learning/mentors/${id}`, data),
+    delete: (id: string) => api.delete(`/learning/mentors/${id}`),
+    match: (employee_id?: string, skill?: string) =>
+      api.get("/learning/mentors/match", { params: { employee_id, skill } }),
+  },
+
+  mentorSessions: {
+    list: (params?: { mentor_id?: string; mentee_id?: string }) =>
+      api.get("/learning/mentor-sessions", { params }),
+    create: (data: {
+      mentor_id: string; mentee_id: string; topic: string;
+      scheduled_at?: string; duration_mins?: number;
+    }) => api.post("/learning/mentor-sessions", data),
+    update: (id: string, data: { status?: string; notes?: string; feedback?: string; rating?: number }) =>
+      api.put(`/learning/mentor-sessions/${id}`, data),
+  },
+
+  marketplace: {
+    list: (params?: { category?: string; type?: string; status?: string; page?: number; page_size?: number }) =>
+      api.get("/learning/marketplace", { params }),
+    create: (data: {
+      title: string; description?: string; provider?: string; category?: string;
+      type?: string; skills?: string[]; duration_hours?: number;
+      cost?: number; currency?: string; max_participants?: number;
+    }) => api.post("/learning/marketplace", data),
+    update: (id: string, data: { title?: string; description?: string; cost?: number; status?: string }) =>
+      api.put(`/learning/marketplace/${id}`, data),
+    delete: (id: string) => api.delete(`/learning/marketplace/${id}`),
+  },
+
+  knowledge: {
+    list: (params?: { category?: string; search?: string; tag?: string; content_type?: string; page?: number; page_size?: number }) =>
+      api.get("/learning/knowledge", { params }),
+    get: (id: string) => api.get(`/learning/knowledge/${id}`),
+    create: (data: {
+      title: string; summary?: string; content?: string; category?: string;
+      tags?: string[]; author_id?: string; author_name?: string;
+      content_type?: string; content_url?: string;
+    }) => api.post("/learning/knowledge", data),
+    update: (id: string, data: Record<string, unknown>) => api.put(`/learning/knowledge/${id}`, data),
+    delete: (id: string) => api.delete(`/learning/knowledge/${id}`),
+    markUseful: (id: string) => api.post(`/learning/knowledge/${id}/useful`),
+  },
+
+  endorsements: {
+    list: (params?: { employee_id?: string; skill_id?: string }) =>
+      api.get("/learning/endorsements", { params }),
+    create: (data: {
+      skill_id: string; employee_id: string; endorsed_by: string;
+      endorser_name?: string; skill_name: string; proficiency?: string; comment?: string;
+    }) => api.post("/learning/endorsements", data),
+    delete: (id: string) => api.delete(`/learning/endorsements/${id}`),
+  },
+
+  competencyMatrix: () => api.get("/learning/analytics/competency-matrix"),
+};
+
 export const lmsApi = {
   dashboard: () => api.get("/lms/dashboard"),
   courses: {

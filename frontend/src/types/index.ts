@@ -1717,12 +1717,196 @@ export interface StrategicKPI {
 }
 
 export interface StrategicInitiative {
-  name: string;
-  description: string;
-  owner: string;
-  budget: number;
-  start_date: string;
-  end_date: string;
-  status: string;
-  progress: number;
+	name: string;
+	description: string;
+	owner: string;
+	budget: number;
+	start_date: string;
+	end_date: string;
+	status: string;
+	progress: number;
+}
+
+// === Module 7 — Learning & Development Types ===
+
+export interface ComplianceTraining {
+	id: string;
+	tenant_id: string;
+	course_id: string;
+	employee_id: string;
+	policy_name: string;
+	policy_category: string;
+	due_date: string | null;
+	completed_date: string | null;
+	status: string;
+	score: number | null;
+	attempts: number;
+	is_mandatory: boolean;
+	course?: Course;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface ComplianceDashboard {
+	total: number;
+	completed: number;
+	overdue: number;
+	pending: number;
+	in_progress: number;
+	compliance_rate: number;
+	by_policy: { policy_name: string; total: number; completed: number }[];
+}
+
+export interface LearningRecommendation {
+	id: string;
+	tenant_id: string;
+	employee_id: string;
+	skill_name: string;
+	gap_score: number;
+	recommended_type: string;
+	recommended_id: string;
+	title: string;
+	description: string;
+	priority: string;
+	reason: string;
+	status: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface MentorProfile {
+	id: string;
+	tenant_id: string;
+	employee_id: string;
+	full_name: string;
+	department: string;
+	role: string;
+	bio: string;
+	expertise: string[];
+	max_mentees: number;
+	current_mentees: number;
+	is_available: boolean;
+	rating: number;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface MentorSession {
+	id: string;
+	tenant_id: string;
+	mentor_id: string;
+	mentee_id: string;
+	topic: string;
+	scheduled_at: string | null;
+	duration_mins: number;
+	status: string;
+	notes: string;
+	feedback: string;
+	rating: number;
+	mentor?: MentorProfile;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface MarketplaceListing {
+	id: string;
+	tenant_id: string;
+	title: string;
+	description: string;
+	provider: string;
+	category: string;
+	type: string;
+	skills: string[];
+	duration_hours: number;
+	cost: number;
+	currency: string;
+	max_participants: number;
+	enrolled_count: number;
+	rating: number;
+	status: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface KnowledgeArticle {
+	id: string;
+	tenant_id: string;
+	title: string;
+	summary: string;
+	content: string;
+	category: string;
+	tags: string[];
+	author_id: string;
+	author_name: string;
+	content_type: string;
+	content_url: string;
+	view_count: number;
+	useful_count: number;
+	status: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface SkillEndorsement {
+	id: string;
+	tenant_id: string;
+	skill_id: string;
+	employee_id: string;
+	endorsed_by: string;
+	endorser_name: string;
+	skill_name: string;
+	proficiency: string;
+	comment: string;
+	created_at: string;
+}
+
+export interface CompetencyFramework {
+	id: string;
+	tenant_id: string;
+	name: string;
+	role: string;
+	level: string;
+	competencies: Record<string, unknown>;
+	required_score: number;
+	status: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CompetencyMatrixResult {
+	framework: CompetencyFramework;
+	employee_count: number;
+	avg_score: number;
+	qualified_count: number;
+}
+
+export interface LearningJourney {
+	id: string;
+	tenant_id: string;
+	employee_id: string;
+	name: string;
+	target_role: string;
+	steps: Record<string, unknown>;
+	current_step: number;
+	progress_pct: number;
+	status: string;
+	started_at: string | null;
+	completed_at: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface LearningAnalyticsOverview {
+	courses: { total: number; published: number };
+	enrollments: { total: number; completed: number; in_progress: number };
+	completion_rate: number;
+	certifications: { total: number; active: number; expiring_30d: number };
+	assessments: { total: number; attempts: number; passed: number };
+	pass_rate: number;
+	skills: { total: number };
+	journeys: { total: number };
+	compliance: { total: number; completed: number; rate: number };
+	knowledge_articles: number;
+	marketplace_listings: number;
+	mentors: number;
 }
