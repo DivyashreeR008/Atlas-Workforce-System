@@ -33,7 +33,7 @@ export const useAuthStore = create<AuthState>()(
         set({ isLoading: true });
         try {
           const { data } = await authApi.login(email, password);
-          setTokens(data.token, data.refreshToken);
+          setTokens(data.token);
           setStoredUser(data.user);
           set({ user: data.user, isLoading: false });
         } catch (e) {
@@ -46,7 +46,7 @@ export const useAuthStore = create<AuthState>()(
         try {
           await authApi.register(payload);
           const { data } = await authApi.login(payload.email, payload.password);
-          setTokens(data.token, data.refreshToken);
+          setTokens(data.token);
           setStoredUser(data.user);
           set({ user: data.user, isLoading: false });
         } catch (e) {
@@ -54,9 +54,15 @@ export const useAuthStore = create<AuthState>()(
           throw e;
         }
       },
-      logout: () => {
+      logout: async () => {
+        try {
+          await authApi.logout();
+        } catch {
+          // proceed with local cleanup regardless
+        }
         clearAuth();
         set({ user: null });
+        if (typeof window !== "undefined") window.location.href = "/login";
       },
     }),
     { name: "atlas-auth", partialize: (s) => ({ user: s.user }) }

@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 import time
@@ -9,6 +10,10 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from atlas_observability import (
+    AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
+    configure_logging, get_logger
+)
 
 from crud import (
     create_event_subscription,

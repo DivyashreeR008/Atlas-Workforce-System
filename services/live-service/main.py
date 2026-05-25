@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import uuid
 from collections import defaultdict
@@ -12,6 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
+from atlas_observability import (
+    AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
+    configure_logging, get_logger
+)
 
 load_dotenv()
 
@@ -226,11 +231,19 @@ class ExecutiveUpdate(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(rabbitmq_consumer())
+    asyncio.create_task(notifications_consumer())
     yield
 
 app = FastAPI(title="Atlas Live Service", description="Real-time SSE + WebSocket engine for 25 live channels", version="1.0.0", lifespan=lifespan)
 
+configure_logging("live-service", level=logging.INFO)
+logger = get_logger("live-service")
+
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS.split(",") if CORS_ORIGINS != "*" else ["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(AtlasLoggingMiddleware)
+app.add_middleware(AtlasMetricsMiddleware)
 
 # ── RabbitMQ Consumer ──────────────────────────────────────────────────────
 
@@ -265,6 +278,37 @@ async def rabbitmq_consumer():
         except Exception as e:
             print(f"RabbitMQ connection error: {e}, retrying in 5s...")
             await asyncio.sleep(5)
+
+
+async def notifications_consumer():
+    while True:
+        try:
+            import aio_pika
+            connection = await aio_pika.connect_robust(RABBITMQ_URL)
+            async with connection:
+                channel = await connection.channel()
+                exchange = await channel.declare_exchange("notifications_exchange", aio_pika.ExchangeType.FANOUT, durable=True)
+                queue = await channel.declare_queue("", exclusive=True)
+                await queue.bind(exchange, routing_key="")
+                logger.info("Notifications consumer started for employee.deleted events")
+                async with queue.iterator() as queue_iter:
+                    async for message in queue_iter:
+                        async with message.process():
+                            try:
+                                payload = json.loads(message.body.decode())
+                                if payload.get("event") == "employee.deleted":
+                                    email = payload.get("email", "")
+                                    tenant_id = payload.get("tenant_id", "")
+                                    logger.info("employee.deleted.presence_cleanup",
+                                        extra={"email": email, "tenant_id": tenant_id})
+                                    manager.presence.pop(email, None)
+                                    manager.presence.pop(tenant_id + ":" + email, None)
+                            except Exception:
+                                pass
+        except Exception as e:
+            print(f"Notifications consumer connection error: {e}, retrying in 5s...")
+            await asyncio.sleep(5)
+
 
 # ── SSE Endpoints ───────────────────────────────────────────────────────────
 

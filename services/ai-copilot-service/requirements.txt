@@ -10,3 +10,4 @@ nltk>=3.8.0
 openai>=1.6.0
 pytest>=7.4.0
 pytest-asyncio>=0.23.0
+-e ../atlas_observability

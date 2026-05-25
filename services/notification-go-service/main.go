@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/streadway/amqp"
@@ -26,7 +28,7 @@ var upgrader = websocket.Upgrader{
 				return true
 			}
 		}
-		return origin == ""
+		return false
 	},
 }
 
@@ -54,8 +56,8 @@ type BroadcastMessage struct {
 
 // In-memory notification store
 type NotificationStore struct {
-	mu     sync.RWMutex
-	items  []Notification
+	mu    sync.RWMutex
+	items []Notification
 }
 
 func (s *NotificationStore) Add(n Notification) {
@@ -99,11 +101,78 @@ func (s *NotificationStore) MarkRead(ids []string) {
 }
 
 var (
-	store      = &NotificationStore{}
-	clients    = make(map[*Client]bool)
-	broadcast  = make(chan BroadcastMessage)
-	mutex      = &sync.Mutex{}
+	store     = &NotificationStore{}
+	clients   = make(map[*Client]bool)
+	broadcast = make(chan BroadcastMessage)
+	mutex     = &sync.Mutex{}
 )
+
+func validateJWT(tokenString string) (jwt.MapClaims, error) {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		secret = "dev-only-secret-change-in-production"
+	}
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(secret), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		return claims, nil
+	}
+	return nil, fmt.Errorf("invalid token")
+}
+
+func (c *Client) writePump() {
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case message, ok := <-c.send:
+			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if !ok {
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				return
+			}
+		case <-ticker.C:
+			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (c *Client) readPump() {
+	defer func() {
+		mutex.Lock()
+		delete(clients, c)
+		close(c.send)
+		mutex.Unlock()
+		c.conn.Close()
+	}()
+
+	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		return nil
+	})
+
+	for {
+		_, _, err := c.conn.ReadMessage()
+		if err != nil {
+			break
+		}
+	}
+}
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -111,16 +180,27 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleConnections(w http.ResponseWriter, r *http.Request) {
+	tokenStr := r.URL.Query().Get("token")
+	if tokenStr == "" {
+		http.Error(w, `{"error":"Missing authentication token"}`, http.StatusUnauthorized)
+		return
+	}
+
+	claims, err := validateJWT(tokenStr)
+	if err != nil {
+		http.Error(w, `{"error":"Invalid authentication token"}`, http.StatusUnauthorized)
+		return
+	}
+
+	tenantID, _ := claims["tenant_id"].(string)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("WebSocket Upgrade Error: %v", err)
 		return
-	}
-	defer ws.Close()
-
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
 	}
 
 	client := &Client{conn: ws, send: make(chan []byte, 256), tenantID: tenantID}
@@ -129,19 +209,8 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	clients[client] = true
 	mutex.Unlock()
 
-	defer func() {
-		mutex.Lock()
-		delete(clients, client)
-		close(client.send)
-		mutex.Unlock()
-	}()
-
-	for {
-		_, _, err := ws.ReadMessage()
-		if err != nil {
-			break
-		}
-	}
+	go client.writePump()
+	client.readPump()
 }
 
 func handleMessages() {
@@ -150,11 +219,10 @@ func handleMessages() {
 		mutex.Lock()
 		for client := range clients {
 			if client.tenantID == msg.TenantID {
-				err := client.conn.WriteMessage(websocket.TextMessage, msg.Payload)
-				if err != nil {
-					log.Printf("WebSocket Write Error: %v", err)
-					client.conn.Close()
-					delete(clients, client)
+				select {
+				case client.send <- msg.Payload:
+				default:
+					// skip slow client
 				}
 			}
 		}

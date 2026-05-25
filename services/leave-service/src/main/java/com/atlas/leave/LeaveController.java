@@ -1,4 +1,4 @@
-package com.atlas.leave;
+﻿package com.atlas.leave;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -19,7 +19,8 @@ public class LeaveController {
     }
 
     @GetMapping
-    public ResponseEntity<List<LeaveRecord>> getAllLeaveRequests(@RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
+    public ResponseEntity<List<LeaveRecord>> getAllLeaveRequests(
+            @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
         return ResponseEntity.ok(service.getAllLeaveRequests(tenantId));
     }
 
@@ -56,14 +57,16 @@ public class LeaveController {
             @RequestBody Map<String, String> request,
             @RequestHeader(value = "X-User-Role", required = false) String userRole,
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
-        
-        if (userRole == null || !userRole.equalsIgnoreCase("admin")) {
-            return ResponseEntity.status(403).body(Map.of("message", "Access denied: Requires administrator privileges"));
+
+        // Ensure a role is provided; the service handles role-based authorization
+        if (userRole == null || userRole.isBlank()) {
+            return ResponseEntity.status(403)
+                    .body(Map.of("message", "Access denied: X-User-Role header is required"));
         }
 
         try {
             String status = request.get("status");
-            LeaveRecord record = service.updateLeaveStatus(tenantId, id, status);
+            LeaveRecord record = service.updateLeaveStatus(tenantId, id, status, userRole);
             return ResponseEntity.ok(record);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));

@@ -1,17 +1,21 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/streadway/amqp"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 var db *gorm.DB
+var rabbitChan *amqp.Channel
 
 func getEnv(key, fallback string) string {
 	if val := os.Getenv(key); val != "" {
@@ -39,8 +43,198 @@ func initDatabase() {
 	migrateDB(db)
 }
 
+func initRabbitMQ() {
+	rabbitURL := os.Getenv("RABBITMQ_URL")
+	if rabbitURL == "" {
+		rabbitURL = "amqp://guest:guest@rabbitmq:5672/"
+	}
+
+	conn, err := amqp.Dial(rabbitURL)
+	if err != nil {
+		log.Printf("Warning: Could not connect to RabbitMQ (%v)", err)
+		return
+	}
+
+	rabbitChan, err = conn.Channel()
+	if err != nil {
+		log.Printf("Warning: Could not open RabbitMQ channel (%v)", err)
+		return
+	}
+
+	err = rabbitChan.ExchangeDeclare(
+		"live_exchange",
+		"topic",
+		true,  // durable
+		false, // auto-deleted
+		false, // internal
+		false, // no-wait
+		nil,
+	)
+	if err != nil {
+		log.Printf("Warning: Could not declare live_exchange (%v)", err)
+	}
+}
+
+func consumeEmployeeDeletions() {
+	rabbitURL := os.Getenv("RABBITMQ_URL")
+	if rabbitURL == "" {
+		rabbitURL = "amqp://guest:guest@rabbitmq:5672/"
+	}
+
+	conn, err := amqp.Dial(rabbitURL)
+	if err != nil {
+		log.Printf("Warning: Could not connect to RabbitMQ for deletion consumer (%v)", err)
+		return
+	}
+	defer conn.Close()
+
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Printf("Warning: Could not open channel for deletion consumer (%v)", err)
+		return
+	}
+	defer ch.Close()
+
+	err = ch.ExchangeDeclare(
+		"notifications_exchange",
+		"fanout",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		log.Printf("Warning: Could not declare notifications_exchange (%v)", err)
+		return
+	}
+
+	q, err := ch.QueueDeclare(
+		"",
+		false,
+		false,
+		true,
+		false,
+		nil,
+	)
+	if err != nil {
+		log.Printf("Warning: Could not declare queue (%v)", err)
+		return
+	}
+
+	err = ch.QueueBind(
+		q.Name,
+		"",
+		"notifications_exchange",
+		false,
+		nil,
+	)
+	if err != nil {
+		log.Printf("Warning: Could not bind queue (%v)", err)
+		return
+	}
+
+	msgs, err := ch.Consume(
+		q.Name,
+		"",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		log.Printf("Warning: Could not start consuming (%v)", err)
+		return
+	}
+
+	log.Printf("Employee deletion consumer started on notifications_exchange")
+	for msg := range msgs {
+		var event struct {
+			Event    string `json:"event"`
+			Email    string `json:"email"`
+			TenantID string `json:"tenant_id"`
+		}
+		if err := json.Unmarshal(msg.Body, &event); err != nil {
+			log.Printf("Warning: Could not parse deletion event (%v)", err)
+			continue
+		}
+		if event.Event == "employee.deleted" {
+			handleEmployeeDeletion(event.TenantID, event.Email)
+		}
+	}
+}
+
+func handleEmployeeDeletion(tenantID, employeeID string) {
+	if db == nil {
+		log.Printf("DB not available, skipping archive for employee %s/%s", tenantID, employeeID)
+		return
+	}
+	archivedID := "ARCHIVED_" + employeeID
+	models := []interface{}{
+		&AttendanceRecord{},
+		&EmployeeShift{},
+		&Roster{},
+		&AnomalyLog{},
+		&WFHTracking{},
+		&NFCRegistration{},
+		&BiometricDevice{},
+		&FaceEnrollment{},
+	}
+	for _, model := range models {
+		db.Model(model).
+			Where("tenant_id = ? AND employee_id = ?", tenantID, employeeID).
+			Update("employee_id", archivedID)
+	}
+	log.Printf("Archived all records for deleted employee: %s/%s -> %s", tenantID, employeeID, archivedID)
+}
+
+func publishEvent(routingKey, tenantID string, record AttendanceRecord) {
+	if rabbitChan == nil {
+		return
+	}
+
+	payload := map[string]interface{}{
+		"event":      routingKey,
+		"tenant_id":  tenantID,
+		"employeeId": record.EmployeeID,
+		"date":       record.Date,
+		"clockIn":    record.ClockIn.Format(time.RFC3339),
+		"status":     record.Status,
+		"method":     record.Method,
+		"isRemote":   record.IsRemote,
+		"isWfh":      record.IsWFH,
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+	}
+	if record.ClockOut != nil {
+		payload["clockOut"] = record.ClockOut.Format(time.RFC3339)
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Warning: Could not marshal event payload (%v)", err)
+		return
+	}
+
+	err = rabbitChan.Publish(
+		"live_exchange",
+		routingKey,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType: "application/json",
+			Body:        body,
+		},
+	)
+	if err != nil {
+		log.Printf("Warning: Could not publish event %s (%v)", routingKey, err)
+	}
+}
+
 func main() {
 	initDatabase()
+	initRabbitMQ()
+	go consumeEmployeeDeletions()
 
 	app := fiber.New(fiber.Config{
 		AppName: "Atlas Attendance Service",

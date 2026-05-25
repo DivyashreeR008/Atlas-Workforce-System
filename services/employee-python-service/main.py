@@ -1,15 +1,55 @@
-from fastapi import FastAPI, HTTPException, Body, Query, Header
+import json
+import logging
+import uuid
+from contextvars import ContextVar
+from fastapi import FastAPI, HTTPException, Body, Query, Header, Depends, Request
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import os
 import math
 import re
+import asyncio
 import uvicorn
 # pyrefly: ignore [missing-import]
 from motor.motor_asyncio import AsyncIOMotorClient
 from contextlib import asynccontextmanager
+import pika
+from atlas_observability import AtlasMetricsMiddleware
 
+# ------------------------------------------------
+# Structured Logger
+# ------------------------------------------------
+SERVICE_NAME = "employee-service"
+SERVICE_VERSION = "2.0.0"
+
+logger = logging.getLogger(SERVICE_NAME)
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter("%(message)s"))
+logger.handlers.clear()
+logger.addHandler(handler)
+
+correlation_id_ctx: ContextVar[str] = ContextVar("correlation_id", default="")
+
+
+def log_event(level: str, event: str, **kwargs):
+    record = {
+        "service": SERVICE_NAME,
+        "version": SERVICE_VERSION,
+        "level": level,
+        "event": event,
+    }
+    cid = correlation_id_ctx.get()
+    if cid:
+        record["correlation_id"] = cid
+    record.update(kwargs)
+    logger.log(getattr(logging, level.upper(), logging.INFO), json.dumps(record))
+
+
+# ------------------------------------------------
+# Configuration
+# ------------------------------------------------
 MONGO_USER = os.environ.get("MONGO_USER", "admin")
 MONGO_PASSWORD = os.environ.get("MONGO_PASSWORD", "admin_password")
 MONGO_HOST = os.environ.get("MONGO_HOST", "localhost")
@@ -20,26 +60,53 @@ MONGO_URL = os.environ.get(
 )
 DB_NAME = "atlas_db"
 
+INTERNAL_KEY = os.environ.get("INTERNAL_KEY", "change-me-in-production")
+
+RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "localhost")
+RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", "5672"))
+RABBITMQ_USER = os.environ.get("RABBITMQ_USER", "guest")
+RABBITMQ_PASSWORD = os.environ.get("RABBITMQ_PASSWORD", "guest")
+
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 employees_collection = db["employees"]
 
+# ------------------------------------------------
+# Security Constants
+# ------------------------------------------------
+ALLOWED_SEARCH_FIELDS = {"name", "email", "department", "position"}
+SEARCH_MAX_LENGTH = 200
+SEARCH_ALLOWED_CHARS = re.compile(r"^[a-zA-Z0-9 @._\-]+$")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"Connecting to MongoDB at {MONGO_URL}")
+    log_event("info", "service.starting", mongo_url=MONGO_URL)
     try:
         await employees_collection.create_index("email", unique=True)
         await employees_collection.create_index("name")
         await employees_collection.create_index("department")
-        print("MongoDB indexes created successfully")
+        log_event("info", "indexes.created")
     except Exception as e:
-        print(f"Warning: Failed to create MongoDB indexes: {e}")
+        log_event("warning", "indexes.failed", error=str(e))
     yield
     client.close()
+    log_event("info", "service.stopped")
 
 
-app = FastAPI(title="Employee Service API", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Employee Service API", version=SERVICE_VERSION, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def add_correlation_id(request: Request, call_next):
+    correlation_id = request.headers.get("X-Correlation-Id", str(uuid.uuid4()))
+    correlation_id_ctx.set(correlation_id)
+    response = await call_next(request)
+    response.headers["X-Correlation-Id"] = correlation_id
+    return response
+
+
+app.add_middleware(AtlasMetricsMiddleware)
 
 
 def custom_openapi():
@@ -47,7 +114,7 @@ def custom_openapi():
         return app.openapi_schema
     openapi_schema = get_openapi(
         title="Atlas Employee Service",
-        version="2.0.0",
+        version=SERVICE_VERSION,
         description="Manages employee records, directory, and lifecycle. Part of the Atlas Workforce System.",
         routes=app.routes,
     )
@@ -63,12 +130,84 @@ def custom_openapi():
 app.openapi = custom_openapi
 
 
+# ------------------------------------------------
+# Input Validation
+# ------------------------------------------------
+def validate_search_param(search: Optional[str]) -> Optional[str]:
+    if not search:
+        return search
+    if len(search) > SEARCH_MAX_LENGTH:
+        log_event("warning", "search.too_long", length=len(search))
+        raise HTTPException(status_code=400, detail="Search query too long")
+    if not SEARCH_ALLOWED_CHARS.match(search):
+        log_event("warning", "search.invalid_chars", search=search)
+        raise HTTPException(status_code=400, detail="Search contains invalid characters")
+    return search
+
+
+# ------------------------------------------------
+# Auth Helpers
+# ------------------------------------------------
+async def verify_internal_key(request: Request):
+    x_internal_key = request.headers.get("X-Internal-Key")
+    if x_internal_key is not None and x_internal_key != INTERNAL_KEY:
+        log_event("warning", "auth.invalid_internal_key")
+        raise HTTPException(status_code=403, detail="Invalid internal key")
+    return x_internal_key
+
+
+# ------------------------------------------------
+# RabbitMQ Helpers
+# ------------------------------------------------
+async def publish_delete_event(email: str, tenant_id: str):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _publish_delete_event_sync, email, tenant_id)
+
+
+def _publish_delete_event_sync(email: str, tenant_id: str):
+    try:
+        credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
+        params = pika.ConnectionParameters(
+            host=RABBITMQ_HOST,
+            port=RABBITMQ_PORT,
+            credentials=credentials,
+        )
+        connection = pika.BlockingConnection(params)
+        channel = connection.channel()
+        channel.exchange_declare(exchange="notifications_exchange", exchange_type="fanout", durable=True)
+        message = json.dumps({
+            "event": "employee.deleted",
+            "email": email,
+            "tenant_id": tenant_id,
+            "service": SERVICE_NAME,
+        })
+        channel.basic_publish(
+            exchange="notifications_exchange",
+            routing_key="",
+            body=message,
+            properties=pika.BasicProperties(delivery_mode=2),
+        )
+        connection.close()
+        log_event("info", "employee.delete.published", email=email, tenant_id=tenant_id)
+    except Exception as e:
+        log_event("error", "employee.delete.publish.failed", email=email, tenant_id=tenant_id, error=str(e))
+
+
+# ------------------------------------------------
+# Pydantic Schemas
+# ------------------------------------------------
 class EmployeeSchema(BaseModel):
     id: Optional[str] = Field(None, alias="_id")
-    name: str = Field(..., description="Full name of the employee")
-    department: str = Field(..., description="Department name")
-    position: str = Field(..., description="Job position/title")
-    email: str = Field(..., description="Employee email address (unique per tenant)")
+    name: str = Field(..., min_length=1, max_length=200, description="Full name of the employee")
+    department: str = Field(..., min_length=1, max_length=200, description="Department name")
+    position: str = Field(..., min_length=1, max_length=200, description="Job position/title")
+    email: str = Field(
+        ...,
+        min_length=5,
+        max_length=254,
+        pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
+        description="Employee email address (unique per tenant)",
+    )
     tenant_id: Optional[str] = Field(None, description="Multi-tenant identifier")
 
     class Config:
@@ -97,12 +236,21 @@ def serialize_employee(employee: dict) -> dict:
 
 
 class EmployeeUpdateSchema(BaseModel):
-    name: Optional[str] = Field(None, description="Updated full name")
-    department: Optional[str] = Field(None, description="Updated department")
-    position: Optional[str] = Field(None, description="Updated position")
-    email: Optional[str] = Field(None, description="Updated email")
+    name: Optional[str] = Field(None, min_length=1, max_length=200, description="Updated full name")
+    department: Optional[str] = Field(None, min_length=1, max_length=200, description="Updated department")
+    position: Optional[str] = Field(None, min_length=1, max_length=200, description="Updated position")
+    email: Optional[str] = Field(
+        None,
+        min_length=5,
+        max_length=254,
+        pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
+        description="Updated email",
+    )
 
 
+# ------------------------------------------------
+# Endpoints
+# ------------------------------------------------
 @app.get("/health", tags=["health"])
 async def health_check():
     """Check if the service and database are healthy."""
@@ -125,15 +273,11 @@ async def get_employees(
     x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
 ):
     """Retrieve a paginated, searchable list of employees scoped to a tenant."""
+    search = validate_search_param(search)
     query = {"tenant_id": x_tenant_id}
     if search:
         pattern = re.compile(re.escape(search), re.IGNORECASE)
-        query["$or"] = [
-            {"name": pattern},
-            {"email": pattern},
-            {"department": pattern},
-            {"position": pattern},
-        ]
+        query["$or"] = [{field: pattern} for field in ALLOWED_SEARCH_FIELDS]
 
     total = await employees_collection.count_documents(query)
 
@@ -215,11 +359,16 @@ async def update_employee(
 
 
 @app.delete("/employees/{email}", tags=["employees"], summary="Delete employee")
-async def delete_employee(email: str, x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
+async def delete_employee(
+    email: str,
+    x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
+    _: Optional[str] = Depends(verify_internal_key),
+):
     """Permanently delete an employee record."""
     result = await employees_collection.delete_one({"email": email, "tenant_id": x_tenant_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Employee not found")
+    await publish_delete_event(email, x_tenant_id)
     return {"message": "Employee deleted successfully"}
 
 

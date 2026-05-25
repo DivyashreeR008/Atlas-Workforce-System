@@ -9,9 +9,9 @@ import (
 // Core attendance record
 type AttendanceRecord struct {
 	ID            uint       `gorm:"primaryKey" json:"id"`
-	EmployeeID    string     `gorm:"index:idx_emp_tenant_date,not null" json:"employeeId"`
-	TenantID      string     `gorm:"index:idx_emp_tenant_date;default:'default'" json:"tenantId"`
-	Date          string     `gorm:"index:idx_emp_tenant_date;not null" json:"date"`
+	EmployeeID    string     `gorm:"index:idx_emp_tenant_date;uniqueIndex:idx_unique_emp_date,not null" json:"employeeId"`
+	TenantID      string     `gorm:"index:idx_emp_tenant_date;uniqueIndex:idx_unique_emp_date;default:'default'" json:"tenantId"`
+	Date          string     `gorm:"index:idx_emp_tenant_date;uniqueIndex:idx_unique_emp_date;not null" json:"date"`
 	ClockIn       time.Time  `json:"clockIn"`
 	ClockOut      *time.Time `json:"clockOut"`
 	Status        string     `json:"status"`

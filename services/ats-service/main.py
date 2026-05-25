@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -6,6 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
+from atlas_observability import (
+    AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
+    configure_logging, get_logger
+)
 
 from models import Base
 
@@ -46,6 +51,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ATS Service API", version="1.0.0", lifespan=lifespan)
 
+configure_logging("ats-service", level=logging.INFO)
+logger = get_logger("ats-service")
+
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 
 app.add_middleware(
@@ -55,6 +63,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(AtlasLoggingMiddleware)
+app.add_middleware(AtlasMetricsMiddleware)
 
 
 def custom_openapi():

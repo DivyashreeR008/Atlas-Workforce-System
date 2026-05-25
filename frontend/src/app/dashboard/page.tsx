@@ -17,6 +17,7 @@ import {
 import type { KpiMetric } from "@/types";
 import { Users, Clock, Briefcase, DollarSign } from "lucide-react";
 import { useMemo } from "react";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 
 export default function DashboardPage() {
   const { data: deptData, isLoading: deptLoading } = useQuery({
@@ -98,6 +99,7 @@ export default function DashboardPage() {
   }, [attendanceData]);
 
   return (
+    <ErrorBoundary>
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
@@ -182,5 +184,6 @@ export default function DashboardPage() {
         </Card>
       </div>
     </div>
+    </ErrorBoundary>
   );
 }

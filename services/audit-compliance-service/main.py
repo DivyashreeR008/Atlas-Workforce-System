@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -10,6 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from atlas_observability import (
+    AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
+    configure_logging, get_logger
+)
 
 from crud import (
     configure_hash_salt,

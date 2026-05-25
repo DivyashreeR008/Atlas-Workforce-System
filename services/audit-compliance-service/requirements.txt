@@ -13,3 +13,4 @@ uuid6==2024.1.12
 asyncpg==0.29.0
 alembic==1.13.1
 python-multipart==0.0.9
+-e ../atlas_observability

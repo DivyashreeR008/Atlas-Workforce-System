@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -8,6 +9,10 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from atlas_observability import (
+    AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
+    configure_logging, get_logger
+)
 
 from crud import (
     add_session_event, approve_privileged_access, assess_risk,

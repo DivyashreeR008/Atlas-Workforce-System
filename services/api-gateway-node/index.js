@@ -33,7 +33,9 @@ async function checkCache(req, res, next) {
     return next();
   }
 
-  const userScope = req.user ? req.user.id : 'public';
+  const tenantId = req.user?.tenant_id || 'public';
+  const role = req.user?.role || 'public';
+  const userScope = req.user ? `${req.user.id}:${tenantId}:${role}` : 'public:public:public';
   const key = `cache:${userScope}:${req.originalUrl}`;
   try {
     const cachedData = await redisClient.get(key);
@@ -52,6 +54,7 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const JWT_SECRET = process.env.JWT_SECRET;
+const INTERNAL_JWT_SECRET = process.env.INTERNAL_JWT_SECRET || 'internal-dev-secret-change-in-prod';
 const AUDIT_INTERNAL_KEY = process.env.AUDIT_INTERNAL_KEY || 'atlas-internal-key-change-in-prod';
 const AUDIT_SERVICE_URL = process.env.AUDIT_COMPLIANCE_SERVICE_URL || 'http://audit-compliance-service:8011';
 
@@ -232,11 +235,6 @@ function mfaStepUpMiddleware(req, res, next) {
   );
 
   if (!isSensitive) {
-    return next();
-  }
-
-  const mfaValidated = req.headers['x-mfa-validated'];
-  if (mfaValidated === 'true') {
     return next();
   }
 
@@ -453,12 +451,15 @@ function proxyService(target, prefix, pathRewrite) {
   });
   return (req, res, next) => {
     if (req.user) {
-      req.headers['X-User-Id'] = String(req.user.id);
-      req.headers['X-User-Role'] = String(req.user.role);
-      req.headers['X-User-Email'] = String(req.user.email);
-      if (req.user.tenant_id) {
-        req.headers['X-Tenant-Id'] = String(req.user.tenant_id);
-      }
+      const internalPayload = {
+        user_id: req.user.id,
+        user_role: req.user.role,
+        tenant_id: req.user.tenant_id || 'default',
+        email: req.user.email || '',
+        exp: Math.floor(Date.now() / 1000) + 10
+      };
+      const internalToken = jwt.sign(internalPayload, INTERNAL_JWT_SECRET);
+      req.headers['x-internal-auth'] = internalToken;
     }
     req.url = prefix + req.url;
     checkCache(req, res, (err) => {
@@ -496,12 +497,35 @@ const server = app.listen(PORT, () => {
 });
 
 server.on('upgrade', (req, socket, head) => {
-  const pathname = new URL(req.url, 'http://localhost').pathname;
+  const parsedUrl = new URL(req.url, 'http://localhost');
+  const pathname = parsedUrl.pathname;
   const isWs = pathname === '/ws' || pathname.endsWith('/notification/ws');
   if (isWs) {
+    const token = parsedUrl.searchParams.get('token');
+    if (!token) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    try {
+      const payload = jwt.verify(token, jwtSecret);
+      const internalPayload = {
+        user_id: payload.id || payload.sub,
+        user_role: payload.role || 'employee',
+        tenant_id: payload.tenant_id || 'default',
+        exp: Math.floor(Date.now() / 1000) + 5
+      };
+      const internalToken = jwt.sign(internalPayload, INTERNAL_JWT_SECRET);
+      req.headers['x-internal-auth'] = internalToken;
+    } catch {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
     const target = new URL(services.notification);
     target.pathname = '/ws';
-    target.search = new URL(req.url, 'http://localhost').search;
+    target.search = parsedUrl.search;
     const proxyReq = http.request(target.toString(), { method: 'GET', headers: req.headers });
     proxyReq.on('upgrade', (proxyRes, proxySocket) => {
       socket.write('HTTP/1.1 101 Switching Protocols\r\n' +

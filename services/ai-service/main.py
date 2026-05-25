@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -7,6 +8,10 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from atlas_observability import (
+    AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
+    configure_logging, get_logger
+)
 
 from schemas import (
     CopilotQuery, CopilotResponse,
@@ -67,6 +72,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+configure_logging("ai-service", level=logging.INFO)
+logger = get_logger("ai-service")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS.split(",") if CORS_ORIGINS != "*" else ["*"],
@@ -74,6 +82,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(AtlasLoggingMiddleware)
+app.add_middleware(AtlasMetricsMiddleware)
 
 # ── Helper ──
 def _copilot_response(persona_key: str, query: str, context: Optional[dict] = None) -> dict:

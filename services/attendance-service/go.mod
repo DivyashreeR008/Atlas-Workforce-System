@@ -4,6 +4,7 @@ go 1.21
 
 require (
 	github.com/gofiber/fiber/v2 v2.50.0
+	github.com/streadway/amqp v1.1.0
 	gorm.io/driver/postgres v1.5.2
 	gorm.io/gorm v1.25.4
 )

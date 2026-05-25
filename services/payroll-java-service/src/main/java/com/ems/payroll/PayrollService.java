@@ -1,5 +1,7 @@
 package com.ems.payroll;
 
+import com.ems.payroll.model.OutboxEvent;
+import com.ems.payroll.repository.OutboxEventRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -10,9 +12,11 @@ import java.util.List;
 public class PayrollService {
 
     private final PayrollRepository repository;
+    private final OutboxEventRepository outboxEventRepository;
 
-    public PayrollService(PayrollRepository repository) {
+    public PayrollService(PayrollRepository repository, OutboxEventRepository outboxEventRepository) {
         this.repository = repository;
+        this.outboxEventRepository = outboxEventRepository;
     }
 
     public List<PayrollRecord> getAllPayrolls(String tenantId) {
@@ -25,29 +29,54 @@ public class PayrollService {
 
     @Transactional
     public PayrollRecord runPayroll(String tenantId, String employeeId, String period, Double baseSalary, Double allowances, Double deductions) {
-        // Check if payroll already exists for this period
-        List<PayrollRecord> existing = repository.findByTenantIdAndEmployeeIdAndPeriod(tenantId, employeeId, period);
-        if (!existing.isEmpty()) {
-            throw new IllegalArgumentException("Payroll already processed for this period");
+        try {
+            // Check if payroll already exists for this period
+            List<PayrollRecord> existing = repository.findByTenantIdAndEmployeeIdAndPeriod(tenantId, employeeId, period);
+            if (!existing.isEmpty()) {
+                throw new IllegalArgumentException("Payroll already processed for this period");
+            }
+
+            double grossSalary = baseSalary + allowances - deductions;
+            double tax = calculateTax(grossSalary);
+            double netSalary = grossSalary - tax;
+
+            PayrollRecord record = new PayrollRecord();
+            record.setTenantId(tenantId);
+            record.setEmployeeId(employeeId);
+            record.setPeriod(period);
+            record.setBaseSalary(baseSalary);
+            record.setAllowances(allowances);
+            record.setDeductions(deductions);
+            record.setTax(tax);
+            record.setNetSalary(netSalary);
+            record.setStatus("PROCESSED");
+            record.setProcessedDate(LocalDateTime.now());
+
+            record = repository.save(record);
+
+            OutboxEvent outboxEvent = new OutboxEvent();
+            outboxEvent.setAggregateType("payroll");
+            outboxEvent.setAggregateId(String.valueOf(record.getId()));
+            outboxEvent.setEventType("PAYROLL_PROCESSED");
+            outboxEvent.setPayload("{\"payrollId\":" + record.getId() + ",\"employeeId\":\"" + employeeId + "\",\"period\":\"" + period + "\",\"grossAmount\":" + grossSalary + ",\"netAmount\":" + netSalary + ",\"currency\":\"USD\",\"status\":\"PROCESSED\",\"timestamp\":\"" + LocalDateTime.now() + "\",\"tenantId\":\"" + tenantId + "\"}");
+            outboxEvent.setStatus("PENDING");
+            outboxEvent.setRetryCount(0);
+            outboxEvent.setCreatedAt(LocalDateTime.now());
+            outboxEventRepository.save(outboxEvent);
+
+            return record;
+        } catch (Exception e) {
+            OutboxEvent outboxEvent = new OutboxEvent();
+            outboxEvent.setAggregateType("payroll");
+            outboxEvent.setAggregateId("0");
+            outboxEvent.setEventType("PAYROLL_FAILED");
+            outboxEvent.setPayload("{\"employeeId\":\"" + employeeId + "\",\"period\":\"" + period + "\",\"error\":\"" + e.getMessage() + "\",\"timestamp\":\"" + LocalDateTime.now() + "\",\"tenantId\":\"" + tenantId + "\"}");
+            outboxEvent.setStatus("PENDING");
+            outboxEvent.setRetryCount(0);
+            outboxEvent.setCreatedAt(LocalDateTime.now());
+            outboxEventRepository.save(outboxEvent);
+            throw e;
         }
-
-        double grossSalary = baseSalary + allowances - deductions;
-        double tax = calculateTax(grossSalary);
-        double netSalary = grossSalary - tax;
-
-        PayrollRecord record = new PayrollRecord();
-        record.setTenantId(tenantId);
-        record.setEmployeeId(employeeId);
-        record.setPeriod(period);
-        record.setBaseSalary(baseSalary);
-        record.setAllowances(allowances);
-        record.setDeductions(deductions);
-        record.setTax(tax);
-        record.setNetSalary(netSalary);
-        record.setStatus("PROCESSED");
-        record.setProcessedDate(LocalDateTime.now());
-
-        return repository.save(record);
     }
 
     private double calculateTax(double grossSalary) {

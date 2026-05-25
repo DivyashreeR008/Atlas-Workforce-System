@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -124,13 +125,6 @@ func clockIn(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "Mock clocked in for " + req.EmployeeID})
 	}
 
-	// Check duplicate
-	var existing AttendanceRecord
-	err := db.Where("tenant_id = ? AND employee_id = ? AND date = ?", tenantId, req.EmployeeID, today).First(&existing).Error
-	if err == nil && existing.ClockOut == nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Already clocked in today"})
-	}
-
 	// Default method
 	method := req.Method
 	if method == "" {
@@ -189,7 +183,30 @@ func clockIn(c *fiber.Ctx) error {
 		record.FaceVerified = verifyFace(tenantId, req.EmployeeID, req.FaceImage)
 	}
 
-	db.Create(&record)
+	// Atomic clock-in with transaction + pessimistic locking
+	tx := db.Begin()
+
+	var existing AttendanceRecord
+	err := tx.Set("gorm:query_option", "FOR UPDATE").
+		Where("tenant_id = ? AND employee_id = ? AND date = ?", tenantId, req.EmployeeID, today).
+		First(&existing).Error
+	if err == nil {
+		tx.Rollback()
+		return c.Status(400).JSON(fiber.Map{"error": "Already clocked in today"})
+	}
+
+	if err := tx.Create(&record).Error; err != nil {
+		tx.Rollback()
+		if isDuplicateKeyError(err) {
+			return c.Status(400).JSON(fiber.Map{"error": "Already clocked in today"})
+		}
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to create attendance record"})
+	}
+
+	tx.Commit()
+
+	// Publish clock-in event to live dashboard
+	publishEvent("attendance.clockin", tenantId, record)
 
 	// Detect anomalies after clock-in
 	go detectAnomaliesAfterClockIn(record)
@@ -221,12 +238,19 @@ func clockOut(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "Mock clocked out for " + req.EmployeeID})
 	}
 
+	// Atomic clock-out with transaction + pessimistic locking
+	tx := db.Begin()
+
 	var record AttendanceRecord
-	err := db.Where("tenant_id = ? AND employee_id = ? AND date = ?", tenantId, req.EmployeeID, today).First(&record).Error
+	err := tx.Set("gorm:query_option", "FOR UPDATE").
+		Where("tenant_id = ? AND employee_id = ? AND date = ?", tenantId, req.EmployeeID, today).
+		First(&record).Error
 	if err != nil {
+		tx.Rollback()
 		return c.Status(404).JSON(fiber.Map{"error": "No clock in found for today"})
 	}
 	if record.ClockOut != nil {
+		tx.Rollback()
 		return c.Status(400).JSON(fiber.Map{"error": "Already clocked out"})
 	}
 
@@ -248,7 +272,16 @@ func clockOut(c *fiber.Ctx) error {
 		record.Longitude = req.Longitude
 	}
 
-	db.Save(&record)
+	if err := tx.Save(&record).Error; err != nil {
+		tx.Rollback()
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to update attendance record"})
+	}
+
+	tx.Commit()
+
+	// Publish clock-out event to live dashboard
+	publishEvent("attendance.clockout", tenantId, record)
+
 	return c.JSON(record)
 }
 
@@ -1194,4 +1227,8 @@ func trendDirection(trend float64) string {
 		return "down"
 	}
 	return "stable"
+}
+
+func isDuplicateKeyError(err error) bool {
+	return strings.Contains(err.Error(), "duplicate key")
 }

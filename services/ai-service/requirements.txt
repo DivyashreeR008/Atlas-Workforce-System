@@ -12,3 +12,4 @@ nltk==3.9.1
 aio-pika==9.5.3
 sse-starlette==2.2.1
 redis==5.2.1
+-e ../atlas_observability

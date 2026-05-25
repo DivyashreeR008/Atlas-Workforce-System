@@ -26,7 +26,6 @@ import type {
 import {
   clearAuth,
   getAccessToken,
-  getRefreshToken,
   setTokens,
 } from "./auth";
 
@@ -64,13 +63,6 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    const refresh = getRefreshToken();
-    if (!refresh) {
-      clearAuth();
-      if (typeof window !== "undefined") window.location.href = "/login";
-      return Promise.reject(error);
-    }
-
     if (refreshing) {
       return new Promise((resolve, reject) => {
         queue.push((token) => {
@@ -87,10 +79,8 @@ api.interceptors.response.use(
     refreshing = true;
 
     try {
-      const { data } = await axios.post(`${API_BASE}/auth/refresh`, {
-        refreshToken: refresh,
-      });
-      setTokens(data.token, data.refreshToken);
+      const { data } = await axios.post(`${API_BASE}/auth/refresh`);
+      setTokens(data.token);
       processQueue(data.token);
       original.headers.Authorization = `Bearer ${data.token}`;
       return api(original);
@@ -115,8 +105,10 @@ export const authApi = {
     department?: string;
     position?: string;
   }) => api.post("/auth/register", data),
-  refresh: (refreshToken: string) =>
-    api.post("/auth/refresh", { refreshToken }),
+  refresh: () =>
+    api.post("/auth/refresh"),
+  logout: () =>
+    api.post("/auth/logout"),
 };
 
 export const employeeApi = {

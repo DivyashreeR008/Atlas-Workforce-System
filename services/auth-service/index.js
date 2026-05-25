@@ -649,7 +649,6 @@ app.post('/login', createUserRateLimiter('login', 20), async (req, res) => {
     res.status(200).json({
       message: 'Logged in successfully',
       token,
-      refreshToken,
       session_id: sessionId,
       user: sanitizeUser(user),
       device_trusted: deviceTrusted,
@@ -662,7 +661,7 @@ app.post('/login', createUserRateLimiter('login', 20), async (req, res) => {
 });
 
 app.post('/refresh', async (req, res) => {
-  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+  const refreshToken = req.cookies?.refreshToken;
   if (!refreshToken) {
     return res.status(400).json({ message: 'Refresh token is required' });
   }
@@ -693,7 +692,6 @@ app.post('/refresh', async (req, res) => {
     res.status(200).json({
       message: 'Token refreshed',
       token,
-      refreshToken: newRefreshToken,
       user: sanitizeUser(row),
     });
   } catch (error) {
@@ -703,7 +701,7 @@ app.post('/refresh', async (req, res) => {
 });
 
 app.post('/logout', async (req, res) => {
-  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+  const refreshToken = req.cookies?.refreshToken;
   const sessionId = req.headers['x-session-id'];
   let userId = null;
   let userEmail = null;
@@ -1322,7 +1320,6 @@ app.post('/saml/acs', createUserRateLimiter('saml_acs', 20), async (req, res) =>
     res.json({
       message: 'SAML login successful',
       token,
-      refreshToken,
       user: sanitizeUser(userData)
     });
   } catch (err) {
@@ -1441,7 +1438,6 @@ app.post('/auth/passwordless/verify', createUserRateLimiter('passwordless_verify
     res.json({
       message: 'Logged in successfully',
       token: accessToken,
-      refreshToken,
       user: sanitizeUser(user)
     });
   } catch (err) {
@@ -1686,7 +1682,6 @@ app.post('/webauthn/authenticate/complete', createUserRateLimiter('webauthn_auth
     res.json({
       message: 'Hardware security key authentication successful',
       token,
-      refreshToken,
       user: sanitizeUser(user),
     });
   } catch (err) {
@@ -1967,7 +1962,6 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
       res.json({
         message: `OAuth ${provider} login successful`,
         token,
-        refreshToken,
         user: sanitizeUser(userData),
         provider,
       });

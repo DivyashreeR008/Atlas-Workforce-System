@@ -1,3 +1,4 @@
+import logging
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -7,11 +8,20 @@ import uvicorn
 from sqlalchemy import create_engine, text
 from openai import OpenAI
 import json
+import time
+import threading
+import pika
 import requests
 from urllib.parse import urljoin
+from atlas_observability import (
+    AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
+    configure_logging, get_logger
+)
 
 app = FastAPI(title="Analytics Service API", version="2.0.0")
 
+configure_logging("analytics-service", level=logging.INFO)
+logger = get_logger("analytics-service")
 
 def custom_openapi():
     if app.openapi_schema:
@@ -45,6 +55,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(AtlasLoggingMiddleware)
+app.add_middleware(AtlasMetricsMiddleware)
+
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "atlas_user")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "atlas_password")
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "postgres")
@@ -69,6 +83,11 @@ def health_check():
     """Check if the analytics service is healthy."""
     return {"status": "Analytics Service is running"}
 
+
+RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "localhost")
+RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", "5672"))
+RABBITMQ_USER = os.environ.get("RABBITMQ_USER", "guest")
+RABBITMQ_PASSWORD = os.environ.get("RABBITMQ_PASSWORD", "guest")
 
 EMPLOYEE_SERVICE_URL = os.environ.get("EMPLOYEE_SERVICE_URL", "http://employee-service:8001")
 
@@ -623,6 +642,50 @@ def get_activity_feed(x_tenant_id: str = Header("default", alias="X-Tenant-Id"))
              "timestamp": "2026-05-21T09:00:00Z"},
         ],
     }
+
+
+
+def employee_deletion_consumer():
+    def callback(ch, method, properties, body):
+        try:
+            event = json.loads(body)
+            if event.get("event") == "employee.deleted":
+                email = event.get("email", "")
+                tenant_id = event.get("tenant_id", "")
+                logger.info("employee.deleted.cascade",
+                    extra={"email": email, "tenant_id": tenant_id,
+                           "action": "cleanup_derived_data"})
+        except Exception as e:
+            logger.error("employee.deleted.error", extra={"error": str(e)})
+        finally:
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+
+    while True:
+        try:
+            credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
+            params = pika.ConnectionParameters(
+                host=RABBITMQ_HOST,
+                port=RABBITMQ_PORT,
+                credentials=credentials,
+            )
+            connection = pika.BlockingConnection(params)
+            channel = connection.channel()
+            channel.exchange_declare(exchange="notifications_exchange", exchange_type="fanout", durable=True)
+            result = channel.queue_declare(queue="", exclusive=True)
+            queue_name = result.method.queue
+            channel.queue_bind(exchange="notifications_exchange", queue=queue_name)
+            channel.basic_consume(queue=queue_name, on_message_callback=callback, auto_ack=False)
+            logger.info("Started listening for employee.deleted events")
+            channel.start_consuming()
+        except Exception as e:
+            logger.error("RabbitMQ connection error in analytics consumer", extra={"error": str(e)})
+            time.sleep(5)
+
+
+@app.on_event("startup")
+def start_consumers():
+    thread = threading.Thread(target=employee_deletion_consumer, daemon=True)
+    thread.start()
 
 
 if __name__ == "__main__":

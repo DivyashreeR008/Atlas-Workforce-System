@@ -4,6 +4,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from atlas_observability import (
+    AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
+    configure_logging, get_logger
+)
 
 from models import SessionStore
 from schemas import (
@@ -59,6 +63,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+configure_logging("ai-copilot-service", level=logging.INFO)
+logger = get_logger("ai-copilot-service")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -66,6 +73,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(AtlasLoggingMiddleware)
+app.add_middleware(AtlasMetricsMiddleware)
 
 # ──────────────────────────────────────────────
 #  Health check

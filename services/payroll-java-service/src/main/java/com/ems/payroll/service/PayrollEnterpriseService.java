@@ -28,6 +28,7 @@ public class PayrollEnterpriseService {
     private final PayrollComplianceReportRepository complianceRepo;
     private final PayrollAnomalyRepository anomalyRepo;
     private final PayslipRepository payslipRepo;
+    private final OutboxEventRepository outboxEventRepository;
 
     public PayrollEnterpriseService(
             EnhancedPayrollRepository payrollRepo,
@@ -45,7 +46,8 @@ public class PayrollEnterpriseService {
             BankTransactionRepository bankRepo,
             PayrollComplianceReportRepository complianceRepo,
             PayrollAnomalyRepository anomalyRepo,
-            PayslipRepository payslipRepo) {
+            PayslipRepository payslipRepo,
+            OutboxEventRepository outboxEventRepository) {
         this.payrollRepo = payrollRepo;
         this.taxConfigRepo = taxConfigRepo;
         this.taxBracketRepo = taxBracketRepo;
@@ -62,6 +64,7 @@ public class PayrollEnterpriseService {
         this.complianceRepo = complianceRepo;
         this.anomalyRepo = anomalyRepo;
         this.payslipRepo = payslipRepo;
+        this.outboxEventRepository = outboxEventRepository;
     }
 
     // ============================================================
@@ -72,64 +75,88 @@ public class PayrollEnterpriseService {
     public EnhancedPayrollRecord runMultiCountryPayroll(String tenantId, String employeeId, String period,
                                                          Double baseSalary, Double allowances, Double deductions,
                                                          String country, String currency) {
-        List<EnhancedPayrollRecord> existing = payrollRepo.findByTenantIdAndEmployeeIdAndPeriod(tenantId, employeeId, period);
-        if (!existing.isEmpty()) {
-            throw new IllegalArgumentException("Payroll already processed for this period");
-        }
-
-        Double grossSalary = baseSalary + allowances - deductions;
-        CountryTaxConfig taxConfig = taxConfigRepo.findByTenantIdAndCountry(tenantId, country)
-                .orElse(null);
-
-        double tax = 0;
-        double socialSecurity = 0;
-        double medicare = 0;
-
-        if (taxConfig != null) {
-            tax = calculateProgressiveTax(tenantId, country, taxConfig.getTaxYear(), grossSalary);
-            if (taxConfig.getSocialSecurityRate() != null) {
-                socialSecurity = grossSalary * taxConfig.getSocialSecurityRate();
+        try {
+            List<EnhancedPayrollRecord> existing = payrollRepo.findByTenantIdAndEmployeeIdAndPeriod(tenantId, employeeId, period);
+            if (!existing.isEmpty()) {
+                throw new IllegalArgumentException("Payroll already processed for this period");
             }
-            if (taxConfig.getMedicareRate() != null) {
-                medicare = grossSalary * taxConfig.getMedicareRate();
+
+            Double grossSalary = baseSalary + allowances - deductions;
+            CountryTaxConfig taxConfig = taxConfigRepo.findByTenantIdAndCountry(tenantId, country)
+                    .orElse(null);
+
+            double tax = 0;
+            double socialSecurity = 0;
+            double medicare = 0;
+
+            if (taxConfig != null) {
+                tax = calculateProgressiveTax(tenantId, country, taxConfig.getTaxYear(), grossSalary);
+                if (taxConfig.getSocialSecurityRate() != null) {
+                    socialSecurity = grossSalary * taxConfig.getSocialSecurityRate();
+                }
+                if (taxConfig.getMedicareRate() != null) {
+                    medicare = grossSalary * taxConfig.getMedicareRate();
+                }
+            } else {
+                tax = calculateSimpleTax(grossSalary);
             }
-        } else {
-            tax = calculateSimpleTax(grossSalary);
+
+            double netSalary = grossSalary - tax - socialSecurity - medicare;
+
+            EnhancedPayrollRecord record = new EnhancedPayrollRecord();
+            record.setTenantId(tenantId);
+            record.setEmployeeId(employeeId);
+            record.setPeriod(period);
+            record.setCountry(country);
+            record.setCurrency(currency != null ? currency : "USD");
+            record.setBaseSalary(baseSalary);
+            record.setAllowances(allowances);
+            record.setDeductions(deductions);
+            record.setGrossSalary(grossSalary);
+            record.setTax(tax);
+            record.setSocialSecurity(socialSecurity);
+            record.setMedicare(medicare);
+            record.setNetSalary(netSalary);
+            record.setStatus("PROCESSED");
+            record.setProcessedDate(LocalDateTime.now());
+            record.setCreatedAt(LocalDateTime.now());
+            record.setUpdatedAt(LocalDateTime.now());
+
+            record = payrollRepo.save(record);
+
+            // Generate payslip
+            generatePayslip(record);
+
+            // Audit
+            auditAction(tenantId, record.getId(), "RUN_PAYROLL", "system", "none", record.getStatus());
+
+            // Detect anomalies
+            detectPayrollAnomalies(record);
+
+            // Outbox event
+            OutboxEvent outboxEvent = new OutboxEvent();
+            outboxEvent.setAggregateType("payroll");
+            outboxEvent.setAggregateId(String.valueOf(record.getId()));
+            outboxEvent.setEventType("PAYROLL_PROCESSED");
+            outboxEvent.setPayload("{\"payrollId\":" + record.getId() + ",\"employeeId\":\"" + employeeId + "\",\"period\":\"" + period + "\",\"grossAmount\":" + grossSalary + ",\"netAmount\":" + netSalary + ",\"currency\":\"" + (currency != null ? currency : "USD") + "\",\"status\":\"PROCESSED\",\"timestamp\":\"" + LocalDateTime.now() + "\",\"tenantId\":\"" + tenantId + "\"}");
+            outboxEvent.setStatus("PENDING");
+            outboxEvent.setRetryCount(0);
+            outboxEvent.setCreatedAt(LocalDateTime.now());
+            outboxEventRepository.save(outboxEvent);
+
+            return record;
+        } catch (Exception e) {
+            OutboxEvent outboxEvent = new OutboxEvent();
+            outboxEvent.setAggregateType("payroll");
+            outboxEvent.setAggregateId("0");
+            outboxEvent.setEventType("PAYROLL_FAILED");
+            outboxEvent.setPayload("{\"employeeId\":\"" + employeeId + "\",\"period\":\"" + period + "\",\"error\":\"" + e.getMessage() + "\",\"timestamp\":\"" + LocalDateTime.now() + "\",\"tenantId\":\"" + tenantId + "\"}");
+            outboxEvent.setStatus("PENDING");
+            outboxEvent.setRetryCount(0);
+            outboxEvent.setCreatedAt(LocalDateTime.now());
+            outboxEventRepository.save(outboxEvent);
+            throw e;
         }
-
-        double netSalary = grossSalary - tax - socialSecurity - medicare;
-
-        EnhancedPayrollRecord record = new EnhancedPayrollRecord();
-        record.setTenantId(tenantId);
-        record.setEmployeeId(employeeId);
-        record.setPeriod(period);
-        record.setCountry(country);
-        record.setCurrency(currency != null ? currency : "USD");
-        record.setBaseSalary(baseSalary);
-        record.setAllowances(allowances);
-        record.setDeductions(deductions);
-        record.setGrossSalary(grossSalary);
-        record.setTax(tax);
-        record.setSocialSecurity(socialSecurity);
-        record.setMedicare(medicare);
-        record.setNetSalary(netSalary);
-        record.setStatus("PROCESSED");
-        record.setProcessedDate(LocalDateTime.now());
-        record.setCreatedAt(LocalDateTime.now());
-        record.setUpdatedAt(LocalDateTime.now());
-
-        record = payrollRepo.save(record);
-
-        // Generate payslip
-        generatePayslip(record);
-
-        // Audit
-        auditAction(tenantId, record.getId(), "RUN_PAYROLL", "system", "none", record.getStatus());
-
-        // Detect anomalies
-        detectPayrollAnomalies(record);
-
-        return record;
     }
 
     private double calculateProgressiveTax(String tenantId, String country, String taxYear, double grossSalary) {
