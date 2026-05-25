@@ -157,6 +157,144 @@ export const payrollApi = {
     allowances?: number;
     deductions?: number;
   }) => api.post("/payroll/run", data),
+
+  // Module 5 - Payroll Enterprise
+  enterprise: {
+    dashboard: () => api.get("/payroll/enterprise/dashboard"),
+
+    // Multi-country payroll
+    payrolls: {
+      list: () => api.get("/payroll/enterprise/payrolls"),
+      byEmployee: (employeeId: string) => api.get(`/payroll/enterprise/payrolls/employee/${employeeId}`),
+      byPeriod: (period: string) => api.get(`/payroll/enterprise/payrolls/period/${period}`),
+      run: (data: {
+        employeeId: string; period: string; baseSalary: number;
+        allowances?: number; deductions?: number; country?: string; currency?: string;
+      }) => api.post("/payroll/enterprise/payrolls/run", data),
+    },
+
+    // Tax engine
+    tax: {
+      configs: {
+        list: () => api.get("/payroll/enterprise/tax-configs"),
+        create: (data: Partial<import("@/types").CountryTaxConfig>) => api.post("/payroll/enterprise/tax-configs", data),
+      },
+      brackets: {
+        list: () => api.get("/payroll/enterprise/tax-brackets"),
+        create: (data: Partial<import("@/types").TaxBracket>) => api.post("/payroll/enterprise/tax-brackets", data),
+      },
+      simulate: (country: string, grossSalary: number) =>
+        api.post("/payroll/enterprise/tax/simulate", { country, grossSalary }),
+      compare: (countries: string[], grossSalary: number) =>
+        api.post("/payroll/enterprise/tax/compare", { countries, grossSalary }),
+    },
+
+    // Forecasting
+    forecasts: {
+      list: () => api.get("/payroll/enterprise/forecasts"),
+      generate: (period: string) => api.post("/payroll/enterprise/forecasts/generate", { period }),
+    },
+
+    // Auditing
+    auditLogs: () => api.get("/payroll/enterprise/audit-logs"),
+
+    // Payslips
+    payslips: {
+      list: () => api.get("/payroll/enterprise/payslips"),
+      byEmployee: (employeeId: string) => api.get(`/payroll/enterprise/payslips/employee/${employeeId}`),
+    },
+
+    // Bank
+    bank: {
+      list: () => api.get("/payroll/enterprise/bank/transactions"),
+      create: (data: {
+        employeeId: string; payrollId: number; amount: number;
+        accountNumber: string; routingNumber: string; bankName?: string;
+      }) => api.post("/payroll/enterprise/bank/transactions", data),
+      process: (id: number) => api.post(`/payroll/enterprise/bank/transactions/${id}/process`),
+    },
+
+    // Expenses
+    expenses: {
+      list: () => api.get("/payroll/enterprise/expenses"),
+      byEmployee: (employeeId: string) => api.get(`/payroll/enterprise/expenses/employee/${employeeId}`),
+      submit: (data: {
+        employeeId: string; category: string; amount: number;
+        description?: string; receiptUrl?: string;
+      }) => api.post("/payroll/enterprise/expenses", data),
+      approve: (id: number, approvedBy: string) =>
+        api.post(`/payroll/enterprise/expenses/${id}/approve`, { approvedBy }),
+      reject: (id: number, reason: string) =>
+        api.post(`/payroll/enterprise/expenses/${id}/reject`, { reason }),
+    },
+
+    // Benefits
+    benefits: {
+      plans: {
+        list: () => api.get("/payroll/enterprise/benefit-plans"),
+        create: (data: Partial<import("@/types").BenefitPlan>) => api.post("/payroll/enterprise/benefit-plans", data),
+      },
+      enrollments: {
+        list: () => api.get("/payroll/enterprise/benefit-enrollments"),
+        enroll: (employeeId: string, planId: number) =>
+          api.post("/payroll/enterprise/benefit-enrollments", { employeeId, planId }),
+      },
+    },
+
+    // Compensation
+    compensation: {
+      list: () => api.get("/payroll/enterprise/compensation-plans"),
+      create: (data: {
+        employeeId: string; currentSalary: number; proposedSalary: number;
+        currency?: string; reason?: string; reviewCycle?: string;
+      }) => api.post("/payroll/enterprise/compensation-plans", data),
+    },
+
+    // Bonuses
+    bonuses: {
+      list: () => api.get("/payroll/enterprise/bonuses"),
+      create: (data: {
+        employeeId: string; amount: number; type?: string; reason?: string;
+      }) => api.post("/payroll/enterprise/bonuses", data),
+      approve: (id: number, approvedBy?: string) =>
+        api.post(`/payroll/enterprise/bonuses/${id}/approve`, { approvedBy }),
+    },
+
+    // Equity
+    equity: {
+      list: () => api.get("/payroll/enterprise/equity"),
+      byEmployee: (employeeId: string) => api.get(`/payroll/enterprise/equity/employee/${employeeId}`),
+      create: (data: {
+        employeeId: string; shares: number; strikePrice: number;
+        fairMarketValue: number; equityType?: string; vestingSchedule?: string;
+      }) => api.post("/payroll/enterprise/equity", data),
+    },
+
+    // Benchmarks
+    benchmarks: {
+      list: () => api.get("/payroll/enterprise/benchmarks"),
+      add: (data: {
+        role: string; experience?: string; location?: string;
+        p10: number; p25: number; p50: number; p75: number; p90: number;
+        currency?: string; source?: string;
+      }) => api.post("/payroll/enterprise/benchmarks", data),
+      compare: (role: string, currentSalary: number, experience?: string, location?: string) =>
+        api.post("/payroll/enterprise/benchmarks/compare", { role, currentSalary, experience, location }),
+    },
+
+    // Compliance
+    compliance: {
+      list: () => api.get("/payroll/enterprise/compliance-reports"),
+      generate: (reportType: string, period: string, country?: string) =>
+        api.post("/payroll/enterprise/compliance-reports/generate", { reportType, period, country }),
+    },
+
+    // Anomalies
+    anomalies: {
+      list: () => api.get("/payroll/enterprise/anomalies"),
+      resolve: (id: number) => api.post(`/payroll/enterprise/anomalies/${id}/resolve`),
+    },
+  },
 };
 
 export const attendanceApi = {

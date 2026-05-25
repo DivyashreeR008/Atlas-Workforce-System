@@ -263,6 +263,20 @@ export interface LeaveRequest {
   days: number;
 }
 
+export interface PayrollRecord {
+  id: number;
+  employeeId: string;
+  tenantId: string;
+  period: string;
+  baseSalary: number;
+  allowances: number;
+  deductions: number;
+  tax: number;
+  netSalary: number;
+  status: string;
+  processedDate: string;
+}
+
 export interface PayrollSummary {
   id: string;
   period: string;
@@ -1169,4 +1183,265 @@ export interface TimelineEvent {
   description: string | null;
   event_date: string;
   created_at: string;
+}
+
+// === Module 5 — Payroll Enterprise Types ===
+
+export interface EnhancedPayrollRecord {
+  id: number;
+  employeeId: string;
+  tenantId: string;
+  period: string;
+  country: string;
+  currency: string;
+  baseSalary: number;
+  allowances: number;
+  deductions: number;
+  tax: number;
+  socialSecurity: number;
+  medicare: number;
+  netSalary: number;
+  grossSalary: number;
+  paymentMethod: string;
+  bankAccount: string;
+  bankRouting: string;
+  status: string;
+  processedDate: string;
+}
+
+export interface CountryTaxConfig {
+  id: number;
+  tenantId: string;
+  country: string;
+  currency: string;
+  taxYear: string;
+  standardDeduction: number;
+  socialSecurityRate: number;
+  medicareRate: number;
+  corporateTaxRate: number;
+  hasProgressiveTax: boolean;
+}
+
+export interface TaxBracket {
+  id: number;
+  tenantId: string;
+  country: string;
+  taxYear: string;
+  minIncome: number;
+  maxIncome: number;
+  rate: number;
+  flatAmount: number;
+  bracketOrder: number;
+}
+
+export interface TaxSimulationResult {
+  grossSalary: number;
+  country: string;
+  taxYear: string;
+  tax: number;
+  effectiveTaxRate: number;
+  socialSecurity: number;
+  medicare: number;
+  totalDeductions: number;
+  netSalary: number;
+  brackets: { range: string; rate: string; flatAmount: number }[];
+}
+
+export interface PayrollForecast {
+  id: number;
+  tenantId: string;
+  period: string;
+  projectedGrossPayroll: number;
+  projectedNetPayroll: number;
+  projectedTax: number;
+  projectedBenefits: number;
+  confidence: number;
+  factors: string;
+  status: string;
+  generatedAt: string;
+}
+
+export interface PayrollAudit {
+  id: number;
+  payrollId: number;
+  tenantId: string;
+  action: string;
+  changedBy: string;
+  fieldName: string;
+  oldValue: string;
+  newValue: string;
+  changedAt: string;
+}
+
+export interface ExpenseReport {
+  id: number;
+  employeeId: string;
+  tenantId: string;
+  category: string;
+  amount: number;
+  description: string;
+  receiptUrl: string;
+  expenseDate: string;
+  status: string;
+  approvedBy: string;
+  rejectedReason: string;
+  submittedAt: string;
+}
+
+export interface BenefitPlan {
+  id: number;
+  tenantId: string;
+  name: string;
+  type: string;
+  description: string;
+  employerContribution: number;
+  employeeContribution: number;
+  maxBenefitAmount: number;
+  isActive: boolean;
+}
+
+export interface BenefitEnrollment {
+  id: number;
+  employeeId: string;
+  tenantId: string;
+  planId: number;
+  enrollmentDate: string;
+  effectiveDate: string;
+  status: string;
+  employeeContribution: number;
+  employerContribution: number;
+}
+
+export interface Bonus {
+  id: number;
+  employeeId: string;
+  tenantId: string;
+  amount: number;
+  type: string;
+  reason: string;
+  awardDate: string;
+  payoutDate: string;
+  currency: string;
+  status: string;
+  approvedBy: string;
+}
+
+export interface EquityGrant {
+  id: number;
+  employeeId: string;
+  tenantId: string;
+  shares: number;
+  strikePrice: number;
+  fairMarketValue: number;
+  grantDate: string;
+  vestingStart: string;
+  vestingEnd: string;
+  vestingSchedule: string;
+  equityType: string;
+  status: string;
+}
+
+export interface CompensationPlan {
+  id: number;
+  employeeId: string;
+  tenantId: string;
+  currentBaseSalary: number;
+  proposedBaseSalary: number;
+  currency: string;
+  effectiveDate: string;
+  reason: string;
+  status: string;
+  reviewCycle: string;
+}
+
+export interface SalaryBenchmark {
+  id: number;
+  tenantId: string;
+  role: string;
+  experience: string;
+  location: string;
+  industry: string;
+  percentile10: number;
+  percentile25: number;
+  percentile50: number;
+  percentile75: number;
+  percentile90: number;
+  currency: string;
+  source: string;
+  year: string;
+}
+
+export interface BenchmarkComparison {
+  role: string;
+  experience: string;
+  location: string;
+  currentSalary: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  position: string;
+  vsMedianPercent: number;
+  currency: string;
+}
+
+export interface BankTransaction {
+  id: number;
+  employeeId: string;
+  tenantId: string;
+  payrollId: number;
+  amount: number;
+  accountNumber: string;
+  routingNumber: string;
+  bankName: string;
+  accountType: string;
+  transactionType: string;
+  reference: string;
+  status: string;
+  processedAt: string;
+}
+
+export interface PayrollComplianceReport {
+  id: number;
+  tenantId: string;
+  reportType: string;
+  period: string;
+  country: string;
+  summary: string;
+  details: string;
+  status: string;
+  generatedAt: string;
+}
+
+export interface PayrollAnomaly {
+  id: number;
+  tenantId: string;
+  payrollId: number;
+  employeeId: string;
+  anomalyType: string;
+  severity: string;
+  description: string;
+  isResolved: boolean;
+  detectedAt: string;
+  resolvedAt: string | null;
+}
+
+export interface Payslip {
+  id: number;
+  payrollId: number;
+  employeeId: string;
+  tenantId: string;
+  period: string;
+  pdfContent: string;
+  pdfUrl: string;
+  generatedAt: string;
+}
+
+export interface PayrollDashboardSummary {
+  totalPayrollRecords: number;
+  totalGrossPayroll: number;
+  totalNetPayroll: number;
+  totalTaxWithheld: number;
+  pendingExpenses: number;
+  unresolvedAnomalies: number;
+  pendingBonuses: number;
 }
