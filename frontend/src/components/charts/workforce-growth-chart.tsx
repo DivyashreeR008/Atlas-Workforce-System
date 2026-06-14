@@ -8,26 +8,16 @@ import {
   Tooltip,
   XAxis,
   YAxis,
-  Cell,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
-interface DepartmentChartProps {
-  data: { name: string; value: number }[];
+interface WorkforceGrowthChartProps {
+  data: { month: string; count: number }[];
   loading?: boolean;
   error?: boolean;
   onRetry?: () => void;
 }
-
-const COLORS = [
-  "hsl(239 84% 67%)",
-  "hsl(160 84% 39%)",
-  "hsl(35 92% 65%)",
-  "hsl(0 72% 51%)",
-  "hsl(271 81% 56%)",
-  "hsl(190 90% 50%)",
-];
 
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null;
@@ -39,16 +29,16 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
-export function DepartmentChart({ data, loading, error, onRetry }: DepartmentChartProps) {
+export function WorkforceGrowthChart({ data, loading, error, onRetry }: WorkforceGrowthChartProps) {
   if (loading) {
     return (
       <Card>
         <CardHeader className="pb-2">
           <Skeleton className="h-4 w-36" />
-          <Skeleton className="h-3 w-40" />
+          <Skeleton className="h-3 w-48" />
         </CardHeader>
         <CardContent>
-          <Skeleton className="h-[280px] w-full rounded-lg" />
+          <Skeleton className="h-[260px] w-full rounded-lg" />
         </CardContent>
       </Card>
     );
@@ -58,10 +48,10 @@ export function DepartmentChart({ data, loading, error, onRetry }: DepartmentCha
     return (
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium">Department Distribution</CardTitle>
+          <CardTitle className="text-sm font-medium">Workforce Growth</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex h-[280px] flex-col items-center justify-center gap-2 text-muted-foreground">
+          <div className="flex h-[260px] flex-col items-center justify-center gap-2 text-muted-foreground">
             <p className="text-sm">Failed to load chart data</p>
             {onRetry && (
               <button onClick={onRetry} className="rounded-md bg-primary/10 px-3 py-1 text-xs font-medium text-primary hover:bg-primary/20 transition-colors">
@@ -74,28 +64,26 @@ export function DepartmentChart({ data, loading, error, onRetry }: DepartmentCha
     );
   }
 
-  const total = data.reduce((s, d) => s + d.value, 0);
+  const startCount = data[0]?.count ?? 0;
+  const endCount = data[data.length - 1]?.count ?? 0;
+  const totalGrowth = startCount > 0 ? ((endCount - startCount) / startCount * 100).toFixed(1) : "0";
 
   return (
     <Card className="transition-all duration-200 hover:shadow-md">
       <CardHeader className="pb-2 flex-row items-start justify-between space-y-0">
         <div>
-          <CardTitle className="text-sm font-medium">Department Distribution</CardTitle>
-          <CardDescription className="text-xs">{total.toLocaleString()} total employees</CardDescription>
+          <CardTitle className="text-sm font-medium">Workforce Growth</CardTitle>
+          <CardDescription className="text-xs">{totalGrowth}% growth this year</CardDescription>
         </div>
       </CardHeader>
       <CardContent>
-        <ResponsiveContainer width="100%" height={260}>
-          <BarChart data={data} layout="vertical" margin={{ left: 0, right: 4, top: 4, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" className="stroke-border/50" horizontal={false} />
-            <XAxis type="number" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => v.toLocaleString()} />
-            <YAxis dataKey="name" type="category" width={85} tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
+        <ResponsiveContainer width="100%" height={240}>
+          <BarChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: -16 }}>
+            <CartesianGrid strokeDasharray="3 3" className="stroke-border/50" vertical={false} />
+            <XAxis dataKey="month" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} dy={6} interval={1} />
+            <YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} dx={-4} tickFormatter={(v) => v.toLocaleString()} />
             <Tooltip content={<CustomTooltip />} cursor={{ fill: "hsl(var(--muted))" }} />
-            <Bar dataKey="value" radius={[0, 4, 4, 0]} maxBarSize={20}>
-              {data.map((_, i) => (
-                <Cell key={i} fill={COLORS[i % COLORS.length]} />
-              ))}
-            </Bar>
+            <Bar dataKey="count" fill="hsl(271 81% 56%)" radius={[2, 2, 0, 0]} maxBarSize={24} />
           </BarChart>
         </ResponsiveContainer>
       </CardContent>

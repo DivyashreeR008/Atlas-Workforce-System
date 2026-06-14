@@ -9,8 +9,10 @@ import type {
 export const dashboardKpis: KpiMetric[] = [
   { label: "Total Employees", value: 1248, change: 4.2, trend: "up" },
   { label: "Present Today", value: 1189, change: 1.8, trend: "up" },
+  { label: "Absent", value: 32, change: -8, trend: "down" },
+  { label: "Late", value: 27, change: 5, trend: "up" },
   { label: "Open Positions", value: 23, change: -12, trend: "down" },
-  { label: "Monthly Payroll", value: 2840000, change: 2.1, trend: "up" },
+  { label: "Attrition Rate", value: 8.4, change: 0.6, trend: "up" },
 ];
 
 export const headcountTrend = [
@@ -154,4 +156,36 @@ export const mockPayrollRuns: PayrollSummary[] = [
     employeeCount: 1220,
     status: "completed",
   },
+];
+
+export const workforceGrowth = [
+  { month: "Jan", count: 1100 },
+  { month: "Feb", count: 1125 },
+  { month: "Mar", count: 1150 },
+  { month: "Apr", count: 1180 },
+  { month: "May", count: 1210 },
+  { month: "Jun", count: 1248 },
+  { month: "Jul", count: 1275 },
+  { month: "Aug", count: 1302 },
+  { month: "Sep", count: 1330 },
+  { month: "Oct", count: 1358 },
+  { month: "Nov", count: 1385 },
+  { month: "Dec", count: 1412 },
+];
+
+export const hiringPipeline = [
+  { stage: "Applied", count: 1240 },
+  { stage: "Screened", count: 680 },
+  { stage: "Interviewed", count: 340 },
+  { stage: "Offered", count: 85 },
+  { stage: "Hired", count: 52 },
+];
+
+export const recentActivity = [
+  { id: "1", type: "hire" as const, actor: "Sarah Chen", description: "joined as Senior Engineer", timestamp: "2 hours ago" },
+  { id: "2", type: "promotion" as const, actor: "James Wilson", description: "promoted to Team Lead", timestamp: "4 hours ago" },
+  { id: "3", type: "departure" as const, actor: "Maria Garcia", description: "departed from Marketing", timestamp: "1 day ago" },
+  { id: "4", type: "training" as const, actor: "David Kim", description: "completed Compliance Training", timestamp: "1 day ago" },
+  { id: "5", type: "achievement" as const, actor: "Lisa Park", description: "hit Q2 OKR targets", timestamp: "2 days ago" },
+  { id: "6", type: "leave" as const, actor: "John Doe", description: "started Annual Leave", timestamp: "2 days ago" },
 ];
