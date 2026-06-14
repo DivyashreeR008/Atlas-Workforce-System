@@ -15,14 +15,6 @@ import (
 // CORE ATTENDANCE HANDLERS
 // ============================================================
 
-func getTenant(c *fiber.Ctx) string {
-	tenant := c.Get("X-Tenant-Id")
-	if tenant == "" {
-		return "default"
-	}
-	return tenant
-}
-
 func getEmployeeID(c *fiber.Ctx) string {
 	return c.Get("X-Employee-Id")
 }
