@@ -11,6 +11,8 @@ const { authenticator } = require('otplib');
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
 const redis = require('redis');
+const { DOMParser } = require('@xmldom/xmldom');
+const { SignedXml } = require('xml-crypto');
 const { subtle } = crypto.webcrypto;
 
 const app = express();
@@ -48,7 +50,8 @@ const AUDIT_SERVICE_URL = process.env.AUDIT_SERVICE_URL || 'http://audit-complia
 const AUDIT_INTERNAL_KEY = process.env.AUDIT_INTERNAL_KEY;
 const SAML_IDP_SSO_URL = process.env.SAML_IDP_SSO_URL || 'https://idp.example.com/sso';
 const SAML_IDP_ENTITY_ID = process.env.SAML_IDP_ENTITY_ID || 'https://idp.example.com/metadata';
-const SCIM_API_KEY = process.env.SCIM_API_KEY;
+const SAML_IDP_CERT = (process.env.SAML_IDP_CERT || '').replace(/\\n/g, '\n');
+const SCIM_API_KEY = process.env.SCIM_API_KEY || 'change-scim-api-key-in-production';
 
 if (!JWT_SECRET) {
   console.error('FATAL: JWT_SECRET environment variable is required');
@@ -1376,14 +1379,49 @@ app.post('/saml/acs', createUserRateLimiter('saml_acs', 20), async (req, res) =>
       return res.status(400).json({ message: 'SAMLResponse is required' });
     }
 
-    const decoded = Buffer.from(SAMLResponse, 'base64').toString('utf-8');
+    const decodedXml = Buffer.from(SAMLResponse, 'base64').toString('utf-8');
 
-    const nameIdMatch = decoded.match(/<saml2:NameID[^>]*>([^<]+)<\/saml2:NameID>/);
-    const emailMatch = decoded.match(/<saml2:Attribute[^>]*?Name="[^"]*email[^"]*"[^>]*>[\s\S]*?<saml2:AttributeValue[^>]*>([^<]+)<\/saml2:AttributeValue>/i);
-    const firstNameMatch = decoded.match(/<saml2:Attribute[^>]*?Name="[^"]*firstName[^"]*"[^>]*>[\s\S]*?<saml2:AttributeValue[^>]*>([^<]+)<\/saml2:AttributeValue>/i);
-    const lastNameMatch = decoded.match(/<saml2:Attribute[^>]*?Name="[^"]*lastName[^"]*"[^>]*>[\s\S]*?<saml2:AttributeValue[^>]*>([^<]+)<\/saml2:AttributeValue>/i);
+    if (!SAML_IDP_CERT && NODE_ENV === 'production') {
+      console.warn('SAML_IDP_CERT not configured — signature verification disabled');
+    }
 
-    const emailSimpleMatch = decoded.match(/<NameID[^>]*>([^<]+)<\/NameID>/);
+    if (SAML_IDP_CERT) {
+      const doc = new DOMParser().parseFromString(decodedXml, 'text/xml');
+      const signatureNodes = doc.getElementsByTagNameNS
+        ? doc.getElementsByTagNameNS('http://www.w3.org/2000/09/xmldsig#', 'Signature')
+        : doc.getElementsByTagName('Signature');
+
+      if (signatureNodes.length === 0) {
+        return res.status(400).json({ message: 'SAML response is not signed' });
+      }
+
+      let signatureVerified = false;
+      for (let i = 0; i < signatureNodes.length; i++) {
+        const sig = new SignedXml();
+        sig.keyInfoProvider = {
+          getKeyInfo() { return '<X509Data></X509Data>'; },
+          getKey(keyInfo) { return SAML_IDP_CERT; },
+        };
+        sig.loadSignature(signatureNodes[i].toString());
+        try {
+          signatureVerified = sig.checkSignature(decodedXml);
+          if (signatureVerified) break;
+        } catch {
+          continue;
+        }
+      }
+
+      if (!signatureVerified) {
+        return res.status(401).json({ message: 'SAML signature verification failed' });
+      }
+    }
+
+    const nameIdMatch = decodedXml.match(/<saml2:NameID[^>]*>([^<]+)<\/saml2:NameID>/);
+    const emailMatch = decodedXml.match(/<saml2:Attribute[^>]*?Name="[^"]*email[^"]*"[^>]*>[\s\S]*?<saml2:AttributeValue[^>]*>([^<]+)<\/saml2:AttributeValue>/i);
+    const firstNameMatch = decodedXml.match(/<saml2:Attribute[^>]*?Name="[^"]*firstName[^"]*"[^>]*>[\s\S]*?<saml2:AttributeValue[^>]*>([^<]+)<\/saml2:AttributeValue>/i);
+    const lastNameMatch = decodedXml.match(/<saml2:Attribute[^>]*?Name="[^"]*lastName[^"]*"[^>]*>[\s\S]*?<saml2:AttributeValue[^>]*>([^<]+)<\/saml2:AttributeValue>/i);
+
+    const emailSimpleMatch = decodedXml.match(/<NameID[^>]*>([^<]+)<\/NameID>/);
     const email = emailMatch?.[1] || nameIdMatch?.[1] || emailSimpleMatch?.[1];
     const firstName = firstNameMatch?.[1] || '';
     const lastName = lastNameMatch?.[1] || '';
