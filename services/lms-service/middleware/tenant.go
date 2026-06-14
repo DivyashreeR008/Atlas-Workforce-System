@@ -6,10 +6,10 @@ import (
 
 func TenantMiddleware() fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		tenantID := c.Get("X-Tenant-ID")
-		if tenantID == "" {
-			tenantID = c.Query("tenant_id")
+		if v, ok := c.Locals("tenant_id").(string); ok && v != "" {
+			return c.Next()
 		}
+		tenantID := c.Get("X-Tenant-ID")
 		if tenantID == "" {
 			tenantID = "default"
 		}
@@ -23,4 +23,18 @@ func GetTenant(c *fiber.Ctx) string {
 		return v
 	}
 	return "default"
+}
+
+func GetUserRole(c *fiber.Ctx) string {
+	if v, ok := c.Locals("user_role").(string); ok {
+		return v
+	}
+	return "employee"
+}
+
+func GetUserID(c *fiber.Ctx) string {
+	if v, ok := c.Locals("user_id").(string); ok {
+		return v
+	}
+	return ""
 }

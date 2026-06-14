@@ -250,6 +250,9 @@ func main() {
 		return c.JSON(fiber.Map{"status": "Attendance Service is running", "version": "2.0.0"})
 	})
 
+	initAuth()
+	app.Use(authMiddleware)
+
 	api := app.Group("/api/attendance")
 
 	// ============================================================
