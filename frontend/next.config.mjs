@@ -7,6 +7,7 @@ const __dirname = path.dirname(__filename);
 
 const nextConfig = {
   output: "standalone",
+  turbopack: {},
   webpack: (config) => {
     config.resolve.alias["@"] = path.join(__dirname, "src");
     return config;

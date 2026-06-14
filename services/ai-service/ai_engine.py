@@ -233,7 +233,7 @@ def _answer_policy(query: str, area: str = "") -> dict:
             "Employees should consult their manager or HR representative for specific situations."
         ),
         "policy_citations": [
-            {"policy": f"{area or 'General'} Policy #{random.randint(100, 999)}", "relevance": random.choice(["direct", "related", "indirect"]), "section": f"Section {random.randint(1, 10)}.{random.randint(1, 5)}"},
+            ({"policy": f"{area or 'General'} Policy #{random.randint(100, 999)}", "relevance": random.choice(["direct", "related", "indirect"]), "section": f"Section {random.randint(1, 10)}.{random.randint(1, 5)}"})
             for _ in range(random.randint(1, 3))
         ],
         "related_policies": [
