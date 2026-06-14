@@ -1,8 +1,14 @@
 import os
 import logging
+import base64
+import hashlib
+import hmac
+import json
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from atlas_observability import (
     AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
@@ -55,6 +61,47 @@ async def lifespan(app: FastAPI):
     logger.info("AI Copilot Service shutdown — cleaned %d expired sessions", expired)
 
 
+INTERNAL_JWT_SECRET = os.environ.get("INTERNAL_JWT_SECRET", "")
+
+def verify_internal_auth(request: Request) -> dict:
+    if not INTERNAL_JWT_SECRET:
+        raise HTTPException(status_code=500, detail="Service not configured")
+
+    auth_header = request.headers.get("x-internal-auth")
+    if not auth_header:
+        raise HTTPException(status_code=401, detail="Missing internal authentication")
+
+    try:
+        parts = auth_header.split(".")
+        if len(parts) != 3:
+            raise HTTPException(status_code=401, detail="Invalid token format")
+
+        _header_b64, payload_b64, signature = parts
+
+        expected = hmac.new(
+            INTERNAL_JWT_SECRET.encode(),
+            f"{_header_b64}.{payload_b64}".encode(),
+            hashlib.sha256,
+        )
+        expected_sig = base64.urlsafe_b64encode(expected.digest()).rstrip(b"=").decode()
+
+        if not hmac.compare_digest(expected_sig, signature):
+            raise HTTPException(status_code=401, detail="Invalid token signature")
+
+        padded = payload_b64 + "=" * (4 - len(payload_b64) % 4)
+        decoded = base64.urlsafe_b64decode(padded)
+        claims = json.loads(decoded)
+
+        exp = claims.get("exp", 0)
+        if exp and time.time() > exp:
+            raise HTTPException(status_code=401, detail="Token expired")
+
+        return claims
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid internal authentication")
+
 app = FastAPI(
     title="Atlas AI Copilot Service",
     description="Workforce Intelligence — AI Copilot, Predictive Analytics, "
@@ -77,6 +124,26 @@ app.add_middleware(
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(AtlasLoggingMiddleware)
 app.add_middleware(AtlasMetricsMiddleware)
+
+
+@app.middleware("http")
+async def internal_auth_middleware(request: Request, call_next):
+    if request.url.path == "/health":
+        return await call_next(request)
+
+    auth_header = request.headers.get("x-internal-auth")
+    if not auth_header:
+        return JSONResponse(status_code=401, content={"error": "Missing internal authentication"})
+
+    try:
+        claims = verify_internal_auth(request)
+    except HTTPException as e:
+        return JSONResponse(status_code=e.status_code, content={"error": e.detail})
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "Invalid internal authentication"})
+
+    return await call_next(request)
+
 
 # ──────────────────────────────────────────────
 #  Health check

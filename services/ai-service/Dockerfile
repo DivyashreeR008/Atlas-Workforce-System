@@ -4,11 +4,11 @@ WORKDIR /app
 
 COPY services/atlas_observability/ ./services/atlas_observability/
 RUN pip install -e ./services/atlas_observability
-COPY requirements.txt .
+COPY services/ai-service/requirements.txt .
 RUN grep -v "atlas_observability" requirements.txt > req_clean.txt && \
     pip install --no-cache-dir -r req_clean.txt
 
-COPY . .
+COPY services/ai-service/ .
 
 ENV PORT=8065
 

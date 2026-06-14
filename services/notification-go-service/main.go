@@ -113,7 +113,7 @@ var (
 func validateJWT(tokenString string) (jwt.MapClaims, error) {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
-		secret = "dev-only-secret-change-in-production"
+		return nil, fmt.Errorf("JWT_SECRET not configured")
 	}
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -128,6 +128,47 @@ func validateJWT(tokenString string) (jwt.MapClaims, error) {
 		return claims, nil
 	}
 	return nil, fmt.Errorf("invalid token")
+}
+
+func internalAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		internalKey := os.Getenv("INTERNAL_JWT_SECRET")
+		if internalKey == "" {
+			http.Error(w, `{"error":"Service not configured"}`, http.StatusInternalServerError)
+			return
+		}
+
+		internalToken := r.Header.Get("x-internal-auth")
+		if internalToken == "" {
+			http.Error(w, `{"error":"Missing internal authentication"}`, http.StatusUnauthorized)
+			return
+		}
+
+		token, err := jwt.Parse(internalToken, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte(internalKey), nil
+		})
+
+		if err != nil || !token.Valid {
+			http.Error(w, `{"error":"Invalid internal authentication"}`, http.StatusUnauthorized)
+			return
+		}
+
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			http.Error(w, `{"error":"Invalid token claims"}`, http.StatusUnauthorized)
+			return
+		}
+
+		tenantID, _ := claims["tenant_id"].(string)
+		if tenantID != "" {
+			r.Header.Set("X-Tenant-Id", tenantID)
+		}
+
+		next(w, r)
+	}
 }
 
 func (c *Client) writePump() {
@@ -416,8 +457,8 @@ func main() {
 	// WebSocket
 	mux.HandleFunc("/ws", handleConnections)
 
-	// REST API for notifications
-	mux.HandleFunc("/api/notifications", func(w http.ResponseWriter, r *http.Request) {
+	// REST API for notifications (requires internal auth)
+	mux.HandleFunc("/api/notifications", internalAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tenant-Id")
@@ -435,7 +476,7 @@ func main() {
 		default:
 			http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
 		}
-	})
+	}))
 
 	log.Printf("Notification Service listening on port %s", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {

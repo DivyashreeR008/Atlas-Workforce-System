@@ -41,35 +41,53 @@ app.use(
 const PORT = process.env.PORT || 8010;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const JWT_SECRET = process.env.JWT_SECRET;
-const ADMIN_DEFAULT_PASSWORD = process.env.ADMIN_DEFAULT_PASSWORD || 'ChangeMe123!';
+const ADMIN_DEFAULT_PASSWORD = process.env.ADMIN_DEFAULT_PASSWORD;
 const ACCESS_EXPIRY = '15m';
 const REFRESH_EXPIRY_DAYS = 7;
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
 const AUDIT_SERVICE_URL = process.env.AUDIT_SERVICE_URL || 'http://audit-compliance-service:8011';
-const AUDIT_INTERNAL_KEY = process.env.AUDIT_INTERNAL_KEY || 'atlas-internal-key-change-in-prod';
+const AUDIT_INTERNAL_KEY = process.env.AUDIT_INTERNAL_KEY;
 const SAML_IDP_SSO_URL = process.env.SAML_IDP_SSO_URL || 'https://idp.example.com/sso';
 const SAML_IDP_ENTITY_ID = process.env.SAML_IDP_ENTITY_ID || 'https://idp.example.com/metadata';
 const SAML_IDP_CERT = (process.env.SAML_IDP_CERT || '').replace(/\\n/g, '\n');
 const SCIM_API_KEY = process.env.SCIM_API_KEY || 'change-scim-api-key-in-production';
 
-if (!JWT_SECRET && NODE_ENV === 'production') {
-  console.error('FATAL: JWT_SECRET is required in production');
+if (!JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET environment variable is required');
   process.exit(1);
 }
 
-const jwtSecret = JWT_SECRET || 'dev-only-secret-change-in-production';
+if (!ADMIN_DEFAULT_PASSWORD) {
+  console.error('FATAL: ADMIN_DEFAULT_PASSWORD environment variable is required');
+  process.exit(1);
+}
+
+if (!AUDIT_INTERNAL_KEY) {
+  console.error('FATAL: AUDIT_INTERNAL_KEY environment variable is required');
+  process.exit(1);
+}
+
+if (!SCIM_API_KEY) {
+  console.error('FATAL: SCIM_API_KEY environment variable is required');
+  process.exit(1);
+}
+
+const jwtSecret = JWT_SECRET;
 
 const sslConfig = process.env.POSTGRES_SSL === 'true' || NODE_ENV === 'production'
-  ? { rejectUnauthorized: false }
+  ? { rejectUnauthorized: true }
   : false;
 
 const pool = new Pool({
-  connectionString:
-    process.env.POSTGRES_URL ||
-    `postgresql://${process.env.POSTGRES_USER || 'atlas_user'}:${process.env.POSTGRES_PASSWORD || 'atlas_password'}@${process.env.POSTGRES_HOST || 'postgres'}:5432/${process.env.POSTGRES_DB || 'atlas_db'}`,
+  connectionString: process.env.POSTGRES_URL,
   ssl: sslConfig,
 });
+
+if (!process.env.POSTGRES_URL) {
+  console.error('FATAL: POSTGRES_URL environment variable is required');
+  process.exit(1);
+}
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://redis:6379';
 const redisClient = redis.createClient({ url: REDIS_URL });
@@ -570,7 +588,7 @@ initDB().catch((err) => {
 });
 
 app.post('/register', createUserRateLimiter('register', 10), async (req, res) => {
-  const { email, password, name, role, department, position, tenant_id } = req.body;
+  const { email, password, name, department, position, tenant_id } = req.body;
   if (!email || !password || !name) {
     return res.status(400).json({ message: 'Email, password, and name are required' });
   }
@@ -593,7 +611,7 @@ app.post('/register', createUserRateLimiter('register', 10), async (req, res) =>
         email,
         hashedPassword,
         name,
-        role || 'employee',
+        'employee',
         department || 'General',
         position || 'Staff',
         tenant_id || 'default'
@@ -601,7 +619,7 @@ app.post('/register', createUserRateLimiter('register', 10), async (req, res) =>
     );
 
     await sendAuditEvent('auth.register', result.rows[0].id, email, {
-      role: role || 'employee',
+      role: 'employee',
       tenant_id: tenant_id || 'default'
     });
 

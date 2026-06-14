@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY services/atlas_observability/ ./services/atlas_observability/
 RUN pip install -e ./services/atlas_observability
-COPY requirements.txt .
+COPY services/ai-copilot-service/requirements.txt .
 RUN grep -v "atlas_observability" requirements.txt > req_clean.txt && \
     pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r req_clean.txt
 
@@ -26,8 +26,12 @@ COPY --from=builder /app/wheels /wheels
 COPY --from=builder /app/requirements.txt .
 RUN pip install --no-cache-dir /wheels/*
 
+# Copy observability package source and install
+COPY --from=builder /app/services/atlas_observability /app/services/atlas_observability
+RUN pip install -e ./services/atlas_observability
+
 # Copy application code
-COPY . .
+COPY services/ai-copilot-service/ .
 
 # Switch to non-root user
 USER app
