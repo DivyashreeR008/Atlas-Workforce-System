@@ -76,6 +76,8 @@ func main() {
 	app.Use(recover.New())
 	app.Use(logger.New())
 	app.Use(cors.New())
+	middleware.InitAuth()
+	app.Use(middleware.AuthMiddleware())
 	app.Use(middleware.TenantMiddleware())
 
 	go startCertExpiryChecker()

@@ -155,9 +155,9 @@ def validate_search_param(search: Optional[str]) -> Optional[str]:
 # ------------------------------------------------
 async def verify_internal_key(request: Request):
     x_internal_key = request.headers.get("X-Internal-Key")
-    if x_internal_key is not None and x_internal_key != INTERNAL_KEY:
+    if not x_internal_key or x_internal_key != INTERNAL_KEY:
         log_event("warning", "auth.invalid_internal_key")
-        raise HTTPException(status_code=403, detail="Invalid internal key")
+        raise HTTPException(status_code=403, detail="Invalid or missing internal key")
     return x_internal_key
 
 

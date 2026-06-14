@@ -1,0 +1,84 @@
+package main
+
+import (
+	"os"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/golang-jwt/jwt/v5"
+)
+
+var internalJWTSecret []byte
+
+func initAuth() {
+	secret := os.Getenv("INTERNAL_JWT_SECRET")
+	if secret == "" {
+		panic("FATAL: INTERNAL_JWT_SECRET environment variable is required")
+	}
+	internalJWTSecret = []byte(secret)
+}
+
+func authMiddleware(c *fiber.Ctx) error {
+	path := c.Path()
+	if path == "/health" {
+		return c.Next()
+	}
+
+	internalToken := c.Get("x-internal-auth")
+	if internalToken == "" {
+		return c.Status(401).JSON(fiber.Map{"error": "Missing internal authentication"})
+	}
+
+	token, err := jwt.Parse(internalToken, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fiber.NewError(401, "Invalid signing method")
+		}
+		return internalJWTSecret, nil
+	})
+
+	if err != nil || !token.Valid {
+		return c.Status(401).JSON(fiber.Map{"error": "Invalid internal authentication"})
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return c.Status(401).JSON(fiber.Map{"error": "Invalid token claims"})
+	}
+
+	userID, _ := claims["user_id"].(string)
+	userRole, _ := claims["user_role"].(string)
+	tenantID, _ := claims["tenant_id"].(string)
+
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	if userRole == "" {
+		userRole = "employee"
+	}
+
+	c.Locals("user_id", userID)
+	c.Locals("user_role", userRole)
+	c.Locals("tenant_id", tenantID)
+
+	return c.Next()
+}
+
+func getTenant(c *fiber.Ctx) string {
+	if v, ok := c.Locals("tenant_id").(string); ok && v != "" {
+		return v
+	}
+	return "default"
+}
+
+func getUserRole(c *fiber.Ctx) string {
+	if v, ok := c.Locals("user_role").(string); ok {
+		return v
+	}
+	return "employee"
+}
+
+func getUserID(c *fiber.Ctx) string {
+	if v, ok := c.Locals("user_id").(string); ok {
+		return v
+	}
+	return ""
+}

@@ -85,16 +85,26 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const JWT_SECRET = process.env.JWT_SECRET;
-const INTERNAL_JWT_SECRET = process.env.INTERNAL_JWT_SECRET || 'internal-dev-secret-change-in-prod';
-const AUDIT_INTERNAL_KEY = process.env.AUDIT_INTERNAL_KEY || 'atlas-internal-key-change-in-prod';
+const INTERNAL_JWT_SECRET = process.env.INTERNAL_JWT_SECRET;
+const AUDIT_INTERNAL_KEY = process.env.AUDIT_INTERNAL_KEY;
 const AUDIT_SERVICE_URL = process.env.AUDIT_COMPLIANCE_SERVICE_URL || 'http://audit-compliance-service:8011';
 
-if (!JWT_SECRET && NODE_ENV === 'production') {
-  console.error('FATAL: JWT_SECRET is required in production');
+if (!INTERNAL_JWT_SECRET) {
+  console.error('FATAL: INTERNAL_JWT_SECRET is required');
   process.exit(1);
 }
 
-const jwtSecret = JWT_SECRET || 'dev-only-secret-change-in-production';
+if (!AUDIT_INTERNAL_KEY) {
+  console.error('FATAL: AUDIT_INTERNAL_KEY is required');
+  process.exit(1);
+}
+
+if (!JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET is required');
+  process.exit(1);
+}
+
+const jwtSecret = JWT_SECRET;
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
   .split(',')
