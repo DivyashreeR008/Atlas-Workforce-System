@@ -18,6 +18,12 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToastStore } from "@/stores/toast-store";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
+} from "@/components/ui/dialog";
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from "@/components/ui/table";
 import { Download, FileSpreadsheet, Plus } from "lucide-react";
 import { formatDate } from "@/lib/utils";
 import { downloadCSV } from "@/lib/csv";
@@ -124,217 +130,107 @@ export default function LeavePage() {
           <h1 className="text-2xl font-bold tracking-tight">Leave</h1>
           <p className="text-muted-foreground">Leave requests and approvals</p>
         </div>
-        <Button onClick={() => setDialogOpen(true)}>
-          <Plus className="h-4 w-4" />
-          Request Leave
-        </Button>
+        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <DialogTrigger asChild>
+            <Button>
+              <Plus className="h-4 w-4" />
+              Request Leave
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <form onSubmit={handleSubmit}>
+              <DialogHeader>
+                <DialogTitle>Request Leave</DialogTitle>
+                <DialogDescription>Submit a new leave request</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="leaveType">Leave Type</Label>
+                  <select
+                    id="leaveType"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={form.leaveType}
+                    onChange={(e) => setForm((f) => ({ ...f, leaveType: e.target.value }))}
+                  >
+                    <option value="VACATION">Vacation</option>
+                    <option value="SICK">Sick Leave</option>
+                    <option value="PERSONAL">Personal</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="startDate">Start Date</Label>
+                  <Input id="startDate" type="date" required value={form.startDate} onChange={(e) => setForm((f) => ({ ...f, startDate: e.target.value }))} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="endDate">End Date</Label>
+                  <Input id="endDate" type="date" required value={form.endDate} onChange={(e) => setForm((f) => ({ ...f, endDate: e.target.value }))} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="reason">Reason (optional)</Label>
+                  <Input id="reason" value={form.reason} onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+                <Button type="submit" disabled={submitting}>{submitting ? "Submitting..." : "Submit"}</Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
       </div>
 
-          <Card className="glass-panel">
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="text-base">Leave Requests</CardTitle>
-                  <CardDescription>
-                    {isLoading ? "Loading..." : `${requests?.length ?? 0} requests`}
-                  </CardDescription>
-                </div>
-                {requests && requests.length > 0 && (
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        downloadCSV(
-                          "leave_requests",
-                          ["Employee", "Type", "Start", "End", "Days", "Status"],
-                          requests.map((r) => [
-                            r.employeeId,
-                            r.leaveType,
-                            formatDate(r.startDate),
-                            formatDate(r.endDate),
-                            String(calcDays(r.startDate, r.endDate)),
-                            r.status,
-                          ])
-                        );
-                        addToast({ title: "Leave data exported" });
-                      }}
-                    >
-                      <Download className="h-4 w-4" />
-                      CSV
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        downloadExcel(
-                          "leave_requests",
-                          ["Employee", "Type", "Start", "End", "Days", "Status"],
-                          requests.map((r) => [
-                            r.employeeId,
-                            r.leaveType,
-                            formatDate(r.startDate),
-                            formatDate(r.endDate),
-                            String(calcDays(r.startDate, r.endDate)),
-                            r.status,
-                          ])
-                        );
-                        addToast({ title: "Leave data exported as Excel" });
-                      }}
-                    >
-                      <FileSpreadsheet className="h-4 w-4" />
-                      Excel
-                    </Button>
-                  </div>
-                )}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-base">Leave Requests</CardTitle>
+              <CardDescription>{isLoading ? "Loading..." : `${requests?.length ?? 0} requests`}</CardDescription>
+            </div>
+            {requests && requests.length > 0 && (
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => {
+                  downloadCSV("leave_requests", ["Employee", "Type", "Start", "End", "Days", "Status"], requests.map((r) => [r.employeeId, r.leaveType, formatDate(r.startDate), formatDate(r.endDate), String(calcDays(r.startDate, r.endDate)), r.status]));
+                  addToast({ title: "Leave data exported" });
+                }}><Download className="h-4 w-4" /> CSV</Button>
+                <Button variant="outline" size="sm" onClick={() => {
+                  downloadExcel("leave_requests", ["Employee", "Type", "Start", "End", "Days", "Status"], requests.map((r) => [r.employeeId, r.leaveType, formatDate(r.startDate), formatDate(r.endDate), String(calcDays(r.startDate, r.endDate)), r.status]));
+                  addToast({ title: "Leave data exported as Excel" });
+                }}><FileSpreadsheet className="h-4 w-4" /> Excel</Button>
               </div>
-            </CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b bg-muted/50 text-left">
-                  <th className="px-4 py-3 font-medium">Employee</th>
-                  <th className="px-4 py-3 font-medium">Type</th>
-                  <th className="px-4 py-3 font-medium">Start</th>
-                  <th className="px-4 py-3 font-medium">End</th>
-                  <th className="px-4 py-3 font-medium">Days</th>
-                  <th className="px-4 py-3 font-medium">Reason</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                  <th className="px-4 py-3 font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {isLoading ? (
-                  Array.from({ length: 3 }).map((_, i) => (
-                    <tr key={i} className="border-b">
-                      <td className="px-4 py-3" colSpan={8}>
-                        <Skeleton className="h-5 w-full" />
-                      </td>
-                    </tr>
-                  ))
-                ) : !requests || requests.length === 0 ? (
-                  <tr>
-                    <td className="px-4 py-8 text-center text-muted-foreground" colSpan={8}>
-                      No leave requests found
-                    </td>
-                  </tr>
-                ) : (
-                  requests.map((req) => (
-                    <tr key={req.id} className="border-b hover:bg-muted/30">
-                      <td className="px-4 py-3 font-medium">{req.employeeId}</td>
-                      <td className="px-4 py-3">{req.leaveType}</td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {formatDate(req.startDate)}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {formatDate(req.endDate)}
-                      </td>
-                      <td className="px-4 py-3">{calcDays(req.startDate, req.endDate)}</td>
-                      <td className="px-4 py-3 max-w-[150px] truncate text-muted-foreground">
-                        {req.reason || "—"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <Badge variant={statusVariant[req.status] ?? "default"}>
-                          {req.status}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-3">
-                        {req.status === "PENDING" && (
-                          <div className="flex gap-1">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs"
-                              onClick={() => handleStatusUpdate(req.id, "APPROVED")}
-                            >
-                              Approve
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs text-destructive"
-                              onClick={() => handleStatusUpdate(req.id, "REJECTED")}
-                            >
-                              Reject
-                            </Button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            )}
           </div>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow><TableHead>Employee</TableHead><TableHead>Type</TableHead><TableHead>Start</TableHead><TableHead>End</TableHead><TableHead>Days</TableHead><TableHead>Reason</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow>
+            </TableHeader>
+            <TableBody>
+              {isLoading ? Array.from({ length: 3 }).map((_, i) => (
+                <TableRow key={i}><TableCell colSpan={8}><Skeleton className="h-5 w-full" /></TableCell></TableRow>
+              )) : !requests || requests.length === 0 ? (
+                <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">No leave requests found</TableCell></TableRow>
+              ) : requests.map((req) => (
+                <TableRow key={req.id}>
+                  <TableCell className="font-medium">{req.employeeId}</TableCell>
+                  <TableCell>{req.leaveType}</TableCell>
+                  <TableCell className="text-muted-foreground">{formatDate(req.startDate)}</TableCell>
+                  <TableCell className="text-muted-foreground">{formatDate(req.endDate)}</TableCell>
+                  <TableCell>{calcDays(req.startDate, req.endDate)}</TableCell>
+                  <TableCell className="max-w-[150px] truncate text-muted-foreground">{req.reason || "—"}</TableCell>
+                  <TableCell><Badge variant={statusVariant[req.status] ?? "default"}>{req.status}</Badge></TableCell>
+                  <TableCell>{req.status === "PENDING" && (
+                    <div className="flex gap-1">
+                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleStatusUpdate(req.id, "APPROVED")}>Approve</Button>
+                      <Button size="sm" variant="outline" className="h-7 text-xs text-destructive" onClick={() => handleStatusUpdate(req.id, "REJECTED")}>Reject</Button>
+                    </div>
+                  )}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
-
-      {dialogOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="w-full max-w-md rounded-xl border bg-card p-6 shadow-lg">
-            <h2 className="text-lg font-semibold">Request Leave</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Submit a new leave request
-            </p>
-            <form onSubmit={handleSubmit} className="mt-4 space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="leaveType">Leave Type</Label>
-                <select
-                  id="leaveType"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={form.leaveType}
-                  onChange={(e) => setForm((f) => ({ ...f, leaveType: e.target.value }))}
-                >
-                  <option value="VACATION">Vacation</option>
-                  <option value="SICK">Sick Leave</option>
-                  <option value="PERSONAL">Personal</option>
-                </select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="startDate">Start Date</Label>
-                <Input
-                  id="startDate"
-                  type="date"
-                  required
-                  value={form.startDate}
-                  onChange={(e) => setForm((f) => ({ ...f, startDate: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="endDate">End Date</Label>
-                <Input
-                  id="endDate"
-                  type="date"
-                  required
-                  value={form.endDate}
-                  onChange={(e) => setForm((f) => ({ ...f, endDate: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="reason">Reason (optional)</Label>
-                <Input
-                  id="reason"
-                  value={form.reason}
-                  onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))}
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={submitting}>
-                  {submitting ? "Submitting..." : "Submit"}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

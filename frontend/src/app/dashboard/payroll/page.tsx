@@ -16,6 +16,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToastStore } from "@/stores/toast-store";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
+} from "@/components/ui/dialog";
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from "@/components/ui/table";
+import {
   Download, FileSpreadsheet, Plus, Globe, Calculator, TrendingUp,
   Shield, FileText, Landmark, Receipt, Heart, DollarSign,
   Award, Gem, BarChart3, AlertTriangle, BrainCircuit,
@@ -70,7 +76,29 @@ function RecordsTab() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <div><h2 className="text-lg font-semibold">Payroll Runs</h2><p className="text-sm text-muted-foreground">Process and manage payroll</p></div>
-        <Button size="sm" onClick={() => setDialogOpen(true)}><Plus className="h-4 w-4" /> Run Payroll</Button>
+        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <DialogTrigger asChild>
+            <Button size="sm"><Plus className="h-4 w-4" /> Run Payroll</Button>
+          </DialogTrigger>
+          <DialogContent>
+            <form onSubmit={handleRunPayroll}>
+              <DialogHeader>
+                <DialogTitle>Run Payroll</DialogTitle>
+                <DialogDescription>Process payroll for an employee</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-3 py-4">
+                <div><Label>Employee ID</Label><Input required value={form.employeeId} onChange={(e) => setForm((f) => ({ ...f, employeeId: e.target.value }))} /></div>
+                <div><Label>Period</Label><Input placeholder="2026-05" required value={form.period} onChange={(e) => setForm((f) => ({ ...f, period: e.target.value }))} /></div>
+                <div><Label>Base Salary</Label><Input type="number" required value={form.baseSalary} onChange={(e) => setForm((f) => ({ ...f, baseSalary: e.target.value }))} /></div>
+                <div className="grid grid-cols-2 gap-2"><div><Label>Allowances</Label><Input type="number" value={form.allowances} onChange={(e) => setForm((f) => ({ ...f, allowances: e.target.value }))} /></div><div><Label>Deductions</Label><Input type="number" value={form.deductions} onChange={(e) => setForm((f) => ({ ...f, deductions: e.target.value }))} /></div></div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+                <Button type="submit" disabled={running}>{running ? "Processing..." : "Run Payroll"}</Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
       </div>
 
       <div className="grid gap-3 md:grid-cols-3">
@@ -94,30 +122,29 @@ function RecordsTab() {
             </div>}
           </div></CardHeader>
         <CardContent>
-          <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full text-sm">
-              <thead><tr className="border-b bg-muted/50 text-left"><th className="px-4 py-3 font-medium">Employee</th><th className="px-4 py-3 font-medium">Period</th><th className="px-4 py-3 font-medium">Gross</th><th className="px-4 py-3 font-medium">Tax</th><th className="px-4 py-3 font-medium">Net</th><th className="px-4 py-3 font-medium">Status</th></tr></thead>
-              <tbody>{isLoading ? Array.from({ length: 3 }).map((_, i) => (<tr key={i} className="border-b"><td className="px-4 py-3" colSpan={6}><Skeleton className="h-5 w-full" /></td></tr>)) : !records || records.length === 0 ? (<tr><td className="px-4 py-8 text-center text-muted-foreground" colSpan={6}>No payroll history found</td></tr>) : [...records].reverse().map((run) => (<tr key={run.id} className="border-b hover:bg-muted/30"><td className="px-4 py-3 font-medium">{run.employeeId}</td><td className="px-4 py-3">{run.period}</td><td className="px-4 py-3">{formatCurrency(run.baseSalary + run.allowances)}</td><td className="px-4 py-3">{formatCurrency(run.tax)}</td><td className="px-4 py-3 font-medium">{formatCurrency(run.netSalary)}</td><td className="px-4 py-3"><Badge variant={statusVariant[run.status] ?? "default"}>{run.status}</Badge></td></tr>))}</tbody>
-            </table>
-          </div>
+          <Table>
+            <TableHeader>
+              <TableRow><TableHead>Employee</TableHead><TableHead>Period</TableHead><TableHead>Gross</TableHead><TableHead>Tax</TableHead><TableHead>Net</TableHead><TableHead>Status</TableHead></TableRow>
+            </TableHeader>
+            <TableBody>
+              {isLoading ? Array.from({ length: 3 }).map((_, i) => (
+                <TableRow key={i}><TableCell colSpan={6}><Skeleton className="h-5 w-full" /></TableCell></TableRow>
+              )) : !records || records.length === 0 ? (
+                <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">No payroll history found</TableCell></TableRow>
+              ) : [...records].reverse().map((run) => (
+                <TableRow key={run.id}>
+                  <TableCell className="font-medium">{run.employeeId}</TableCell>
+                  <TableCell>{run.period}</TableCell>
+                  <TableCell>{formatCurrency(run.baseSalary + run.allowances)}</TableCell>
+                  <TableCell>{formatCurrency(run.tax)}</TableCell>
+                  <TableCell className="font-medium">{formatCurrency(run.netSalary)}</TableCell>
+                  <TableCell><Badge variant={statusVariant[run.status] ?? "default"}>{run.status}</Badge></TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
-
-      {dialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
-          <div className="w-full max-w-md rounded-xl border bg-card p-6 shadow-lg">
-            <h2 className="text-lg font-semibold">Run Payroll</h2>
-            <p className="mt-1 text-sm text-muted-foreground">Process payroll for an employee</p>
-            <form onSubmit={handleRunPayroll} className="mt-4 space-y-3">
-              <div><Label>Employee ID</Label><Input required value={form.employeeId} onChange={(e) => setForm((f) => ({ ...f, employeeId: e.target.value }))} /></div>
-              <div><Label>Period</Label><Input placeholder="2026-05" required value={form.period} onChange={(e) => setForm((f) => ({ ...f, period: e.target.value }))} /></div>
-              <div><Label>Base Salary</Label><Input type="number" required value={form.baseSalary} onChange={(e) => setForm((f) => ({ ...f, baseSalary: e.target.value }))} /></div>
-              <div className="grid grid-cols-2 gap-2"><div><Label>Allowances</Label><Input type="number" value={form.allowances} onChange={(e) => setForm((f) => ({ ...f, allowances: e.target.value }))} /></div><div><Label>Deductions</Label><Input type="number" value={form.deductions} onChange={(e) => setForm((f) => ({ ...f, deductions: e.target.value }))} /></div></div>
-              <div className="flex justify-end gap-2 pt-2"><Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button><Button type="submit" disabled={running}>{running ? "Processing..." : "Run Payroll"}</Button></div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

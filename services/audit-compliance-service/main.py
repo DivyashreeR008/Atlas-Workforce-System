@@ -83,7 +83,7 @@ HASH_SALT = os.getenv(
     "HASH_SALT", "a8f3b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"
 )
 MAX_PAGE_SIZE = int(os.getenv("MAX_AUDIT_PAGE_SIZE", "100"))
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
