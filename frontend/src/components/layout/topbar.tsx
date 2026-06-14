@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { LogOut, Menu, User, Settings } from "lucide-react";
+import { LogOut, Menu, User, Settings, Search } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -17,13 +17,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAuthStore } from "@/stores/auth-store";
-import { useWorkspaceStore } from "@/stores/workspace-store";
+import { useSidebar } from "@/components/layout/sidebar";
+import { Breadcrumbs } from "@/components/layout/breadcrumbs";
 
 export function TopBar() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
-  const toggleSidebar = useWorkspaceStore((s) => s.toggleSidebar);
+  const { toggle, open } = useSidebar();
   const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
@@ -50,16 +51,19 @@ export function TopBar() {
         scrolled ? "shadow-sm" : "shadow-none"
       }`}
     >
-      <div className="flex items-center gap-3 flex-1">
+      <div className="flex items-center gap-3 flex-1 min-w-0">
         <Button
-          onClick={toggleSidebar}
+          onClick={toggle}
           variant="ghost"
           size="icon"
-          className="lg:hidden"
+          className="md:flex hidden"
           aria-label="Toggle sidebar"
         >
           <Menu className="h-5 w-5" />
         </Button>
+        <div className="hidden md:block min-w-0">
+          <Breadcrumbs />
+        </div>
         <GlobalSearch />
       </div>
 
