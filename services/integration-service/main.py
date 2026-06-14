@@ -70,7 +70,7 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://atlas_user:atlas_password@postgres:5432/atlas_db")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "svc-integration-key-change-in-production")
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 MAX_PAGE_SIZE = 100
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)

@@ -35,6 +35,11 @@ export const useAuthStore = create<AuthState>()(
           const { data } = await authApi.login(email, password);
           setTokens(data.token);
           setStoredUser(data.user);
+          await fetch("/api/auth/set-cookie", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: data.token }),
+          });
           set({ user: data.user, isLoading: false });
         } catch (e) {
           set({ isLoading: false });
@@ -48,6 +53,11 @@ export const useAuthStore = create<AuthState>()(
           const { data } = await authApi.login(payload.email, payload.password);
           setTokens(data.token);
           setStoredUser(data.user);
+          await fetch("/api/auth/set-cookie", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: data.token }),
+          });
           set({ user: data.user, isLoading: false });
         } catch (e) {
           set({ isLoading: false });
@@ -62,6 +72,7 @@ export const useAuthStore = create<AuthState>()(
         }
         clearAuth();
         set({ user: null });
+        await fetch("/api/auth/clear-cookie", { method: "POST" }).catch(() => {});
         if (typeof window !== "undefined") window.location.href = "/login";
       },
     }),

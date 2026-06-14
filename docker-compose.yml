@@ -1,3 +1,8 @@
+# ⚠️  WARNING: Default passwords and secrets are for DEVELOPMENT ONLY.
+# Before deploying to production, set ALL of the following environment variables:
+#   JWT_SECRET, INTERNAL_JWT_SECRET, POSTGRES_PASSWORD, MONGO_PASSWORD,
+#   ADMIN_DEFAULT_PASSWORD, AUDIT_INTERNAL_KEY, SCIM_API_KEY, SECURITY_INTERNAL_KEY.
+# Generate strong secrets: openssl rand -base64 64
 services:
   postgres:
     image: postgres:15-alpine

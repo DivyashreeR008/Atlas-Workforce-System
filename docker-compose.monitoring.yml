@@ -17,7 +17,7 @@ services:
     ports:
       - "3001:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-} # REQUIRED: set GRAFANA_ADMIN_PASSWORD in production
     depends_on:
       - prometheus
     networks:

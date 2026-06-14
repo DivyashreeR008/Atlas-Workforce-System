@@ -54,7 +54,7 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://atlas:atlas_pass@localhost:5432/atlas_security")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "svc-security-secret-key-change-in-production")
 MAX_PAGE_SIZE = int(os.getenv("MAX_PAGE_SIZE", "100"))
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

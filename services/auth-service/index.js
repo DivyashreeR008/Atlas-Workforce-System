@@ -14,6 +14,12 @@ const redis = require('redis');
 const { DOMParser } = require('@xmldom/xmldom');
 const { SignedXml } = require('xml-crypto');
 const { subtle } = crypto.webcrypto;
+const {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse,
+} = require('@simplewebauthn/server');
 
 const app = express();
 app.use(helmet());
@@ -100,7 +106,7 @@ redisClient.on('error', (err) => console.log('Auth Redis Client Error', err));
   }
 })();
 
-const BCRYPT_COST = 8;
+const BCRYPT_COST = 12;
 
 function sanitizeForLogs(obj) {
   const sensitiveKeys = new Set(['password', 'token', 'secret', 'authorization', 'cookie', 'mfa_secret', 'backup_codes', 'client_secret', 'access_token', 'refresh_token']);
@@ -1131,7 +1137,7 @@ app.post('/devices/verify', requireRole(), createUserRateLimiter('device_verify'
   }
 });
 
-app.get('/scim/v2/Users', requireScimAuth, async (req, res) => {
+app.get('/scim/v2/Users', requireScimAuth, createUserRateLimiter('scim_list', 30), async (req, res) => {
   try {
     const count = Math.min(parseInt(req.query.count) || 10, 100);
     const startIndex = Math.max(parseInt(req.query.startIndex) || 1, 1);
@@ -1177,7 +1183,7 @@ app.get('/scim/v2/Users', requireScimAuth, async (req, res) => {
   }
 });
 
-app.post('/scim/v2/Users', requireScimAuth, async (req, res) => {
+app.post('/scim/v2/Users', requireScimAuth, createUserRateLimiter('scim_create', 20), async (req, res) => {
   try {
     const { userName, name, emails, roles, active, externalId } = req.body;
 
@@ -1223,7 +1229,7 @@ app.post('/scim/v2/Users', requireScimAuth, async (req, res) => {
   }
 });
 
-app.get('/scim/v2/Users/:id', requireScimAuth, async (req, res) => {
+app.get('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_get', 60), async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM users WHERE id = $1', [req.params.id]);
     if (!result.rows[0]) {
@@ -1238,7 +1244,7 @@ app.get('/scim/v2/Users/:id', requireScimAuth, async (req, res) => {
   }
 });
 
-app.put('/scim/v2/Users/:id', requireScimAuth, async (req, res) => {
+app.put('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_update', 20), async (req, res) => {
   try {
     const { userName, name, emails, roles, active } = req.body;
 
@@ -1278,7 +1284,7 @@ app.put('/scim/v2/Users/:id', requireScimAuth, async (req, res) => {
   }
 });
 
-app.patch('/scim/v2/Users/:id', requireScimAuth, async (req, res) => {
+app.patch('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_patch', 20), async (req, res) => {
   try {
     const { Operations } = req.body;
     if (!Operations || !Array.isArray(Operations)) {
@@ -1350,7 +1356,7 @@ app.patch('/scim/v2/Users/:id', requireScimAuth, async (req, res) => {
   }
 });
 
-app.delete('/scim/v2/Users/:id', requireScimAuth, async (req, res) => {
+app.delete('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_delete', 10), async (req, res) => {
   try {
     const result = await pool.query(
       'UPDATE users SET active = false, updated_at = NOW() WHERE id = $1 RETURNING id',
@@ -1647,59 +1653,66 @@ app.delete('/sessions', requireRole(), async (req, res) => {
 
 // ── WebAuthn / Hardware Security Keys ──────────────────────────────────────
 
+const RP_NAME = 'Atlas Workforce';
+
+function getRpId(req) {
+  return process.env.WEBAUTHN_RP_ID || req.hostname || 'localhost';
+}
+
+function base64urlToBuffer(base64url) {
+  let s = base64url.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  return Buffer.from(s, 'base64');
+}
+
+function base64urlToBase64(base64url) {
+  return base64urlToBuffer(base64url).toString('base64');
+}
+
+async function storeChallenge(userId, challenge) {
+  await pool.query(
+    'INSERT INTO webauthn_credentials (user_id, credential_id, public_key, device_name, device_type) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (credential_id) DO NOTHING',
+    [userId, `challenge:${challenge}`, challenge, 'pending', 'pending']
+  );
+}
+
+async function consumeChallenge(userId, challenge) {
+  const result = await pool.query(
+    'DELETE FROM webauthn_credentials WHERE user_id = $1 AND credential_id = $2 RETURNING id',
+    [userId, `challenge:${challenge}`]
+  );
+  return result.rowCount > 0;
+}
+
 app.post('/webauthn/register/begin', requireRole(), async (req, res) => {
   try {
     const userId = req.user.id;
     const { device_name, device_type } = req.body;
 
-    const challenge = crypto.randomBytes(32).toString('base64url');
-    const rpId = req.hostname || 'localhost';
-    const rpName = 'Atlas Workforce';
+    const userResult = await pool.query('SELECT id, email, name FROM users WHERE id = $1', [userId]);
+    const user = userResult.rows[0];
 
     const existing = await pool.query(
       'SELECT credential_id FROM webauthn_credentials WHERE user_id = $1 AND is_active = true',
       [userId]
     );
 
-    const excludeCredentials = existing.rows.map(r => ({
-      id: Buffer.from(r.credential_id, 'base64url').toString('base64'),
-      type: 'public-key',
-    }));
+    const options = generateRegistrationOptions({
+      rpName: RP_NAME,
+      rpID: getRpId(req),
+      userName: user.email,
+      userDisplayName: user.name || user.email,
+      excludeCredentials: existing.rows.map(r => ({
+        id: r.credential_id,
+        type: 'public-key',
+      })),
+    });
 
-    const userResult = await pool.query('SELECT id, email, name FROM users WHERE id = $1', [userId]);
-    const user = userResult.rows[0];
-
-    const creationOptions = {
-      challenge: challenge,
-      rp: { id: rpId, name: rpName },
-      user: {
-        id: Buffer.from(String(user.id)).toString('base64'),
-        name: user.email,
-        displayName: user.name || user.email,
-      },
-      pubKeyCredParams: [
-        { type: 'public-key', alg: -7 },
-        { type: 'public-key', alg: -257 },
-      ],
-      timeout: 60000,
-      excludeCredentials,
-      authenticatorSelection: {
-        authenticatorAttachment: 'cross-platform',
-        residentKey: 'preferred',
-        userVerification: 'preferred',
-      },
-      attestation: 'direct',
-    };
-
-    await pool.query(
-      'INSERT INTO webauthn_credentials (user_id, credential_id, public_key, device_name, device_type) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (credential_id) DO NOTHING',
-      [userId, `challenge:${challenge}`, challenge, device_name || 'Security Key', device_type || 'hardware']
-    );
+    await storeChallenge(userId, options.challenge);
 
     res.json({
       status: 'ok',
-      creationOptions,
-      challenge,
+      creationOptions: options,
     });
   } catch (err) {
     console.error(err);
@@ -1710,21 +1723,62 @@ app.post('/webauthn/register/begin', requireRole(), async (req, res) => {
 app.post('/webauthn/register/complete', requireRole(), async (req, res) => {
   try {
     const userId = req.user.id;
-    const { credential_id, public_key, counter, transports, challenge } = req.body;
+    const { device_name, device_type } = req.body;
+    const credential = req.body;
 
-    if (!credential_id || !public_key) {
-      return res.status(400).json({ message: 'credential_id and public_key are required' });
+    if (!credential || !credential.response || !credential.id) {
+      return res.status(400).json({ message: 'Invalid credential response' });
     }
 
+    const challengeRow = await pool.query(
+      'SELECT public_key as challenge FROM webauthn_credentials WHERE user_id = $1 AND credential_id LIKE $2 AND device_name = $3',
+      [userId, 'challenge:%', 'pending']
+    );
+
+    if (!challengeRow.rows[0]) {
+      return res.status(400).json({ message: 'No pending registration challenge found. Please start registration again.' });
+    }
+
+    const expectedChallenge = challengeRow.rows[0].challenge;
+
+    const verification = await verifyRegistrationResponse({
+      response: credential,
+      expectedChallenge,
+      expectedOrigin: process.env.WEBAUTHN_ORIGIN || `http://${req.hostname || 'localhost'}:3000`,
+      expectedRPID: getRpId(req),
+    });
+
+    if (!verification.verified || !verification.registrationInfo) {
+      return res.status(400).json({ message: 'Registration verification failed' });
+    }
+
+    const { credentialPublicKey, credentialID, counter } = verification.registrationInfo;
+
     await pool.query(
-      `UPDATE webauthn_credentials SET credential_id = $1, public_key = $2, counter = $3, transports = $4::jsonb, is_active = true, last_used_at = NOW()
-       WHERE user_id = $5 AND credential_id LIKE 'challenge:%'`,
-      [credential_id, public_key, counter || 0, JSON.stringify(transports || []), userId]
+      'DELETE FROM webauthn_credentials WHERE user_id = $1 AND credential_id LIKE $2',
+      [userId, 'challenge:%']
+    );
+
+    const storedCredentialId = Buffer.from(credentialID).toString('base64');
+    const storedPublicKey = Buffer.from(credentialPublicKey).toString('base64');
+
+    await pool.query(
+      `INSERT INTO webauthn_credentials (user_id, credential_id, public_key, counter, device_name, device_type, transports, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, true)`,
+      [
+        userId,
+        storedCredentialId,
+        storedPublicKey,
+        counter,
+        device_name || 'Security Key',
+        device_type || 'hardware',
+        JSON.stringify(credential.response.transports || []),
+      ]
     );
 
     await sendAuditEvent('auth.webauthn_registered', userId, req.user.email, {
-      device_name: req.body.device_name || 'Security Key',
-      credential_id: credential_id.substring(0, 20) + '...',
+      device_name: device_name || 'Security Key',
+      credential_id: credentialID.toString('base64').substring(0, 20) + '...',
     });
 
     res.json({ status: 'ok', message: 'Hardware security key registered' });
@@ -1748,7 +1802,7 @@ app.post('/webauthn/authenticate/begin', createUserRateLimiter('webauthn_auth', 
 
     const userId = userResult.rows[0].id;
     const credentials = await pool.query(
-      'SELECT credential_id, public_key, transports FROM webauthn_credentials WHERE user_id = $1 AND is_active = true',
+      'SELECT credential_id FROM webauthn_credentials WHERE user_id = $1 AND is_active = true',
       [userId]
     );
 
@@ -1756,25 +1810,23 @@ app.post('/webauthn/authenticate/begin', createUserRateLimiter('webauthn_auth', 
       return res.status(400).json({ message: 'No hardware security keys registered for this user' });
     }
 
-    const challenge = crypto.randomBytes(32).toString('base64url');
-    const rpId = req.hostname || 'localhost';
+    const options = generateAuthenticationOptions({
+      rpID: getRpId(req),
+      allowCredentials: credentials.rows.map(c => ({
+        id: Buffer.from(c.credential_id, 'base64'),
+        type: 'public-key',
+      })),
+      userVerification: 'preferred',
+    });
 
-    const allowCredentials = credentials.rows.map(c => ({
-      id: c.credential_id,
-      type: 'public-key',
-      transports: c.transports || [],
-    }));
+    await pool.query(
+      'INSERT INTO webauthn_credentials (user_id, credential_id, public_key, device_name, device_type) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (credential_id) DO NOTHING',
+      [userId, `challenge:${options.challenge}`, options.challenge, 'pending', 'pending']
+    );
 
     res.json({
       status: 'ok',
-      authenticationOptions: {
-        challenge,
-        timeout: 60000,
-        rpId,
-        allowCredentials,
-        userVerification: 'preferred',
-      },
-      challenge,
+      authenticationOptions: options,
       userId,
     });
   } catch (err) {
@@ -1785,14 +1837,17 @@ app.post('/webauthn/authenticate/begin', createUserRateLimiter('webauthn_auth', 
 
 app.post('/webauthn/authenticate/complete', createUserRateLimiter('webauthn_auth', 10), async (req, res) => {
   try {
-    const { credential_id, signature, user_handle, challenge } = req.body;
-    if (!credential_id) {
-      return res.status(400).json({ message: 'credential_id is required' });
+    const credential = req.body;
+
+    if (!credential || !credential.id || !credential.response || !credential.response.signature) {
+      return res.status(400).json({ message: 'Invalid authentication response' });
     }
+
+    const credId = base64urlToBase64(credential.id);
 
     const credResult = await pool.query(
       'SELECT * FROM webauthn_credentials WHERE credential_id = $1 AND is_active = true',
-      [credential_id]
+      [credId]
     );
 
     if (!credResult.rows[0]) {
@@ -1800,9 +1855,43 @@ app.post('/webauthn/authenticate/complete', createUserRateLimiter('webauthn_auth
     }
 
     const cred = credResult.rows[0];
+
+    const challengeResult = await pool.query(
+      "SELECT public_key FROM webauthn_credentials WHERE user_id = $1 AND credential_id LIKE 'challenge:%' AND device_name = 'pending'",
+      [cred.user_id]
+    );
+
+    if (!challengeResult.rows[0]) {
+      return res.status(400).json({ message: 'No pending authentication challenge. Please start authentication again.' });
+    }
+
+    const expectedChallenge = challengeResult.rows[0].public_key;
+
+    const verification = await verifyAuthenticationResponse({
+      response: credential,
+      expectedChallenge,
+      expectedOrigin: process.env.WEBAUTHN_ORIGIN || `http://${req.hostname || 'localhost'}:3000`,
+      expectedRPID: getRpId(req),
+      credential: {
+        id: Buffer.from(cred.credential_id, 'base64'),
+        publicKey: Buffer.from(cred.public_key, 'base64'),
+        counter: cred.counter,
+        transports: cred.transports || [],
+      },
+    });
+
+    if (!verification.verified) {
+      return res.status(400).json({ message: 'Authentication verification failed' });
+    }
+
     await pool.query(
-      'UPDATE webauthn_credentials SET counter = counter + 1, last_used_at = NOW() WHERE id = $1',
-      [cred.id]
+      'UPDATE webauthn_credentials SET counter = $1, last_used_at = NOW() WHERE id = $2',
+      [verification.authenticationInfo.newCounter, cred.id]
+    );
+
+    await pool.query(
+      "DELETE FROM webauthn_credentials WHERE user_id = $1 AND credential_id LIKE 'challenge:%'",
+      [cred.user_id]
     );
 
     const userResult = await pool.query('SELECT * FROM users WHERE id = $1', [cred.user_id]);
@@ -1813,10 +1902,10 @@ app.post('/webauthn/authenticate/complete', createUserRateLimiter('webauthn_auth
     }
 
     const token = signAccessToken(user);
-    const refreshToken = await createRefreshToken(user.id);
+    await createRefreshToken(user.id);
 
     await sendAuditEvent('auth.webauthn_login', user.id, user.email, {
-      credential_id: credential_id.substring(0, 20) + '...',
+      credential_id: credId.substring(0, 20) + '...',
     });
 
     res.json({

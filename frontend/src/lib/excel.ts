@@ -1,23 +1,23 @@
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 
-export function downloadExcel(
+export async function downloadExcel(
   filename: string,
   headers: string[],
   rows: string[][]
-): void {
-  const data = [headers, ...rows];
-  const ws = XLSX.utils.aoa_to_sheet(data);
+): Promise<void> {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet("Sheet1");
 
-  const colWidths = headers.map((h, i) => {
-    const maxLen = Math.max(
-      h.length,
-      ...rows.map((r) => String(r[i] ?? "").length)
-    );
-    return { wch: Math.min(maxLen + 3, 50) };
-  });
-  ws["!cols"] = colWidths;
+  worksheet.columns = headers.map((h) => ({ header: h, key: h, width: Math.min(Math.max(h.length, ...rows.map((r) => String(r[headers.indexOf(h)] ?? "").length)) + 3, 50) }));
 
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
-  XLSX.writeFile(wb, `${filename.replace(/\s+/g, "_").toLowerCase()}.xlsx`);
+  worksheet.addRows(rows);
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${filename.replace(/\s+/g, "_").toLowerCase()}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
 }

@@ -21,7 +21,9 @@ export default function DashboardLayout({
             <div className="flex flex-1 flex-col overflow-hidden">
               <TopBar />
               <main className="flex-1 overflow-y-auto">
-                <ErrorBoundary>{children}</ErrorBoundary>
+                <div className="mx-auto w-full max-w-7xl px-4 py-4 md:px-6 md:py-6">
+                  <ErrorBoundary>{children}</ErrorBoundary>
+                </div>
               </main>
             </div>
           </div>
