@@ -42,6 +42,10 @@ def get_db():
         db.close()
 
 
+configure_logging("ats-service", level=logging.INFO)
+logger = get_logger("ats-service")
+
+
 from routers import (
     jobs, candidates, applications, interviews, offers, analytics,
     career_portal, resume_parser, offer_letters, campus_recruitment,
@@ -98,9 +102,6 @@ def verify_internal_auth(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Invalid internal authentication")
 
 app = FastAPI(title="ATS Service API", version="1.0.0", lifespan=lifespan)
-
-configure_logging("ats-service", level=logging.INFO)
-logger = get_logger("ats-service")
 
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
 
