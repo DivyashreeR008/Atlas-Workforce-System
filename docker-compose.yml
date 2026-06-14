@@ -136,6 +136,7 @@ services:
       - ATTENDANCE_SERVICE_URL=http://attendance-service:8005
       - LEAVE_SERVICE_URL=http://leave-service:8006
       - REDIS_URL=redis://redis:6379
+      - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET:-atlas-internal-jwt-secret-change-me}
       - ATS_SERVICE_URL=http://ats-service:8012
       - LMS_SERVICE_URL=http://lms-service:8013
       - PERFORMANCE_SERVICE_URL=http://performance-service:8014
@@ -175,6 +176,8 @@ services:
       - POSTGRES_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
       - NODE_ENV=${NODE_ENV:-development}
+      - AUDIT_INTERNAL_KEY=${AUDIT_INTERNAL_KEY:-atlas-internal-key-change-me}
+      - SCIM_API_KEY=${SCIM_API_KEY:-change-scim-api-key-in-production}
     networks:
       - atlas-network
     depends_on:
@@ -237,6 +240,7 @@ services:
       - "8004:8004"
     environment:
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET:-atlas-internal-jwt-secret-change-me}
     networks:
       - atlas-network
     depends_on:
@@ -249,6 +253,7 @@ services:
       - "8005:8005"
     environment:
       - POSTGRES_URL=host=postgres user=${POSTGRES_USER:-atlas_user} password=${POSTGRES_PASSWORD:-atlas_password} dbname=${POSTGRES_DB:-atlas_db} port=5432 sslmode=disable
+      - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET:-atlas-internal-jwt-secret-change-me}
     networks:
       - atlas-network
     depends_on:
@@ -315,6 +320,7 @@ services:
       - DB_NAME=${POSTGRES_DB:-atlas_db}
       - DB_PORT=5432
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+      - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET:-atlas-internal-jwt-secret-change-me}
     networks:
       - atlas-network
     depends_on:

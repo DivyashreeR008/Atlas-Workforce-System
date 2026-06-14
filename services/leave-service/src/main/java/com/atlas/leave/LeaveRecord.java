@@ -1,4 +1,4 @@
-﻿package com.atlas.leave;
+package com.atlas.leave;
 
 import jakarta.persistence.*;
 import java.time.LocalDate;

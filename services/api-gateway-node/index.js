@@ -526,6 +526,8 @@ app.use(auditProxyMiddleware);
 app.use(mfaStepUpMiddleware);
 
 function csrfMiddleware(req, res, next) {
+  if (isPublicOrAuthPath(req.path)) return next();
+
   if (req.user && !req.cookies?.csrf_token) {
     const csrfToken = crypto.randomBytes(32).toString('hex');
     res.cookie('csrf_token', csrfToken, {
