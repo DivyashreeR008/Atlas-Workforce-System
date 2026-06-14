@@ -11,16 +11,18 @@ import {
   Cable,
   Calendar,
   ChevronDown,
-  ChevronLeft,
   Clock,
   FileText,
   GraduationCap,
   LayoutDashboard,
   LayoutGrid,
+  LifeBuoy,
   LineChart,
   LogOut,
   Monitor,
   Orbit,
+  PanelLeftClose,
+  PanelLeftOpen,
   Settings,
   Shield,
   ShieldCheck,
@@ -30,9 +32,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import * as CollapsiblePrimitive from "@radix-ui/react-collapsible";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -43,9 +43,10 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAuthStore } from "@/stores/auth-store";
 import { useRouter } from "next/navigation";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, useRef } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 
-// === Sidebar context ===
+// ─── Sidebar Context ────────────────────────────────────────────
 const SIDEBAR_COOKIE = "sidebar_state";
 
 interface SidebarContextValue {
@@ -94,90 +95,329 @@ function SidebarProvider({ children }: { children: React.ReactNode }) {
   return (
     <SidebarCtx.Provider value={val}>
       <TooltipProvider delayDuration={0}>
-        <div className="flex min-h-svh w-full">
-          {children}
-        </div>
+        <div className="flex min-h-svh w-full">{children}</div>
       </TooltipProvider>
     </SidebarCtx.Provider>
   );
 }
 
-// === Navigation config ===
-interface NavGroup {
+// ─── Navigation Config ──────────────────────────────────────────
+interface NavChild {
+  href: string;
+  label: string;
+}
+
+interface NavGroupItem {
+  kind: "group";
   label: string;
   icon: React.ComponentType<{ className?: string }>;
-  children: { href: string; label: string }[];
+  children: NavChild[];
 }
 
-type NavItem = { href: string; label: string; icon: React.ComponentType<{ className?: string }> };
-
-type NavEntry = NavItem | NavGroup;
-
-function isGroup(e: NavEntry): e is NavGroup {
-  return "children" in e;
+interface NavLinkItem {
+  kind: "link";
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
 }
 
-const navItems: NavEntry[] = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/dashboard/employees", label: "Employees", icon: Users },
-  { href: "/dashboard/lifecycle", label: "Lifecycle", icon: Orbit },
-  { label: "Workforce Planning", icon: LineChart, children: [{ href: "/dashboard/workforce-planning", label: "Dashboard" }] },
-  { href: "/dashboard/attendance", label: "Attendance", icon: Clock },
-  { label: "ATS", icon: Briefcase, children: [
-    { href: "/dashboard/ats", label: "Dashboard" },
-    { href: "/dashboard/ats/jobs", label: "Jobs" },
-    { href: "/dashboard/ats/candidates", label: "Candidates" },
-    { href: "/dashboard/ats/analytics", label: "Analytics" },
-  ]},
-  { href: "/dashboard/payroll", label: "Payroll", icon: Wallet },
-  { href: "/dashboard/analytics", label: "Analytics", icon: BarChart3 },
-  { href: "/dashboard/leave", label: "Leave", icon: Calendar },
-  { href: "/dashboard/reports", label: "Reports", icon: FileText },
-  { href: "/dashboard/notifications", label: "Notifications", icon: Bell },
-  { label: "Performance", icon: Target, children: [
-    { href: "/dashboard/performance", label: "Overview" },
-    { href: "/dashboard/performance?tab=okrs", label: "OKRs & KPIs" },
-    { href: "/dashboard/performance?tab=reviews", label: "Reviews" },
-    { href: "/dashboard/performance?tab=feedback", label: "Feedback" },
-    { href: "/dashboard/performance?tab=hipo", label: "HiPo Tracking" },
-    { href: "/dashboard/performance?tab=ai", label: "AI Insights" },
-    { href: "/dashboard/performance?tab=devplans", label: "Dev Plans" },
-  ]},
-  { label: "LMS", icon: GraduationCap, children: [
-    { href: "/dashboard/lms", label: "Dashboard" },
-    { href: "/dashboard/lms/courses", label: "Courses" },
-    { href: "/dashboard/lms/certifications", label: "Certifications" },
-    { href: "/dashboard/lms/skills", label: "Skills" },
-  ]},
-  { label: "L&D", icon: BookOpen, children: [{ href: "/dashboard/learning-development", label: "Dashboard" }] },
-  { label: "AI Platform", icon: Bot, children: [
-    { href: "/dashboard/ai", label: "AI Hub" },
-    { href: "/dashboard/ai/hr-copilot", label: "HR Copilot" },
-    { href: "/dashboard/ai/ai-dashboard", label: "AI Dashboard" },
-    { href: "/dashboard/ai/attrition-prediction", label: "Attrition Pred." },
-    { href: "/dashboard/ai/workforce-forecasting", label: "WF Forecast" },
-    { href: "/dashboard/ai/risk-detection", label: "Risk Detection" },
-    { href: "/dashboard/ai/automation-builder", label: "Automation" },
-  ]},
-  { href: "/dashboard/compliance", label: "Compliance", icon: Shield },
-  { label: "Security", icon: ShieldCheck, children: [
-    { href: "/dashboard/security", label: "Dashboard" },
-    { href: "/dashboard/security/pam", label: "Privileged Access" },
-    { href: "/dashboard/security/data-classification", label: "Data Class." },
-  ]},
-  { label: "Live", icon: Monitor, children: [
-    { href: "/dashboard/live", label: "Overview" },
-    { href: "/dashboard/live/presence", label: "Presence" },
-    { href: "/dashboard/live/alerts", label: "Alerts" },
-    { href: "/dashboard/live/chat", label: "Chat" },
-    { href: "/dashboard/live/command-center", label: "Cmd Center" },
-  ]},
-  { href: "/dashboard/integrations", label: "Integrations", icon: Cable },
-  { href: "/dashboard/command-center", label: "Command Center", icon: LayoutGrid },
-  { href: "/dashboard/settings", label: "Settings", icon: Settings },
+type NavItem = NavLinkItem | NavGroupItem;
+
+interface NavSection {
+  label: string;
+  items: NavItem[];
+}
+
+function isGroup(item: NavItem): item is NavGroupItem {
+  return item.kind === "group";
+}
+
+const navSections: NavSection[] = [
+  {
+    label: "Core",
+    items: [
+      { kind: "link", href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { kind: "link", href: "/dashboard/employees", label: "Employees", icon: Users },
+      { kind: "link", href: "/dashboard/payroll", label: "Payroll", icon: Wallet },
+    ],
+  },
+  {
+    label: "People",
+    items: [
+      {
+        kind: "group", label: "Performance", icon: Target,
+        children: [
+          { href: "/dashboard/performance", label: "Overview" },
+          { href: "/dashboard/performance?tab=okrs", label: "OKRs & KPIs" },
+          { href: "/dashboard/performance?tab=reviews", label: "Reviews" },
+          { href: "/dashboard/performance?tab=hipo", label: "HiPo Tracking" },
+          { href: "/dashboard/performance?tab=devplans", label: "Dev Plans" },
+        ],
+      },
+      { kind: "link", href: "/dashboard/lifecycle", label: "Lifecycle", icon: Orbit },
+      {
+        kind: "group", label: "ATS", icon: Briefcase,
+        children: [
+          { href: "/dashboard/ats", label: "Dashboard" },
+          { href: "/dashboard/ats/jobs", label: "Jobs" },
+          { href: "/dashboard/ats/candidates", label: "Candidates" },
+          { href: "/dashboard/ats/analytics", label: "Analytics" },
+        ],
+      },
+      {
+        kind: "group", label: "LMS", icon: GraduationCap,
+        children: [
+          { href: "/dashboard/lms", label: "Dashboard" },
+          { href: "/dashboard/lms/courses", label: "Courses" },
+          { href: "/dashboard/lms/certifications", label: "Certifications" },
+          { href: "/dashboard/lms/skills", label: "Skills" },
+        ],
+      },
+      { kind: "link", href: "/dashboard/learning-development", label: "L&D", icon: BookOpen },
+    ],
+  },
+  {
+    label: "Operations",
+    items: [
+      { kind: "link", href: "/dashboard/attendance", label: "Attendance", icon: Clock },
+      { kind: "link", href: "/dashboard/leave", label: "Leave", icon: Calendar },
+      { kind: "link", href: "/dashboard/workforce-planning", label: "Workforce Planning", icon: LineChart },
+      { kind: "link", href: "/dashboard/analytics", label: "Analytics", icon: BarChart3 },
+      { kind: "link", href: "/dashboard/reports", label: "Reports", icon: FileText },
+    ],
+  },
+  {
+    label: "Intelligence",
+    items: [
+      { kind: "link", href: "/dashboard/command-center", label: "Command Center", icon: LayoutGrid },
+      {
+        kind: "group", label: "AI Platform", icon: Bot,
+        children: [
+          { href: "/dashboard/ai", label: "AI Hub" },
+          { href: "/dashboard/ai/hr-copilot", label: "HR Copilot" },
+          { href: "/dashboard/ai/attrition-prediction", label: "Attrition Pred." },
+          { href: "/dashboard/ai/workforce-forecasting", label: "WF Forecasting" },
+          { href: "/dashboard/ai/risk-detection", label: "Risk Detection" },
+        ],
+      },
+      {
+        kind: "group", label: "Live", icon: Monitor,
+        children: [
+          { href: "/dashboard/live", label: "Overview" },
+          { href: "/dashboard/live/presence", label: "Presence" },
+          { href: "/dashboard/live/alerts", label: "Alerts" },
+          { href: "/dashboard/live/command-center", label: "Cmd Center" },
+        ],
+      },
+    ],
+  },
+  {
+    label: "Security",
+    items: [
+      { kind: "link", href: "/dashboard/compliance", label: "Compliance", icon: Shield },
+      {
+        kind: "group", label: "Security", icon: ShieldCheck,
+        children: [
+          { href: "/dashboard/security", label: "Dashboard" },
+          { href: "/dashboard/security/pam", label: "Privileged Access" },
+          { href: "/dashboard/security/data-classification", label: "Data Classification" },
+        ],
+      },
+      { kind: "link", href: "/dashboard/integrations", label: "Integrations", icon: Cable },
+    ],
+  },
+  {
+    label: "System",
+    items: [
+      { kind: "link", href: "/dashboard/settings", label: "Settings", icon: Settings },
+      { kind: "link", href: "/dashboard/notifications", label: "Notifications", icon: Bell },
+    ],
+  },
 ];
 
-// === Sidebar Component ===
+function flattenNavItems(): { href: string; label: string }[] {
+  const result: { href: string; label: string }[] = [];
+  for (const section of navSections) {
+    for (const item of section.items) {
+      if (isGroup(item)) {
+        for (const child of item.children) {
+          result.push(child);
+        }
+      } else {
+        result.push({ href: item.href, label: item.label });
+      }
+    }
+  }
+  return result;
+}
+
+// ─── Sub-components ─────────────────────────────────────────────
+function NavSectionLabel({ label, collapsed }: { label: string; collapsed: boolean }) {
+  if (collapsed) return null;
+  return (
+    <div className="px-3 pt-4 pb-1">
+      <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">
+        {label}
+      </span>
+    </div>
+  );
+}
+
+function ActiveIndicator() {
+  return (
+    <div className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-primary" />
+  );
+}
+
+function NavLink({
+  item,
+  pathname,
+  collapsed,
+  index,
+}: {
+  item: NavLinkItem;
+  pathname: string;
+  collapsed: boolean;
+  index: number;
+}) {
+  const active = item.href === "/dashboard"
+    ? pathname === "/dashboard"
+    : pathname.startsWith(item.href);
+
+  const link = (
+    <Link
+      href={item.href}
+      className={cn(
+        "group relative flex items-center gap-3 rounded-md text-sm font-medium transition-all duration-150",
+        active
+          ? "bg-primary/10 text-primary"
+          : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+        collapsed ? "mx-auto h-9 w-9 justify-center" : "mx-1.5 px-2.5 py-1.5"
+      )}
+      aria-current={active ? "page" : undefined}
+    >
+      {active && <ActiveIndicator />}
+      <item.icon className={cn("shrink-0", collapsed ? "h-4 w-4" : "h-4 w-4")} />
+      {!collapsed && <span>{item.label}</span>}
+    </Link>
+  );
+
+  if (collapsed) {
+    return (
+      <Tooltip key={item.href}>
+        <TooltipTrigger asChild>{link}</TooltipTrigger>
+        <TooltipContent side="right" sideOffset={8}>{item.label}</TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return link;
+}
+
+function NavGroup({
+  item,
+  pathname,
+  collapsed,
+  openGroup,
+  onToggle,
+}: {
+  item: NavGroupItem;
+  pathname: string;
+  collapsed: boolean;
+  openGroup: string | null;
+  onToggle: (label: string) => void;
+}) {
+  const isOpen = openGroup === item.label;
+  const isActive = item.children.some((c) => {
+    if (c.href === "/dashboard") return pathname === "/dashboard";
+    return pathname.startsWith(c.href);
+  });
+
+  // Collapsed mode: just an icon linking to first child
+  if (collapsed) {
+    return (
+      <Tooltip key={item.label}>
+        <TooltipTrigger asChild>
+          <Link
+            href={item.children[0].href}
+            className={cn(
+              "mx-auto flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-muted/50 hover:text-foreground",
+              isActive && "bg-primary/10 text-primary"
+            )}
+          >
+            <item.icon className="h-4 w-4 shrink-0" />
+          </Link>
+        </TooltipTrigger>
+        <TooltipContent side="right" sideOffset={8}>{item.label}</TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <div>
+      <button
+        onClick={() => onToggle(item.label)}
+        className={cn(
+          "group relative flex w-full items-center gap-3 rounded-md px-2.5 py-1.5 text-sm font-medium transition-all duration-150 mx-1.5",
+          isActive
+            ? "text-primary"
+            : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+        )}
+        aria-expanded={isOpen}
+      >
+        {isActive && <ActiveIndicator />}
+        <item.icon className="h-4 w-4 shrink-0" />
+        <span className="flex-1 text-left">{item.label}</span>
+        <ChevronDown
+          className={cn(
+            "h-3 w-3 shrink-0 text-muted-foreground/50 transition-transform duration-200",
+            isOpen && "rotate-180"
+          )}
+        />
+      </button>
+
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div
+            key="content"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18, ease: "easeInOut" }}
+            className="overflow-hidden"
+          >
+            <div className="ml-6 mt-0.5 space-y-0.5 border-l border-border/40 pl-2">
+              {item.children.map((child) => {
+                const childActive = child.href === "/dashboard"
+                  ? pathname === "/dashboard"
+                  : pathname.startsWith(child.href);
+                return (
+                  <Link
+                    key={child.href}
+                    href={child.href}
+                    className={cn(
+                      "relative flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition-all duration-150",
+                      childActive
+                        ? "font-medium text-primary"
+                        : "text-muted-foreground/70 hover:text-foreground"
+                    )}
+                  >
+                    {childActive && (
+                      <div className="absolute left-0 top-1/2 h-1 w-1 -translate-y-1/2 rounded-full bg-primary" />
+                    )}
+                    <span className="pl-0.5">{child.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ─── Main Sidebar ────────────────────────────────────────────────
 export function Sidebar() {
   const pathname = usePathname();
   const { open, toggle, isMobile } = useSidebar();
@@ -185,28 +425,20 @@ export function Sidebar() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
 
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
-    const g: Record<string, boolean> = {};
-    navItems.forEach((item) => {
-      if (isGroup(item) && item.children.some((c) => pathname.startsWith(c.href.replace(/\/$/, "")))) {
-        g[item.label] = true;
+  const [openGroup, setOpenGroup] = useState<string | null>(() => {
+    for (const section of navSections) {
+      for (const item of section.items) {
+        if (isGroup(item) && item.children.some((c) => pathname.startsWith(c.href.replace(/\/$/, "")))) {
+          return item.label;
+        }
       }
-    });
-    return g;
+    }
+    return null;
   });
 
-  function toggleGroup(label: string) {
-    setOpenGroups((prev) => ({ ...prev, [label]: !prev[label] }));
-  }
-
-  function isActive(href: string) {
-    if (href === "/dashboard") return pathname === "/dashboard";
-    return pathname.startsWith(href);
-  }
-
-  function isGroupActive(group: NavGroup) {
-    return group.children.some((c) => isActive(c.href));
-  }
+  const toggleGroup = useCallback((label: string) => {
+    setOpenGroup((prev) => (prev === label ? null : label));
+  }, []);
 
   const handleLogout = () => {
     logout();
@@ -222,6 +454,7 @@ export function Sidebar() {
 
   return (
     <>
+      {/* Mobile overlay */}
       {isMobile && open && (
         <div
           className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
@@ -234,21 +467,17 @@ export function Sidebar() {
         className={cn(
           "bg-sidebar text-sidebar-foreground border-r border-sidebar-border flex h-full flex-col transition-all duration-200 ease-linear",
           isMobile
-            ? cn("fixed inset-y-0 left-0 z-50", open ? "w-64" : "-translate-x-full")
+            ? cn("fixed inset-y-0 left-0 z-50", open ? "w-60" : "-translate-x-full")
             : cn(
-                open ? "w-64" : "w-16",
+                open ? "w-60" : "w-14",
                 "hidden md:flex"
               )
         )}
       >
-        <div
-          className={cn(
-            "flex h-14 items-center border-b border-sidebar-border",
-            open ? "px-4" : "justify-center px-2"
-          )}
-        >
+        {/* ── Logo ── */}
+        <div className={cn("flex h-14 items-center border-b border-sidebar-border shrink-0", open ? "px-4" : "justify-center")}>
           {open ? (
-            <Link href="/dashboard" className="flex items-center gap-2 font-semibold">
+            <Link href="/dashboard" className="flex items-center gap-2.5 font-semibold">
               <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground text-sm font-bold">
                 A
               </span>
@@ -263,153 +492,71 @@ export function Sidebar() {
                   </span>
                 </Link>
               </TooltipTrigger>
-              <TooltipContent side="right">Dashboard</TooltipContent>
+              <TooltipContent side="right" sideOffset={8}>Dashboard</TooltipContent>
             </Tooltip>
           )}
         </div>
 
-        <nav className="flex-1 overflow-y-auto p-2 scrollbar-thin">
-          {navItems.map((item) => {
-            if (isGroup(item)) {
-              const groupActive = isGroupActive(item);
-              const isOpen = openGroups[item.label] ?? groupActive;
-
-              if (!open) {
+        {/* ── Navigation ── */}
+        <nav className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
+          {navSections.map((section) => (
+            <div key={section.label}>
+              <NavSectionLabel label={section.label} collapsed={!open} />
+              {section.items.map((item, i) => {
+                if (isGroup(item)) {
+                  return (
+                    <NavGroup
+                      key={item.label}
+                      item={item}
+                      pathname={pathname}
+                      collapsed={!open}
+                      openGroup={openGroup}
+                      onToggle={toggleGroup}
+                    />
+                  );
+                }
                 return (
-                  <Tooltip key={item.label}>
-                    <TooltipTrigger asChild>
-                      <Link
-                        href={item.children[0].href}
-                        className={cn(
-                          "flex items-center justify-center rounded-lg p-2 transition-colors",
-                          groupActive
-                            ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                            : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                        )}
-                      >
-                        <item.icon className="h-4 w-4 shrink-0" />
-                      </Link>
-                    </TooltipTrigger>
-                    <TooltipContent side="right">{item.label}</TooltipContent>
-                  </Tooltip>
+                  <NavLink
+                    key={item.href}
+                    item={item}
+                    pathname={pathname}
+                    collapsed={!open}
+                    index={i}
+                  />
                 );
-              }
-
-              return (
-                <CollapsiblePrimitive.Root
-                  key={item.label}
-                  open={isOpen}
-                  onOpenChange={() => toggleGroup(item.label)}
-                >
-                  <CollapsiblePrimitive.Trigger asChild>
-                    <button
-                      className={cn(
-                        "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                        groupActive
-                          ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                          : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                      )}
-                    >
-                      <item.icon className="h-4 w-4 shrink-0" />
-                      <span className="flex-1 text-left">{item.label}</span>
-                      <ChevronDown
-                        className={cn(
-                          "h-3 w-3 transition-transform",
-                          isOpen && "rotate-180"
-                        )}
-                      />
-                    </button>
-                  </CollapsiblePrimitive.Trigger>
-                  <CollapsiblePrimitive.Content>
-                    <div className="ml-6 mt-1 space-y-1">
-                      {item.children.map((child) => (
-                        <Link
-                          key={child.href}
-                          href={child.href}
-                          className={cn(
-                            "flex items-center gap-3 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
-                            isActive(child.href)
-                              ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                              : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                          )}
-                        >
-                          {child.label}
-                        </Link>
-                      ))}
-                    </div>
-                  </CollapsiblePrimitive.Content>
-                </CollapsiblePrimitive.Root>
-              );
-            }
-
-            const active = isActive(item.href);
-
-            if (!open) {
-              return (
-                <Tooltip key={item.href}>
-                  <TooltipTrigger asChild>
-                    <Link
-                      href={item.href}
-                      className={cn(
-                        "flex items-center justify-center rounded-lg p-2 transition-colors",
-                        active
-                          ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                          : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                      )}
-                    >
-                      <item.icon className="h-4 w-4 shrink-0" />
-                    </Link>
-                  </TooltipTrigger>
-                  <TooltipContent side="right">{item.label}</TooltipContent>
-                </Tooltip>
-              );
-            }
-
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                  active
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                    : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                )}
-              >
-                <item.icon className="h-4 w-4 shrink-0" />
-                <span>{item.label}</span>
-              </Link>
-            );
-          })}
+              })}
+            </div>
+          ))}
+          {/* Bottom spacer so content doesn't hide behind footer */}
+          <div className="h-4" />
         </nav>
 
-        <div className="border-t border-sidebar-border p-2">
+        {/* ── Footer ── */}
+        <div className="shrink-0 border-t border-sidebar-border">
           {open ? (
-            <div className="space-y-2">
+            <div className="p-2 space-y-1">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="flex w-full items-center gap-2 px-2 py-1.5 h-auto"
-                  >
-                    <Avatar className="h-7 w-7">
-                      <AvatarFallback className="bg-primary/10 text-primary text-xs">
+                  <button className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors hover:bg-muted/50">
+                    <Avatar className="h-7 w-7 shrink-0">
+                      <AvatarFallback className="bg-primary/10 text-[11px] font-medium text-primary">
                         {initials}
                       </AvatarFallback>
                     </Avatar>
-                    <div className="flex-1 text-left text-sm leading-tight">
-                      <p className="font-medium truncate">{user?.name ?? "User"}</p>
-                      <p className="text-xs text-muted-foreground capitalize truncate">
+                    <div className="flex-1 text-left leading-tight min-w-0">
+                      <p className="truncate text-sm font-medium text-sidebar-foreground">
+                        {user?.name ?? "User"}
+                      </p>
+                      <p className="truncate text-[11px] text-muted-foreground capitalize">
                         {user?.role}
                       </p>
                     </div>
-                  </Button>
+                  </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" side="right" className="w-48">
-                  <div className="px-2 py-1.5 text-sm font-medium">{user?.name}</div>
+                  <div className="px-2 py-1.5 text-sm font-medium">{user?.name ?? "User"}</div>
                   <div className="px-2 pb-1 text-xs text-muted-foreground capitalize">
-                    {user?.role}
+                    {user?.role ?? "N/A"}
                   </div>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => router.push("/dashboard/settings")}>
@@ -423,33 +570,35 @@ export function Sidebar() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="w-full justify-center text-muted-foreground"
+
+              <button
                 onClick={() => toggle()}
+                className="flex w-full items-center justify-center gap-2 rounded-md px-2.5 py-1.5 text-xs text-muted-foreground/60 transition-colors hover:bg-muted/50 hover:text-muted-foreground"
               >
-                <ChevronLeft className="h-4 w-4" />
-                <span className="ml-2">Collapse</span>
-              </Button>
+                <PanelLeftClose className="h-3.5 w-3.5" />
+                <span>Collapse</span>
+              </button>
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="flex flex-col items-center gap-1 py-2">
               <div className="flex justify-center">
-                <Avatar className="h-8 w-8">
-                  <AvatarFallback className="bg-primary/10 text-primary text-xs">
+                <Avatar className="h-7 w-7">
+                  <AvatarFallback className="bg-primary/10 text-[10px] font-medium text-primary">
                     {initials}
                   </AvatarFallback>
                 </Avatar>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="w-full justify-center text-muted-foreground"
-                onClick={() => toggle()}
-              >
-                <ChevronLeft className="h-4 w-4 rotate-180" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => toggle()}
+                    className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-muted/50 hover:text-muted-foreground"
+                  >
+                    <PanelLeftOpen className="h-3.5 w-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>Expand sidebar</TooltipContent>
+              </Tooltip>
             </div>
           )}
         </div>
