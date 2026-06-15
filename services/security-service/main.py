@@ -47,8 +47,8 @@ from schemas import (
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://atlas:atlas_pass@localhost:5432/atlas_security")
-INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "svc-security-secret-key-change-in-production")
+DATABASE_URL = os.environ["DATABASE_URL"]
+INTERNAL_API_KEY = os.environ["INTERNAL_API_KEY"]
 MAX_PAGE_SIZE = int(os.getenv("MAX_PAGE_SIZE", "100"))
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 

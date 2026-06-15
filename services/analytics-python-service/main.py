@@ -107,8 +107,8 @@ async def internal_auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-POSTGRES_USER = os.environ.get("POSTGRES_USER", "atlas_user")
-POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "atlas_password")
+POSTGRES_USER = os.environ["POSTGRES_USER"]
+POSTGRES_PASSWORD = os.environ["POSTGRES_PASSWORD"]
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "postgres")
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "atlas_db")
 DATABASE_URL = os.environ.get(
@@ -134,8 +134,8 @@ def health_check():
 
 RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "localhost")
 RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", "5672"))
-RABBITMQ_USER = os.environ.get("RABBITMQ_USER", "guest")
-RABBITMQ_PASSWORD = os.environ.get("RABBITMQ_PASSWORD", "guest")
+RABBITMQ_USER = os.environ["RABBITMQ_USER"]
+RABBITMQ_PASSWORD = os.environ["RABBITMQ_PASSWORD"]
 
 EMPLOYEE_SERVICE_URL = os.environ.get("EMPLOYEE_SERVICE_URL", "http://employee-service:8001")
 
