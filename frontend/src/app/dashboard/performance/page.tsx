@@ -357,7 +357,7 @@ function PeerReviewDialog({ open, onOpenChange, editItem }: {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{editItem ? "Edit Peer Review" : "New Peer Review"}</DialogTitle>
-          <DialogDescription>Evaluate a colleague's performance on a project.</DialogDescription>
+          <DialogDescription>Evaluate a colleague&apos;s performance on a project.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
@@ -408,7 +408,7 @@ function PromotionDialog({ open, onOpenChange }: {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Promotion Readiness Assessment</DialogTitle>
-          <DialogDescription>Evaluate an employee's readiness for promotion.</DialogDescription>
+          <DialogDescription>Evaluate an employee&apos;s readiness for promotion.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div><Label>Employee Name</Label><Input value={form.employeeName} onChange={e => setForm(p => ({ ...p, employeeName: e.target.value }))} /></div>
@@ -1657,16 +1657,14 @@ function SuccessionTab({ loading }: { loading: boolean }) {
 // ── Main Page ───────────────────────────────────────────────────────────────
 
 export default function PerformancePage() {
-  const [tab, setTab] = useState("overview");
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
+  const [tab, setTab] = useState(() => {
+    if (typeof window === "undefined") return "overview";
     const params = new URLSearchParams(window.location.search);
     const tabParam = params.get("tab");
-    if (tabParam && ["overview", "okrs", "reviews", "feedback", "calibration", "promotion", "hipo", "ai", "devplans", "succession"].includes(tabParam)) {
-      setTab(tabParam);
-    }
-  }, []);
+    const valid = ["overview", "okrs", "reviews", "feedback", "calibration", "promotion", "hipo", "ai", "devplans", "succession"];
+    return tabParam && valid.includes(tabParam) ? tabParam : "overview";
+  });
+  const [loading, setLoading] = useState(false);
 
   return (
     <div className="space-y-6">

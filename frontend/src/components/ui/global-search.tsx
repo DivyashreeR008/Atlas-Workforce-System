@@ -45,6 +45,7 @@ export function GlobalSearch() {
 
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setQuery("");
       setAiResults([]);
       setSelectedIndex(0);
@@ -53,7 +54,11 @@ export function GlobalSearch() {
   }, [open]);
 
   useEffect(() => {
-    if (!query.trim()) { setAiResults([]); return; }
+    if (!query.trim()) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAiResults([]);
+      return;
+    }
     setAiLoading(true);
     const timer = setTimeout(async () => {
       try {
@@ -89,7 +94,10 @@ export function GlobalSearch() {
 
   const allResults = useMemo(() => [...filteredPages, ...aiResults], [filteredPages, aiResults]);
 
-  useEffect(() => { setSelectedIndex(0); }, [query]);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelectedIndex(0);
+  }, [query]);
 
   useEffect(() => {
     const el = listRef.current?.children[selectedIndex] as HTMLElement | undefined;

@@ -15,7 +15,10 @@ export interface Shortcut {
 
 export function useGlobalShortcut(key: string, handler: () => void, options?: { ctrl?: boolean; meta?: boolean; shift?: boolean; alt?: boolean; enabled?: boolean }) {
   const handlerRef = useRef(handler);
-  handlerRef.current = handler;
+
+  useEffect(() => {
+    handlerRef.current = handler;
+  }, [handler]);
 
   useEffect(() => {
     if (options?.enabled === false) return;
@@ -46,7 +49,10 @@ export function useGlobalShortcut(key: string, handler: () => void, options?: { 
 
 export function useKeyboardShortcuts(shortcuts: Shortcut[]) {
   const shortcutsRef = useRef(shortcuts);
-  shortcutsRef.current = shortcuts;
+
+  useEffect(() => {
+    shortcutsRef.current = shortcuts;
+  }, [shortcuts]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {

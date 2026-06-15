@@ -13,8 +13,6 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!isInitialized()) {
       initializeAuth().then(() => setReady(true));
-    } else {
-      setReady(true);
     }
   }, []);
 

@@ -180,6 +180,9 @@ jobs:
           if [[ "${{ matrix.image }}" == "frontend" ]]; then
             echo "context=frontend" >> $GITHUB_OUTPUT
             echo "dockerfile=frontend/Dockerfile" >> $GITHUB_OUTPUT
+          elif [[ "${{ matrix.image }}" =~ python-service$ ]]; then
+            echo "context=." >> $GITHUB_OUTPUT
+            echo "dockerfile=services/${{ matrix.image }}/Dockerfile" >> $GITHUB_OUTPUT
           else
             echo "context=services/${{ matrix.image }}" >> $GITHUB_OUTPUT
             echo "dockerfile=services/${{ matrix.image }}/Dockerfile" >> $GITHUB_OUTPUT
