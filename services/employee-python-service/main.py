@@ -5,7 +5,6 @@ import random
 import hmac
 from contextvars import ContextVar
 from fastapi import FastAPI, HTTPException, Body, Query, Header, Depends, Request
-from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import os
