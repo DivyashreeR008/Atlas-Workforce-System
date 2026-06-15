@@ -120,7 +120,17 @@ log_info "Step 4: Injecting ${DELAY_MS}ms network delay to $POSTGRES_CONTAINER..
 
 if ! docker exec "$POSTGRES_CONTAINER" sh -c "command -v tc" 2>/dev/null; then
   log_info "Installing iproute2..."
-  docker exec "$POSTGRES_CONTAINER" apk add -q iproute2 2>/dev/null || true
+  docker exec "$POSTGRES_CONTAINER" sh -c "
+    if command -v apk >/dev/null 2>&1; then
+      apk add -q iproute2 2>/dev/null || true
+    elif command -v apt-get >/dev/null 2>&1; then
+      apt-get update -qq && apt-get install -y -qq iproute2 2>/dev/null || true
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y -q iproute 2>/dev/null || true
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y -q iproute 2>/dev/null || true
+    fi
+  " || true
 fi
 
 INJECT_RESULT=$(docker exec "$POSTGRES_CONTAINER" sh -c "
