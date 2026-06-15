@@ -1,7 +1,11 @@
 package com.atlas.leave;
 
+import com.atlas.leave.security.RequiresRole;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -18,12 +22,14 @@ public class LeaveController {
         this.service = service;
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping
     public ResponseEntity<List<LeaveRecord>> getAllLeaveRequests(
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
         return ResponseEntity.ok(service.getAllLeaveRequests(tenantId));
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/employee/{employeeId}")
     public ResponseEntity<List<LeaveRecord>> getLeaveByEmployee(
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId,
@@ -31,6 +37,7 @@ public class LeaveController {
         return ResponseEntity.ok(service.getLeaveByEmployeeId(tenantId, employeeId));
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @PostMapping("/request")
     public ResponseEntity<?> requestLeave(
             @RequestBody Map<String, String> request,
@@ -51,21 +58,17 @@ public class LeaveController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @PutMapping("/{id}/status")
     public ResponseEntity<?> updateLeaveStatus(
             @PathVariable Long id,
             @RequestBody Map<String, String> request,
-            @RequestHeader(value = "X-User-Role", required = false) String userRole,
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
-
-        // Ensure a role is provided; the service handles role-based authorization
-        if (userRole == null || userRole.isBlank()) {
-            return ResponseEntity.status(403)
-                    .body(Map.of("message", "Access denied: X-User-Role header is required"));
-        }
 
         try {
             String status = request.get("status");
+            ServletRequestAttributes attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+            String userRole = attrs != null ? (String) attrs.getRequest().getAttribute("x-user-role") : "employee";
             LeaveRecord record = service.updateLeaveStatus(tenantId, id, status, userRole);
             return ResponseEntity.ok(record);
         } catch (IllegalArgumentException e) {

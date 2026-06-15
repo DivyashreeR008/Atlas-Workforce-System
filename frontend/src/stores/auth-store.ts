@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import type { User } from "@/types";
 import {
   clearAuth,
+  initializeAuth,
   setStoredUser,
   setTokens,
 } from "@/lib/auth";
@@ -21,6 +22,7 @@ interface AuthState {
   }) => Promise<void>;
   logout: () => void;
   setUser: (user: User | null) => void;
+  initialize: () => Promise<void>;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -29,6 +31,9 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       isLoading: false,
       setUser: (user) => set({ user }),
+      initialize: async () => {
+        await initializeAuth();
+      },
       login: async (email, password) => {
         set({ isLoading: true });
         try {
@@ -76,6 +81,9 @@ export const useAuthStore = create<AuthState>()(
         if (typeof window !== "undefined") window.location.href = "/login";
       },
     }),
-    { name: "atlas-auth", partialize: (s) => ({ user: s.user }) }
+    {
+      name: "atlas-auth",
+      partialize: (s) => ({ user: s.user }),
+    }
   )
 );
