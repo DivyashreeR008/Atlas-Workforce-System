@@ -160,6 +160,9 @@ jobs:
           java-version: "17"
           distribution: "temurin"
           cache: maven
+      - name: Install atlas-common dependency
+        run: mvn install -DskipTests
+        working-directory: services/atlas-common
       - name: Compile and test
         run: mvn clean test
         working-directory: services/${{ matrix.service }}
@@ -198,6 +201,9 @@ jobs:
             echo "context=frontend" >> $GITHUB_OUTPUT
             echo "file=frontend/Dockerfile" >> $GITHUB_OUTPUT
           elif [[ "${{ matrix.image }}" =~ python-service$ ]]; then
+            echo "context=." >> $GITHUB_OUTPUT
+            echo "file=services/${{ matrix.image }}/Dockerfile" >> $GITHUB_OUTPUT
+          elif [[ "${{ matrix.image }}" =~ -java-service$ ]]; then
             echo "context=." >> $GITHUB_OUTPUT
             echo "file=services/${{ matrix.image }}/Dockerfile" >> $GITHUB_OUTPUT
           else
