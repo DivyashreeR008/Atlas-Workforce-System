@@ -46,13 +46,7 @@ api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   return config;
 });
 
-let refreshing = false;
-let queue: Array<(token: string | null) => void> = [];
-
-function processQueue(token: string | null) {
-  queue.forEach((cb) => cb(token));
-  queue = [];
-}
+let refreshPromise: Promise<string | null> | null = null;
 
 api.interceptors.response.use(
   (res) => res,
@@ -64,38 +58,38 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    if (refreshing) {
-      return new Promise((resolve, reject) => {
-        queue.push((token) => {
-          if (!token) reject(error);
-          else {
-            original.headers.Authorization = `Bearer ${token}`;
-            resolve(api(original));
-          }
-        });
-      });
+    if (refreshPromise) {
+      const token = await refreshPromise;
+      if (token) {
+        original.headers.Authorization = `Bearer ${token}`;
+        return api(original);
+      }
+      return Promise.reject(error);
     }
 
     original._retry = true;
-    refreshing = true;
+    refreshPromise = axios
+      .post(`${API_BASE}/auth/refresh`)
+      .then(({ data }) => {
+        setTokens(data.token);
+        return data.token as string;
+      })
+      .catch((err) => {
+        clearAuth();
+        if (typeof window !== "undefined") {
+          const currentPath = window.location.pathname + window.location.search;
+          window.location.href = "/login?redirect=" + encodeURIComponent(currentPath);
+        }
+        return null;
+      })
+      .finally(() => {
+        refreshPromise = null;
+      });
 
-    try {
-      const { data } = await axios.post(`${API_BASE}/auth/refresh`);
-      setTokens(data.token);
-      processQueue(data.token);
-      original.headers.Authorization = `Bearer ${data.token}`;
-      return api(original);
-    } catch {
-      processQueue(null);
-      clearAuth();
-      if (typeof window !== "undefined") {
-        const currentPath = window.location.pathname + window.location.search;
-        window.location.href = "/login?redirect=" + encodeURIComponent(currentPath);
-      }
-      return Promise.reject(error);
-    } finally {
-      refreshing = false;
-    }
+    const token = await refreshPromise;
+    if (!token) return Promise.reject(error);
+    original.headers.Authorization = `Bearer ${token}`;
+    return api(original);
   }
 );
 
