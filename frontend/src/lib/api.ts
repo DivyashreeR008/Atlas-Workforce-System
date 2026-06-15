@@ -701,8 +701,16 @@ export const copilotApi = {
   chat: {
     send: (message: string, sessionId?: string) =>
       api.post("/copilot/chat", { message, sessionId }),
-    stream: (message: string, sessionId?: string) =>
-      api.post("/copilot/chat/stream", { message, sessionId }, { responseType: "stream" }),
+    stream: (message: string, sessionId?: string): Promise<Response> => {
+      const token = getAccessToken();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      return fetch(`${API_BASE}/copilot/chat/stream`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ message, sessionId }),
+      });
+    },
   },
   sessions: {
     list: () => api.get("/copilot/sessions"),
