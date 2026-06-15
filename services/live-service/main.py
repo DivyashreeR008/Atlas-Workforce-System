@@ -446,10 +446,57 @@ async def sse_staffing(request: Request): return await sse_channel("staffing", r
 @app.get("/api/v1/live/sse/executive")
 async def sse_executive(request: Request): return await sse_channel("executive", request)
 
+# ── WebSocket Auth ────────────────────────────────────────────────────────────
+
+async def verify_ws_token(websocket: WebSocket, token: Optional[str] = None) -> bool:
+    auth_header = websocket.headers.get("x-internal-auth")
+    token_str = token or auth_header
+    if not token_str:
+        await websocket.close(code=4001, reason="Missing authentication token")
+        return False
+
+    try:
+        parts = token_str.split(".")
+        if len(parts) != 3:
+            await websocket.close(code=4001, reason="Invalid token format")
+            return False
+
+        _header_b64, payload_b64, signature = parts
+        expected = hmac.new(
+            INTERNAL_JWT_SECRET.encode(),
+            f"{_header_b64}.{payload_b64}".encode(),
+            hashlib.sha256,
+        )
+        expected_sig = base64.urlsafe_b64encode(expected.digest()).rstrip(b"=").decode()
+
+        if not hmac.compare_digest(expected_sig, signature):
+            await websocket.close(code=4001, reason="Invalid token signature")
+            return False
+
+        padded = payload_b64 + "=" * (4 - len(payload_b64) % 4)
+        decoded = base64.urlsafe_b64decode(padded)
+        claims = json.loads(decoded)
+
+        exp = claims.get("exp", 0)
+        if exp and time.time() > exp:
+            await websocket.close(code=4001, reason="Token expired")
+            return False
+
+        websocket.state.user_id = claims.get("user_id", "")
+        websocket.state.user_role = claims.get("user_role", "employee")
+        websocket.state.tenant_id = claims.get("tenant_id", "default")
+        return True
+    except Exception:
+        await websocket.close(code=4001, reason="Invalid authentication")
+        return False
+
+
 # ── WebSocket Endpoints ─────────────────────────────────────────────────────
 
 @app.websocket("/api/v1/live/ws/{channel}")
-async def websocket_channel(websocket: WebSocket, channel: str):
+async def websocket_channel(websocket: WebSocket, channel: str, token: Optional[str] = Query(None)):
+    if not await verify_ws_token(websocket, token):
+        return
     await websocket.accept()
     manager.ws_clients[channel].add(websocket)
     try:
@@ -469,7 +516,9 @@ async def websocket_channel(websocket: WebSocket, channel: str):
 ws_handlers: dict[str, callable] = {}
 
 @app.websocket("/api/v1/live/ws/chat")
-async def websocket_chat(websocket: WebSocket):
+async def websocket_chat(websocket: WebSocket, token: Optional[str] = Query(None)):
+    if not await verify_ws_token(websocket, token):
+        return
     await websocket.accept()
     manager.ws_clients["chat"].add(websocket)
     try:
@@ -487,7 +536,9 @@ async def websocket_chat(websocket: WebSocket):
         manager.ws_clients["chat"].discard(websocket)
 
 @app.websocket("/api/v1/live/ws/presence")
-async def websocket_presence(websocket: WebSocket):
+async def websocket_presence(websocket: WebSocket, token: Optional[str] = Query(None)):
+    if not await verify_ws_token(websocket, token):
+        return
     await websocket.accept()
     manager.ws_clients["presence"].add(websocket)
     try:
