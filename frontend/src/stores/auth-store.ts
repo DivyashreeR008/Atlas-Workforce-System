@@ -32,15 +32,15 @@ export const useAuthStore = create<AuthState>()(
       login: async (email, password) => {
         set({ isLoading: true });
         try {
-          const { data } = await authApi.login(email, password);
-          setTokens(data.token);
-          setStoredUser(data.user);
+          const result = await authApi.login(email, password);
+          setTokens(result.token);
+          setStoredUser(result.user as User);
           await fetch("/api/auth/set-cookie", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token: data.token }),
+            body: JSON.stringify({ token: result.token }),
           });
-          set({ user: data.user, isLoading: false });
+          set({ user: result.user as User, isLoading: false });
         } catch (e) {
           set({ isLoading: false });
           throw e;
@@ -50,15 +50,15 @@ export const useAuthStore = create<AuthState>()(
         set({ isLoading: true });
         try {
           await authApi.register(payload);
-          const { data } = await authApi.login(payload.email, payload.password);
-          setTokens(data.token);
-          setStoredUser(data.user);
+          const result = await authApi.login(payload.email, payload.password);
+          setTokens(result.token);
+          setStoredUser(result.user as User);
           await fetch("/api/auth/set-cookie", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token: data.token }),
+            body: JSON.stringify({ token: result.token }),
           });
-          set({ user: data.user, isLoading: false });
+          set({ user: result.user as User, isLoading: false });
         } catch (e) {
           set({ isLoading: false });
           throw e;

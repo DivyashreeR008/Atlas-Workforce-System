@@ -2,10 +2,6 @@ import logging
 import os
 import threading
 import time
-import base64
-import hashlib
-import hmac
-import json
 from contextlib import asynccontextmanager
 from uuid import UUID
 
@@ -17,7 +13,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from atlas_observability import (
     AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
-    configure_logging, get_logger
+    SecurityHeadersMiddleware,
+    configure_logging, get_logger, verify_internal_auth
 )
 
 from crud import (
@@ -88,9 +85,7 @@ def get_db() -> Session:
 
 INTERNAL_JWT_SECRET = os.environ.get("INTERNAL_JWT_SECRET", "")
 
-def verify_internal_auth(request: Request) -> dict:
-    if not INTERNAL_JWT_SECRET:
-        raise HTTPException(status_code=500, detail="Service not configured")
+
 
     auth_header = request.headers.get("x-internal-auth")
     if not auth_header:
@@ -186,6 +181,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(SecurityHeadersMiddleware)
 
 @app.middleware("http")
 async def internal_auth_middleware(request: Request, call_next):
@@ -197,7 +193,7 @@ async def internal_auth_middleware(request: Request, call_next):
         return JSONResponse(status_code=401, content={"error": "Missing internal authentication"})
 
     try:
-        claims = verify_internal_auth(request)
+        claims = verify_internal_auth(request, INTERNAL_JWT_SECRET)
     except HTTPException as e:
         return JSONResponse(status_code=e.status_code, content={"error": e.detail})
     except Exception:

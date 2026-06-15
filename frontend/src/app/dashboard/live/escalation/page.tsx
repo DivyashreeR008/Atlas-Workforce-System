@@ -1,6 +1,5 @@
 "use client";
 
-export const dynamic = "force-dynamic";
 
 import { useSSEChannel } from "@/hooks/use-realtime";
 import { LiveIndicator } from "@/components/live/live-indicator";

@@ -2,6 +2,9 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+rule_files:
+  - "alert.rules.yml"
+
 scrape_configs:
   - job_name: 'prometheus'
     static_configs:
@@ -34,3 +37,45 @@ scrape_configs:
   - job_name: 'ai-copilot-service'
     static_configs:
       - targets: ['ai-copilot-service:8015']
+
+  - job_name: 'employee-service'
+    static_configs:
+      - targets: ['employee-service:8001']
+
+  - job_name: 'payroll-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['payroll-service:8002']
+
+  - job_name: 'analytics-service'
+    static_configs:
+      - targets: ['analytics-service:8003']
+
+  - job_name: 'notification-service'
+    static_configs:
+      - targets: ['notification-service:8004']
+
+  - job_name: 'attendance-service'
+    static_configs:
+      - targets: ['attendance-service:8005']
+
+  - job_name: 'leave-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['leave-service:8006']
+
+  - job_name: 'security-service'
+    static_configs:
+      - targets: ['security-service:8050']
+
+  - job_name: 'integration-service'
+    static_configs:
+      - targets: ['integration-service:8016']
+
+  - job_name: 'employee-lifecycle-service'
+    static_configs:
+      - targets: ['employee-lifecycle-service:8020']
+
+  - job_name: 'ai-service'
+    static_configs:
+      - targets: ['ai-service:8065']

@@ -1,4 +1,5 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from "axios";
+import { z } from "zod";
 import type {
   Course,
   Certification,
@@ -98,18 +99,44 @@ api.interceptors.response.use(
   }
 );
 
+function validateResponse<T>(schema: z.ZodType<T>, data: unknown): T {
+  const result = schema.safeParse(data);
+  if (!result.success) {
+    console.error("API response validation failed:", result.error.issues);
+    throw new Error("Invalid API response format");
+  }
+  return result.data;
+}
+
+const loginResponseSchema = z.object({
+  token: z.string().min(1),
+  user: z.object({
+    id: z.number(),
+    email: z.string().email(),
+    name: z.string(),
+    role: z.enum(["admin", "hr", "manager", "employee"]).optional(),
+  }),
+});
+
 export const authApi = {
-  login: (email: string, password: string) =>
-    api.post("/auth/login", { email, password }),
-  register: (data: {
+  login: async (email: string, password: string) => {
+    const res = await api.post("/auth/login", { email, password });
+    return validateResponse(loginResponseSchema, res.data);
+  },
+  register: async (data: {
     email: string;
     password: string;
     name: string;
     department?: string;
     position?: string;
-  }) => api.post("/auth/register", data),
-  refresh: () =>
-    api.post("/auth/refresh"),
+  }) => {
+    const res = await api.post("/auth/register", data);
+    return validateResponse(loginResponseSchema, res.data);
+  },
+  refresh: async () => {
+    const res = await api.post("/auth/refresh");
+    return validateResponse(loginResponseSchema, res.data);
+  },
   logout: () =>
     api.post("/auth/logout"),
 };

@@ -1,6 +1,5 @@
 "use client";
 
-export const dynamic = "force-dynamic";
 
 import { useQuery } from "@tanstack/react-query";
 import { Database, Shield, Tag, User, Calendar, Lock, Eye } from "lucide-react";
