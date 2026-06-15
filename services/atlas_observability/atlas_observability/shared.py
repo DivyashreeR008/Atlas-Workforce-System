@@ -1,7 +1,13 @@
+import base64
+import hashlib
+import hmac
+import json
+import time
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
+from fastapi import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
@@ -26,3 +32,43 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         response.headers["X-Correlation-Id"] = correlation_id
         return response
+
+
+def verify_internal_auth(request: Request, jwt_secret: str) -> dict:
+    if not jwt_secret:
+        raise HTTPException(status_code=500, detail="Service not configured")
+
+    auth_header = request.headers.get("x-internal-auth")
+    if not auth_header:
+        raise HTTPException(status_code=401, detail="Missing internal authentication")
+
+    try:
+        parts = auth_header.split(".")
+        if len(parts) != 3:
+            raise HTTPException(status_code=401, detail="Invalid token format")
+
+        _header_b64, payload_b64, signature = parts
+
+        expected = hmac.new(
+            jwt_secret.encode(),
+            f"{_header_b64}.{payload_b64}".encode(),
+            hashlib.sha256,
+        )
+        expected_sig = base64.urlsafe_b64encode(expected.digest()).rstrip(b"=").decode()
+
+        if not hmac.compare_digest(expected_sig, signature):
+            raise HTTPException(status_code=401, detail="Invalid token signature")
+
+        padded = payload_b64 + "=" * (4 - len(payload_b64) % 4)
+        decoded = base64.urlsafe_b64decode(padded)
+        claims = json.loads(decoded)
+
+        exp = claims.get("exp", 0)
+        if exp and time.time() > exp:
+            raise HTTPException(status_code=401, detail="Token expired")
+
+        return claims
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid internal authentication")

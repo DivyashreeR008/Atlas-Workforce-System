@@ -2,6 +2,7 @@ import json
 import logging
 import uuid
 import random
+import hmac
 from contextvars import ContextVar
 from fastapi import FastAPI, HTTPException, Body, Query, Header, Depends, Request
 from fastapi.openapi.utils import get_openapi
@@ -17,7 +18,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import pymongo.errors
 from contextlib import asynccontextmanager
 import pika
-from atlas_observability import AtlasMetricsMiddleware
+from atlas_observability import AtlasMetricsMiddleware, SecurityHeadersMiddleware
 
 # ------------------------------------------------
 # Structured Logger
@@ -112,27 +113,7 @@ async def add_correlation_id(request: Request, call_next):
 
 
 app.add_middleware(AtlasMetricsMiddleware)
-
-
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-    openapi_schema = get_openapi(
-        title="Atlas Employee Service",
-        version=SERVICE_VERSION,
-        description="Manages employee records, directory, and lifecycle. Part of the Atlas Workforce System.",
-        routes=app.routes,
-    )
-    openapi_schema["servers"] = [{"url": "http://localhost:8001", "description": "Local development"}]
-    openapi_schema["tags"] = [
-        {"name": "employees", "description": "Employee CRUD operations"},
-        {"name": "health", "description": "Service health check"},
-    ]
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
-
-
-app.openapi = custom_openapi
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 # ------------------------------------------------
@@ -155,7 +136,7 @@ def validate_search_param(search: Optional[str]) -> Optional[str]:
 # ------------------------------------------------
 async def verify_internal_key(request: Request):
     x_internal_key = request.headers.get("X-Internal-Key")
-    if not x_internal_key or x_internal_key != INTERNAL_KEY:
+    if not x_internal_key or not hmac.compare_digest(x_internal_key, INTERNAL_KEY):
         log_event("warning", "auth.invalid_internal_key")
         raise HTTPException(status_code=403, detail="Invalid or missing internal key")
     return x_internal_key

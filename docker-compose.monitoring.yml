@@ -6,6 +6,8 @@ services:
     container_name: prometheus
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./alert.rules.yml:/etc/prometheus/alert.rules.yml
+      - prometheus_data:/prometheus
     ports:
       - "9090:9090"
     networks:
@@ -18,10 +20,32 @@ services:
       - "3001:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-} # REQUIRED: set GRAFANA_ADMIN_PASSWORD in production
+      - GF_INSTALL_PLUGINS=
+    volumes:
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus
     networks:
       - atlas-network
+
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki-config.yml:/etc/loki/loki-config.yml
+      - loki_data:/loki
+    command: -config.file=/etc/loki/loki-config.yml
+    networks:
+      - atlas-network
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
 
 networks:
   atlas-network:
