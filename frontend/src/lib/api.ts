@@ -36,6 +36,7 @@ const API_BASE =
 export const api = axios.create({
   baseURL: API_BASE,
   headers: { "Content-Type": "application/json" },
+  withCredentials: true,
 });
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
@@ -86,10 +87,23 @@ api.interceptors.response.use(
         refreshPromise = null;
       });
 
-    const token = await refreshPromise;
-    if (!token) return Promise.reject(error);
-    original.headers.Authorization = `Bearer ${token}`;
-    return api(original);
+    try {
+      const { data } = await api.post("/auth/refresh");
+      setTokens(data.token);
+      processQueue(data.token);
+      original.headers.Authorization = `Bearer ${data.token}`;
+      return api(original);
+    } catch {
+      processQueue(null);
+      clearAuth();
+      if (typeof window !== "undefined") {
+        const currentPath = window.location.pathname + window.location.search;
+        window.location.href = "/login?redirect=" + encodeURIComponent(currentPath);
+      }
+      return Promise.reject(error);
+    } finally {
+      refreshing = false;
+    }
   }
 );
 
@@ -104,6 +118,7 @@ function validateResponse<T>(schema: z.ZodType<T>, data: unknown): T {
 
 const loginResponseSchema = z.object({
   token: z.string().min(1),
+  refreshToken: z.string().optional(),
   user: z.object({
     id: z.number(),
     email: z.string().email(),
