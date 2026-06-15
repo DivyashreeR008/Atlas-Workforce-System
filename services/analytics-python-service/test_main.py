@@ -14,12 +14,16 @@ INTERNAL_JWT_SECRET = "test-secret"
 
 
 def _make_internal_token(secret: str) -> str:
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).rstrip(b"=").decode()
-    payload = base64.urlsafe_b64encode(json.dumps({"sub": "test", "exp": int(time.time()) + 3600}).encode()).rstrip(b"=").decode()
-    sig = base64.urlsafe_b64encode(
-        hmac.new(secret.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
+    hdr = base64.urlsafe_b64encode(
+        json.dumps({"alg": "HS256", "typ": "JWT"}).encode()
     ).rstrip(b"=").decode()
-    return f"{header}.{payload}.{sig}"
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"sub": "test", "exp": int(time.time()) + 3600}).encode()
+    ).rstrip(b"=").decode()
+    sig = base64.urlsafe_b64encode(
+        hmac.new(secret.encode(), f"{hdr}.{payload}".encode(), hashlib.sha256).digest()
+    ).rstrip(b"=").decode()
+    return f"{hdr}.{payload}.{sig}"
 
 
 @pytest.fixture
