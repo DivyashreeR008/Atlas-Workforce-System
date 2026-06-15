@@ -16,12 +16,12 @@ export default function DashboardLayout({
     <Suspense fallback={null}>
       <AuthGuard>
         <SidebarProvider>
-          <div className="flex h-screen overflow-hidden bg-background">
+          <div className="flex h-screen w-full overflow-hidden bg-background">
             <Sidebar />
             <div className="flex flex-1 flex-col overflow-hidden">
               <TopBar />
               <main className="flex-1 overflow-y-auto">
-                <div className="mx-auto w-full max-w-7xl px-4 py-4 md:px-6 md:py-6">
+                <div className="w-full px-4 py-4 md:px-6 md:py-6">
                   <ErrorBoundary>{children}</ErrorBoundary>
                 </div>
               </main>
