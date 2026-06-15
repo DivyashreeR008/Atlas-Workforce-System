@@ -1,6 +1,7 @@
 # ⚠️  WARNING: Default passwords and secrets are for DEVELOPMENT ONLY.
 # Before deploying to production, set ALL of the following environment variables:
 #   JWT_SECRET, INTERNAL_JWT_SECRET, POSTGRES_PASSWORD, MONGO_PASSWORD,
+#   MONGO_USER, REDIS_PASSWORD, RABBITMQ_USER, RABBITMQ_PASS,
 #   ADMIN_DEFAULT_PASSWORD, AUDIT_INTERNAL_KEY, SCIM_API_KEY, SECURITY_INTERNAL_KEY.
 # Generate strong secrets: openssl rand -base64 64
 services:
@@ -26,9 +27,10 @@ services:
   mongodb:
     image: mongo:6
     container_name: atlas-mongodb
+    user: "1001:1001"
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-admin_password}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-changeme_mongo_pass}
       MONGO_INITDB_DATABASE: ${MONGO_DB:-atlas_db}
     ports:
       - "27017:27017"
@@ -40,6 +42,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: atlas-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme_redis_pass}
+    user: "1001:1001"
     ports:
       - "6379:6379"
     networks:
@@ -49,8 +53,8 @@ services:
     image: rabbitmq:3-management-alpine
     container_name: atlas-rabbitmq
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-atlas_rabbit}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-changeme_rabbit_pass}
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -140,7 +144,7 @@ services:
       - NOTIFICATION_SERVICE_URL=http://notification-service:8004
       - ATTENDANCE_SERVICE_URL=http://attendance-service:8005
       - LEAVE_SERVICE_URL=http://leave-service:8006
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-changeme_redis_pass}@redis:6379
       - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET:-atlas-internal-jwt-secret-change-me}
       - ATS_SERVICE_URL=http://ats-service:8012
       - LMS_SERVICE_URL=http://lms-service:8013
@@ -197,7 +201,7 @@ services:
     ports:
       - "8001:8001"
     environment:
-      - MONGO_URL=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-admin_password}@mongodb:27017/${MONGO_DB:-atlas_db}?authSource=admin
+      - MONGO_URL=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-changeme_mongo_pass}@mongodb:27017/${MONGO_DB:-atlas_db}?authSource=admin
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
     networks:
       - atlas-network
