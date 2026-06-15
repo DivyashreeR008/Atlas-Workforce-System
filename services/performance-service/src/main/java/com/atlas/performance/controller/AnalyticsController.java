@@ -1,5 +1,6 @@
 package com.atlas.performance.controller;
 
+import com.atlas.performance.security.RequiresRole;
 import com.atlas.performance.service.PerformanceService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -17,24 +18,28 @@ public class AnalyticsController {
         this.service = service;
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/overview")
     public ResponseEntity<Map<String, Object>> getOverview(
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
         return ResponseEntity.ok(service.getAnalyticsOverview(tenantId));
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/department-ratings")
     public ResponseEntity<Map<String, Object>> getDepartmentRatings(
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
         return ResponseEntity.ok(service.getDepartmentRatings(tenantId));
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/goal-completion")
     public ResponseEntity<Map<String, Object>> getGoalCompletion(
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
         return ResponseEntity.ok(service.getGoalCompletionRates(tenantId));
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/succession-readiness")
     public ResponseEntity<Map<String, Object>> getSuccessionReadiness(
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {

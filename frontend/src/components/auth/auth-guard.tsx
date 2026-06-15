@@ -29,7 +29,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
         router.replace("/login?redirect=" + encodeURIComponent(redirect));
       } else {
         const currentPath = window.location.pathname + window.location.search;
-        if (currentPath !== "/login") {
+        if (window.location.pathname !== "/login") {
           router.replace("/login?redirect=" + encodeURIComponent(currentPath));
         } else {
           router.replace("/login");

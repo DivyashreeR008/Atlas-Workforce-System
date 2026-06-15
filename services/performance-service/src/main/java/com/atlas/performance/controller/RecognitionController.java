@@ -1,6 +1,7 @@
 package com.atlas.performance.controller;
 
 import com.atlas.performance.model.Recognition;
+import com.atlas.performance.security.RequiresRole;
 import com.atlas.performance.service.PerformanceService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -19,6 +20,7 @@ public class RecognitionController {
         this.service = service;
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping
     public ResponseEntity<List<Recognition>> listRecognitions(
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId,
@@ -27,6 +29,7 @@ public class RecognitionController {
         return ResponseEntity.ok(service.getRecognitions(tenantId, employeeId, category));
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @PostMapping
     public ResponseEntity<?> giveRecognition(
             @RequestBody Recognition recognition,
@@ -38,6 +41,7 @@ public class RecognitionController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/wall")
     public ResponseEntity<List<Recognition>> getRecognitionWall(
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
