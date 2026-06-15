@@ -192,6 +192,9 @@ jobs:
             echo "context=services/${{ matrix.image }}" >> $GITHUB_OUTPUT
             echo "dockerfile=services/${{ matrix.image }}/Dockerfile" >> $GITHUB_OUTPUT
           fi
+      - name: Lowercase repository name for Docker tags
+        id: repo_lower
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
@@ -199,8 +202,8 @@ jobs:
           dockerfile: ${{ steps.context.outputs.dockerfile }}
           push: ${{ github.event_name == 'push' }}
           tags: |
-            ${{ env.REGISTRY }}/${{ lower(github.repository) }}/${{ matrix.image }}:${{ env.IMAGE_TAG }}
-            ${{ env.REGISTRY }}/${{ lower(github.repository) }}/${{ matrix.image }}:latest
+            ${{ env.REGISTRY }}/${{ steps.repo_lower.outputs.name }}/${{ matrix.image }}:${{ env.IMAGE_TAG }}
+            ${{ env.REGISTRY }}/${{ steps.repo_lower.outputs.name }}/${{ matrix.image }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
