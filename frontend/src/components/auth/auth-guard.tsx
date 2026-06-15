@@ -3,13 +3,11 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { isAuthenticated, isInitialized, initializeAuth } from "@/lib/auth";
-import { useAuthStore } from "@/stores/auth-store";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const user = useAuthStore((s) => s.user);
   const [ready, setReady] = useState(isInitialized());
 
   useEffect(() => {
@@ -20,7 +18,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const authenticated = ready && (isAuthenticated() || !!user);
+  const authenticated = ready && isAuthenticated();
 
   useEffect(() => {
     if (ready && !authenticated) {

@@ -36,6 +36,7 @@ const API_BASE =
 export const api = axios.create({
   baseURL: API_BASE,
   headers: { "Content-Type": "application/json" },
+  withCredentials: true,
 });
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
@@ -80,7 +81,7 @@ api.interceptors.response.use(
     refreshing = true;
 
     try {
-      const { data } = await axios.post(`${API_BASE}/auth/refresh`);
+      const { data } = await api.post("/auth/refresh");
       setTokens(data.token);
       processQueue(data.token);
       original.headers.Authorization = `Bearer ${data.token}`;
@@ -110,6 +111,7 @@ function validateResponse<T>(schema: z.ZodType<T>, data: unknown): T {
 
 const loginResponseSchema = z.object({
   token: z.string().min(1),
+  refreshToken: z.string().optional(),
   user: z.object({
     id: z.number(),
     email: z.string().email(),
