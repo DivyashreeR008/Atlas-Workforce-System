@@ -130,13 +130,17 @@ jobs:
         working-directory: services/${{ matrix.service }}
         continue-on-error: true
       - name: Set test environment variables
-        if: matrix.service == 'employee-python-service'
         run: |
-          echo "MONGO_USER=test" >> $GITHUB_ENV
-          echo "MONGO_PASSWORD=test" >> $GITHUB_ENV
-          echo "INTERNAL_KEY=test-internal-key" >> $GITHUB_ENV
           echo "RABBITMQ_USER=guest" >> $GITHUB_ENV
           echo "RABBITMQ_PASSWORD=guest" >> $GITHUB_ENV
+          if [[ "${{ matrix.service }}" == "employee-python-service" ]]; then
+            echo "MONGO_USER=test" >> $GITHUB_ENV
+            echo "MONGO_PASSWORD=test" >> $GITHUB_ENV
+            echo "INTERNAL_KEY=test-internal-key" >> $GITHUB_ENV
+          elif [[ "${{ matrix.service }}" == "analytics-python-service" ]]; then
+            echo "POSTGRES_USER=test" >> $GITHUB_ENV
+            echo "POSTGRES_PASSWORD=test" >> $GITHUB_ENV
+          fi
       - name: Test Python
         run: pytest -v
         working-directory: services/${{ matrix.service }}
