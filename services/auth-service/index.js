@@ -57,7 +57,7 @@ const AUDIT_INTERNAL_KEY = process.env.AUDIT_INTERNAL_KEY;
 const SAML_IDP_SSO_URL = process.env.SAML_IDP_SSO_URL || 'https://idp.example.com/sso';
 const SAML_IDP_ENTITY_ID = process.env.SAML_IDP_ENTITY_ID || 'https://idp.example.com/metadata';
 const SAML_IDP_CERT = (process.env.SAML_IDP_CERT || '').replace(/\\n/g, '\n');
-const SCIM_API_KEY = process.env.SCIM_API_KEY;
+const SCIM_API_KEY = process.env.SCIM_API_KEY || 'change-scim-api-key-in-production';
 
 if (!JWT_SECRET) {
   console.error('FATAL: JWT_SECRET environment variable is required');
