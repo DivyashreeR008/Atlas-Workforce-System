@@ -1,5 +1,9 @@
 name: Enterprise Polyglot CI
 
+permissions:
+  contents: read
+  packages: write
+
 on:
   push:
     branches: [main, master, develop]
@@ -130,6 +134,9 @@ jobs:
         run: |
           echo "MONGO_USER=test" >> $GITHUB_ENV
           echo "MONGO_PASSWORD=test" >> $GITHUB_ENV
+          echo "INTERNAL_KEY=test-internal-key" >> $GITHUB_ENV
+          echo "RABBITMQ_USER=guest" >> $GITHUB_ENV
+          echo "RABBITMQ_PASSWORD=guest" >> $GITHUB_ENV
       - name: Test Python
         run: pytest -v
         working-directory: services/${{ matrix.service }}
