@@ -69,9 +69,8 @@ function RecordsTab() {
   const addToast = useToastStore((s) => s.toast);
   const [clockingIn, setClockingIn] = useState(false);
   const [clockingOut, setClockingOut] = useState(false);
-  const [employeeId, setEmployeeId] = useState("");
-  const [geoStatus, setGeoStatus] = useState<GeoVerifyResult | null>(null);
   const [gpsLoading, setGpsLoading] = useState(false);
+  const [geoStatus, setGeoStatus] = useState<GeoVerifyResult | null>(null);
 
   const { data: records, isLoading } = useQuery({
     queryKey: ["attendance"],
@@ -89,16 +88,16 @@ function RecordsTab() {
     },
   });
 
-  useEffect(() => {
-    const stored = localStorage.getItem("auth-storage");
-    if (stored) {
-      try {
+  const [employeeId, setEmployeeId] = useState(() => {
+    try {
+      const stored = localStorage.getItem("auth-storage");
+      if (stored) {
         const parsed = JSON.parse(stored);
-        const user = parsed?.state?.user;
-        if (user?.email) setEmployeeId(user.email);
-      } catch {}
-    }
-  }, []);
+        return parsed?.state?.user?.email ?? "";
+      }
+    } catch {}
+    return "";
+  });
 
   const getGPS = useCallback(async () => {
     if (!navigator.geolocation) return null;

@@ -1,11 +1,13 @@
 from datetime import datetime, date
 from decimal import Decimal
-from typing import List, Optional
+from typing import Generic, List, Optional, TypeVar
 from pydantic import BaseModel, Field
 
+T = TypeVar("T")
 
-class PaginatedResponse(BaseModel):
-    items: List
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    items: list[T]
     total: int
     page: int
     page_size: int
@@ -657,3 +659,16 @@ class HiringPipelineResponse(BaseModel):
     pipeline_stages: List[dict] = []
     upcoming_interviews: List[dict] = []
     recent_activities: List[dict] = []
+
+
+# Typed paginated response aliases
+JobListResponse = PaginatedResponse[JobResponse]
+CandidateListResponse = PaginatedResponse[CandidateResponse]
+ApplicationListResponse = PaginatedResponse[ApplicationListResponse]
+InterviewListResponse = PaginatedResponse[InterviewResponse]
+OfferListResponse = PaginatedResponse[OfferResponse]
+OfferTemplateListResponse = PaginatedResponse[OfferTemplateResponse]
+ResumeListResponse = PaginatedResponse[ResumeUploadResponse]
+ReferralListResponse = PaginatedResponse[ReferralResponse]
+CampusDriveListResponse = PaginatedResponse[CampusDriveResponse]
+CampusRegistrationListResponse = PaginatedResponse[CampusRegistrationResponse]

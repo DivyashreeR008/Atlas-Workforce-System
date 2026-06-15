@@ -36,6 +36,7 @@ const API_BASE =
 export const api = axios.create({
   baseURL: API_BASE,
   headers: { "Content-Type": "application/json" },
+  withCredentials: true,
 });
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
@@ -46,13 +47,7 @@ api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   return config;
 });
 
-let refreshing = false;
-let queue: Array<(token: string | null) => void> = [];
-
-function processQueue(token: string | null) {
-  queue.forEach((cb) => cb(token));
-  queue = [];
-}
+let refreshPromise: Promise<string | null> | null = null;
 
 api.interceptors.response.use(
   (res) => res,
@@ -64,38 +59,38 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    if (refreshing) {
-      return new Promise((resolve, reject) => {
-        queue.push((token) => {
-          if (!token) reject(error);
-          else {
-            original.headers.Authorization = `Bearer ${token}`;
-            resolve(api(original));
-          }
-        });
-      });
+    if (refreshPromise) {
+      const token = await refreshPromise;
+      if (token) {
+        original.headers.Authorization = `Bearer ${token}`;
+        return api(original);
+      }
+      return Promise.reject(error);
     }
 
     original._retry = true;
-    refreshing = true;
+    refreshPromise = axios
+      .post(`${API_BASE}/auth/refresh`, {}, { withCredentials: true })
+      .then(({ data }) => {
+        setTokens(data.token);
+        return data.token as string;
+      })
+      .catch(() => {
+        clearAuth();
+        if (typeof window !== "undefined") {
+          const currentPath = window.location.pathname + window.location.search;
+          window.location.href = "/login?redirect=" + encodeURIComponent(currentPath);
+        }
+        return null;
+      })
+      .finally(() => {
+        refreshPromise = null;
+      });
 
-    try {
-      const { data } = await axios.post(`${API_BASE}/auth/refresh`);
-      setTokens(data.token);
-      processQueue(data.token);
-      original.headers.Authorization = `Bearer ${data.token}`;
-      return api(original);
-    } catch {
-      processQueue(null);
-      clearAuth();
-      if (typeof window !== "undefined") {
-        const currentPath = window.location.pathname + window.location.search;
-        window.location.href = "/login?redirect=" + encodeURIComponent(currentPath);
-      }
-      return Promise.reject(error);
-    } finally {
-      refreshing = false;
-    }
+    const token = await refreshPromise;
+    if (!token) return Promise.reject(error);
+    original.headers.Authorization = `Bearer ${token}`;
+    return api(original);
   }
 );
 
@@ -110,6 +105,7 @@ function validateResponse<T>(schema: z.ZodType<T>, data: unknown): T {
 
 const loginResponseSchema = z.object({
   token: z.string().min(1),
+  refreshToken: z.string().optional(),
   user: z.object({
     id: z.number(),
     email: z.string().email(),
@@ -692,8 +688,16 @@ export const copilotApi = {
   chat: {
     send: (message: string, sessionId?: string) =>
       api.post("/copilot/chat", { message, sessionId }),
-    stream: (message: string, sessionId?: string) =>
-      api.post("/copilot/chat/stream", { message, sessionId }, { responseType: "stream" }),
+    stream: (message: string, sessionId?: string): Promise<Response> => {
+      const token = getAccessToken();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      return fetch(`${API_BASE}/copilot/chat/stream`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ message, sessionId }),
+      });
+    },
   },
   sessions: {
     list: () => api.get("/copilot/sessions"),

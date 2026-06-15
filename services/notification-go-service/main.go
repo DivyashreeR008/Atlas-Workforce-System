@@ -110,12 +110,22 @@ var (
 	mutex     = &sync.Mutex{}
 )
 
-func validateJWT(tokenString string) (jwt.MapClaims, error) {
+type wsClaims struct {
+	jwt.RegisteredClaims
+	TenantID string `json:"tenant_id"`
+}
+
+type internalAuthClaims struct {
+	jwt.RegisteredClaims
+	TenantID string `json:"tenant_id"`
+}
+
+func validateJWT(tokenString string) (*wsClaims, error) {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
 		return nil, fmt.Errorf("JWT_SECRET not configured")
 	}
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &wsClaims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
@@ -124,10 +134,11 @@ func validateJWT(tokenString string) (jwt.MapClaims, error) {
 	if err != nil {
 		return nil, err
 	}
-	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-		return claims, nil
+	claims, ok := token.Claims.(*wsClaims)
+	if !ok {
+		return nil, fmt.Errorf("invalid token claims")
 	}
-	return nil, fmt.Errorf("invalid token")
+	return claims, nil
 }
 
 func internalAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -144,27 +155,26 @@ func internalAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		token, err := jwt.Parse(internalToken, func(token *jwt.Token) (interface{}, error) {
+		token, err := jwt.ParseWithClaims(internalToken, &internalAuthClaims{}, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
 			return []byte(internalKey), nil
 		})
 
-		if err != nil || !token.Valid {
+		if err != nil {
 			http.Error(w, `{"error":"Invalid internal authentication"}`, http.StatusUnauthorized)
 			return
 		}
 
-		claims, ok := token.Claims.(jwt.MapClaims)
+		claims, ok := token.Claims.(*internalAuthClaims)
 		if !ok {
 			http.Error(w, `{"error":"Invalid token claims"}`, http.StatusUnauthorized)
 			return
 		}
 
-		tenantID, _ := claims["tenant_id"].(string)
-		if tenantID != "" {
-			r.Header.Set("X-Tenant-Id", tenantID)
+		if claims.TenantID != "" {
+			r.Header.Set("X-Tenant-Id", claims.TenantID)
 		}
 
 		next(w, r)
@@ -236,7 +246,7 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID, _ := claims["tenant_id"].(string)
+	tenantID := claims.TenantID
 	if tenantID == "" {
 		tenantID = "default"
 	}

@@ -2,6 +2,7 @@ package com.atlas.performance.controller;
 
 import com.atlas.performance.model.SuccessionCandidate;
 import com.atlas.performance.model.SuccessionPlan;
+import com.atlas.performance.security.RequiresRole;
 import com.atlas.performance.service.PerformanceService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -20,6 +21,7 @@ public class SuccessionController {
         this.service = service;
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/plans")
     public ResponseEntity<List<SuccessionPlan>> listPlans(
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId,
@@ -28,6 +30,7 @@ public class SuccessionController {
         return ResponseEntity.ok(service.getSuccessionPlans(tenantId, department, status));
     }
 
+    @RequiresRole({"admin", "hr"})
     @PostMapping("/plans")
     public ResponseEntity<?> createPlan(
             @RequestBody SuccessionPlan plan,
@@ -39,6 +42,7 @@ public class SuccessionController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/plans/{id}")
     public ResponseEntity<?> getPlan(
             @PathVariable String id,
@@ -50,6 +54,7 @@ public class SuccessionController {
         }
     }
 
+    @RequiresRole({"admin", "hr"})
     @PutMapping("/plans/{id}")
     public ResponseEntity<?> updatePlan(
             @PathVariable String id,
@@ -62,6 +67,7 @@ public class SuccessionController {
         }
     }
 
+    @RequiresRole({"admin", "hr"})
     @DeleteMapping("/plans/{id}")
     public ResponseEntity<?> deletePlan(
             @PathVariable String id,
@@ -74,6 +80,7 @@ public class SuccessionController {
         }
     }
 
+    @RequiresRole({"admin", "hr"})
     @PostMapping("/candidates")
     public ResponseEntity<?> addCandidate(
             @RequestBody SuccessionCandidate candidate,
@@ -85,6 +92,7 @@ public class SuccessionController {
         }
     }
 
+    @RequiresRole({"admin", "hr"})
     @PutMapping("/candidates/{id}")
     public ResponseEntity<?> updateCandidate(
             @PathVariable String id,
@@ -97,6 +105,7 @@ public class SuccessionController {
         }
     }
 
+    @RequiresRole({"admin", "hr"})
     @DeleteMapping("/candidates/{id}")
     public ResponseEntity<?> removeCandidate(
             @PathVariable String id,
@@ -109,6 +118,7 @@ public class SuccessionController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/readiness/{employeeId}")
     public ResponseEntity<List<SuccessionCandidate>> getEmployeeReadiness(
             @PathVariable String employeeId,

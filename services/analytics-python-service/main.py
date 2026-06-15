@@ -98,7 +98,7 @@ async def internal_auth_middleware(request: Request, call_next):
         return JSONResponse(status_code=401, content={"error": "Missing internal authentication"})
 
     try:
-        claims = verify_internal_auth(request, INTERNAL_JWT_SECRET)
+        verify_internal_auth(request, INTERNAL_JWT_SECRET)
     except HTTPException as e:
         return JSONResponse(status_code=e.status_code, content={"error": e.detail})
     except Exception:
@@ -107,8 +107,8 @@ async def internal_auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-POSTGRES_USER = os.environ.get("POSTGRES_USER", "atlas_user")
-POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "atlas_password")
+POSTGRES_USER = os.environ["POSTGRES_USER"]
+POSTGRES_PASSWORD = os.environ["POSTGRES_PASSWORD"]
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "postgres")
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "atlas_db")
 DATABASE_URL = os.environ.get(
@@ -134,8 +134,8 @@ def health_check():
 
 RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "localhost")
 RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", "5672"))
-RABBITMQ_USER = os.environ.get("RABBITMQ_USER", "guest")
-RABBITMQ_PASSWORD = os.environ.get("RABBITMQ_PASSWORD", "guest")
+RABBITMQ_USER = os.environ["RABBITMQ_USER"]
+RABBITMQ_PASSWORD = os.environ["RABBITMQ_PASSWORD"]
 
 EMPLOYEE_SERVICE_URL = os.environ.get("EMPLOYEE_SERVICE_URL", "http://employee-service:8001")
 
@@ -648,8 +648,12 @@ def get_risk_dashboard(x_tenant_id: str = Header("default", alias="X-Tenant-Id")
     }
 
 
-@app.get("/api/v1/payroll/verify/{period}", tags=["analytics"], summary="Verify payroll amounts against attendance records")
-def verify_payroll_consistency(period: str, x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
+@app.get("/api/v1/payroll/verify/{period}", tags=["analytics"],
+         summary="Verify payroll amounts against attendance records")
+def verify_payroll_consistency(
+    period: str,
+    x_tenant_id: str = Header("default", alias="X-Tenant-Id")
+):
     if not engine:
         raise HTTPException(status_code=500, detail="Database connection failed")
     try:
@@ -764,7 +768,6 @@ def get_activity_feed(x_tenant_id: str = Header("default", alias="X-Tenant-Id"))
     }
 
 
-
 def payroll_processed_consumer():
     def callback(ch, method, properties, body):
         try:
@@ -772,7 +775,8 @@ def payroll_processed_consumer():
             tenant_id = event.get("tenant_id", event.get("x-tenant-id", ""))
             routing_key = method.routing_key
             invalidate_payroll_cache(tenant_id)
-            logger.info("payroll.processed.cache_invalidated",
+            logger.info(
+                "payroll.processed.cache_invalidated",
                 extra={"tenant_id": tenant_id, "routing_key": routing_key})
         except Exception as e:
             logger.error("payroll.processed.error", extra={"error": str(e)})
@@ -808,7 +812,8 @@ def employee_deletion_consumer():
             if event.get("event") == "employee.deleted":
                 email = event.get("email", "")
                 tenant_id = event.get("tenant_id", "")
-                logger.info("employee.deleted.cascade",
+                logger.info(
+                    "employee.deleted.cascade",
                     extra={"email": email, "tenant_id": tenant_id,
                            "action": "cleanup_derived_data"})
         except Exception as e:

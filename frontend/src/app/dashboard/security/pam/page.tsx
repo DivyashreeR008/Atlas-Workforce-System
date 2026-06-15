@@ -247,7 +247,7 @@ export default function PAMPage() {
                         {req.jit_enabled && " JIT"} &middot;
                         {req.start_time && `Started ${new Date(req.start_time).toLocaleString()}`}
                       </p>
-                      {req.justification && <p className="text-xs text-muted-foreground italic">"{req.justification}"</p>}
+                      {req.justification && <p className="text-xs text-muted-foreground italic">&quot;{req.justification}&quot;</p>}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {req.status === "pending" && (

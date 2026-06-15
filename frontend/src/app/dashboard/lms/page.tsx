@@ -142,7 +142,7 @@ export default function LmsDashboard() {
             ) : (
               expiringCerts.map((cert) => {
                 const daysLeft = Math.ceil(
-                  (new Date(cert.expiryDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+                  (new Date(cert.expiryDate).getTime() - /* eslint-disable-line react-hooks/purity */ Date.now()) / (1000 * 60 * 60 * 24)
                 );
                 return (
                   <div

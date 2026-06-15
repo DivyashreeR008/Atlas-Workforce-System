@@ -5,7 +5,6 @@ import random
 import hmac
 from contextvars import ContextVar
 from fastapi import FastAPI, HTTPException, Body, Query, Header, Depends, Request
-from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import os
@@ -53,8 +52,8 @@ def log_event(level: str, event: str, **kwargs):
 # ------------------------------------------------
 # Configuration
 # ------------------------------------------------
-MONGO_USER = os.environ.get("MONGO_USER", "admin")
-MONGO_PASSWORD = os.environ.get("MONGO_PASSWORD", "admin_password")
+MONGO_USER = os.environ["MONGO_USER"]
+MONGO_PASSWORD = os.environ["MONGO_PASSWORD"]
 MONGO_HOST = os.environ.get("MONGO_HOST", "localhost")
 MONGO_DB = os.environ.get("MONGO_DB", "atlas_db")
 MONGO_URL = os.environ.get(
@@ -63,12 +62,12 @@ MONGO_URL = os.environ.get(
 )
 DB_NAME = "atlas_db"
 
-INTERNAL_KEY = os.environ.get("INTERNAL_KEY", "change-me-in-production")
+INTERNAL_KEY = os.environ["INTERNAL_KEY"]
 
 RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "localhost")
 RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", "5672"))
-RABBITMQ_USER = os.environ.get("RABBITMQ_USER", "guest")
-RABBITMQ_PASSWORD = os.environ.get("RABBITMQ_PASSWORD", "guest")
+RABBITMQ_USER = os.environ["RABBITMQ_USER"]
+RABBITMQ_PASSWORD = os.environ["RABBITMQ_PASSWORD"]
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -82,9 +81,21 @@ SEARCH_MAX_LENGTH = 200
 SEARCH_ALLOWED_CHARS = re.compile(r"^[a-zA-Z0-9 @._\-]+$")
 
 
+def sanitize_mongo_url(url: str) -> str:
+    from urllib.parse import urlparse, urlunparse
+    parsed = urlparse(url)
+    if parsed.password:
+        netloc = parsed.hostname
+        if parsed.port:
+            netloc = f"{parsed.hostname}:{parsed.port}"
+        parsed = parsed._replace(netloc=f"{parsed.username}:****@{netloc}" if parsed.username else netloc)
+        return urlunparse(parsed)
+    return url
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log_event("info", "service.starting", mongo_url=MONGO_URL)
+    log_event("info", "service.starting", mongo_url=sanitize_mongo_url(MONGO_URL))
     try:
         await employees_collection.create_index("email", unique=True)
         await employees_collection.create_index("name")

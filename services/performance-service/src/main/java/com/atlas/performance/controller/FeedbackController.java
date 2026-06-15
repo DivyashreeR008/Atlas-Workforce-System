@@ -1,6 +1,7 @@
 package com.atlas.performance.controller;
 
 import com.atlas.performance.model.Feedback360;
+import com.atlas.performance.security.RequiresRole;
 import com.atlas.performance.service.PerformanceService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -19,6 +20,7 @@ public class FeedbackController {
         this.service = service;
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping
     public ResponseEntity<List<Feedback360>> listFeedback(
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId,
@@ -27,6 +29,7 @@ public class FeedbackController {
         return ResponseEntity.ok(service.getFeedbackList(tenantId, employeeId, reviewerId));
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @PostMapping
     public ResponseEntity<?> submitFeedback(
             @RequestBody Feedback360 feedback,
@@ -38,6 +41,7 @@ public class FeedbackController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/{id}")
     public ResponseEntity<?> getFeedback(
             @PathVariable String id,
@@ -49,6 +53,7 @@ public class FeedbackController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/employee/{employeeId}/summary")
     public ResponseEntity<Map<String, Object>> getFeedbackSummary(
             @PathVariable String employeeId,

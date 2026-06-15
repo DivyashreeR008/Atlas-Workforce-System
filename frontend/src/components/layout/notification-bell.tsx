@@ -21,6 +21,13 @@ export function NotificationBell() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<number>(0);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const connectRef = useRef<(() => void) | null>(null);
+
+  const scheduleReconnect = useCallback(() => {
+    const delay = Math.min(1000 * 2 ** reconnectRef.current, 30000);
+    reconnectRef.current++;
+    setTimeout(() => connectRef.current?.(), delay);
+  }, []);
 
   const connect = useCallback(() => {
     try {
@@ -49,18 +56,18 @@ export function NotificationBell() {
       ws.onclose = () => {
         setConnected(false);
         wsRef.current = null;
-        const delay = Math.min(1000 * 2 ** reconnectRef.current, 30000);
-        reconnectRef.current++;
-        setTimeout(connect, delay);
+        scheduleReconnect();
       };
 
       ws.onerror = () => ws.close();
     } catch {
-      const delay = Math.min(1000 * 2 ** reconnectRef.current, 30000);
-      reconnectRef.current++;
-      setTimeout(connect, delay);
+      scheduleReconnect();
     }
-  }, []);
+  }, [scheduleReconnect]);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   useEffect(() => {
     connect();

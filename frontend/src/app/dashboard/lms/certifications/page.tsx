@@ -44,6 +44,7 @@ export default function CertificationsPage() {
   const expiringSoon = (certs ?? []).filter((c) => {
     if (c.status !== "active") return false;
     const daysLeft = Math.ceil(
+      // eslint-disable-next-line react-hooks/purity
       (new Date(c.expiryDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
     );
     return daysLeft <= 30 && daysLeft >= 0;
@@ -147,7 +148,7 @@ export default function CertificationsPage() {
                     )
                     : (certs ?? []).map((cert) => {
                         const daysLeft = Math.ceil(
-                          (new Date(cert.expiryDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+                          (new Date(cert.expiryDate).getTime() - /* eslint-disable-line react-hooks/purity */ Date.now()) / (1000 * 60 * 60 * 24)
                         );
                         return (
                           <tr

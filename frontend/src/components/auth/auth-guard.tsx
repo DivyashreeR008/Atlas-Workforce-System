@@ -1,34 +1,40 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { isAuthenticated } from "@/lib/auth";
-import { useAuthStore } from "@/stores/auth-store";
+import { isAuthenticated, isInitialized, initializeAuth } from "@/lib/auth";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const user = useAuthStore((s) => s.user);
-  const authenticated = isAuthenticated() || !!user;
+  const [ready, setReady] = useState(isInitialized());
 
   useEffect(() => {
-    if (!authenticated) {
+    if (!isInitialized()) {
+      initializeAuth().then(() => setReady(true));
+    }
+  }, []);
+
+  const authenticated = ready && isAuthenticated();
+
+  useEffect(() => {
+    if (ready && !authenticated) {
       const redirect = searchParams?.get("redirect");
       if (redirect) {
         router.replace("/login?redirect=" + encodeURIComponent(redirect));
       } else {
         const currentPath = window.location.pathname + window.location.search;
-        if (currentPath !== "/login") {
+        if (window.location.pathname !== "/login") {
           router.replace("/login?redirect=" + encodeURIComponent(currentPath));
         } else {
           router.replace("/login");
         }
       }
     }
-  }, [authenticated, router, searchParams]);
+  }, [authenticated, ready, router, searchParams]);
 
-  if (!authenticated) {
+  if (!ready || !authenticated) {
     return (
       <div className="flex h-screen items-center justify-center gap-4 p-8">
         <Skeleton className="h-12 w-12 rounded-full" />

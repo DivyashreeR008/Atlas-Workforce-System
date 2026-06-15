@@ -7,6 +7,13 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+type internalClaims struct {
+	jwt.RegisteredClaims
+	UserID   string `json:"user_id"`
+	UserRole string `json:"user_role"`
+	TenantID string `json:"tenant_id"`
+}
+
 var internalJWTSecret []byte
 
 func InitAuth() {
@@ -29,25 +36,25 @@ func AuthMiddleware() fiber.Handler {
 			return c.Status(401).JSON(fiber.Map{"error": "Missing internal authentication"})
 		}
 
-		token, err := jwt.Parse(internalToken, func(token *jwt.Token) (interface{}, error) {
+		token, err := jwt.ParseWithClaims(internalToken, &internalClaims{}, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fiber.NewError(401, "Invalid signing method")
 			}
 			return internalJWTSecret, nil
 		})
 
-		if err != nil || !token.Valid {
+		if err != nil {
 			return c.Status(401).JSON(fiber.Map{"error": "Invalid internal authentication"})
 		}
 
-		claims, ok := token.Claims.(jwt.MapClaims)
+		claims, ok := token.Claims.(*internalClaims)
 		if !ok {
 			return c.Status(401).JSON(fiber.Map{"error": "Invalid token claims"})
 		}
 
-		userID, _ := claims["user_id"].(string)
-		userRole, _ := claims["user_role"].(string)
-		tenantID, _ := claims["tenant_id"].(string)
+		userID := claims.UserID
+		userRole := claims.UserRole
+		tenantID := claims.TenantID
 
 		if tenantID == "" {
 			tenantID = "default"
