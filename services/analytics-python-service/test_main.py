@@ -1,14 +1,32 @@
 """Tests for the Analytics Service API using FastAPI TestClient."""
 
+import base64
+import hashlib
+import hmac
+import json
+import time
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from main import app
+
+INTERNAL_JWT_SECRET = "test-secret"
+
+
+def _make_internal_token(secret: str) -> str:
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).rstrip(b"=").decode()
+    payload = base64.urlsafe_b64encode(json.dumps({"sub": "test", "exp": int(time.time()) + 3600}).encode()).rstrip(b"=").decode()
+    sig = base64.urlsafe_b64encode(
+        hmac.new(secret.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
+    ).rstrip(b"=").decode()
+    return f"{header}.{payload}.{sig}"
 
 
 @pytest.fixture
 def client():
     transport = ASGITransport(app=app)
-    return AsyncClient(transport=transport, base_url="http://test")
+    token = _make_internal_token(INTERNAL_JWT_SECRET)
+    return AsyncClient(transport=transport, base_url="http://test", headers={"x-internal-auth": token})
 
 
 @pytest.mark.asyncio

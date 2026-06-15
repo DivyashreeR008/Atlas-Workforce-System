@@ -140,6 +140,7 @@ jobs:
           elif [[ "${{ matrix.service }}" == "analytics-python-service" ]]; then
             echo "POSTGRES_USER=test" >> $GITHUB_ENV
             echo "POSTGRES_PASSWORD=test" >> $GITHUB_ENV
+            echo "INTERNAL_JWT_SECRET=test-secret" >> $GITHUB_ENV
           fi
       - name: Test Python
         run: pytest -v
