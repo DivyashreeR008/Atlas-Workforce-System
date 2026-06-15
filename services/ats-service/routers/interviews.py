@@ -11,7 +11,7 @@ import schemas
 router = APIRouter(tags=["interviews"])
 
 
-@router.get("/interviews", response_model=schemas.PaginatedResponse, summary="List interviews")
+@router.get("/interviews", response_model=schemas.InterviewListResponse, summary="List interviews")
 def list_interviews(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),

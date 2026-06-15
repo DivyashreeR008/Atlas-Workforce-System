@@ -681,6 +681,24 @@ function WhatIfDialog({ open, onOpenChange }: {
 
 // ── Org Redesign Dialog ──────────────────────────────────────────────
 
+const DeptList = ({ items, setItems, label, color }: {
+  items: Array<{ name: string; headcount: number; cost: number }>;
+  setItems: (v: Array<{ name: string; headcount: number; cost: number }>) => void;
+  label: string; color: string;
+}) => (
+  <div>
+    <Label className="mb-1 block text-xs">{label}</Label>
+    {items.map((d, i) => (
+      <div key={i} className={`flex items-center gap-2 mb-1 ${color} rounded p-1`}>
+        <Input size={1} value={d.name} onChange={e => { const n = [...items]; n[i].name = e.target.value; setItems(n); }} className="h-7 text-xs flex-1" placeholder="Name" />
+        <Input size={1} type="number" value={d.headcount} onChange={e => { const n = [...items]; n[i].headcount = Number(e.target.value); setItems(n); }} className="h-7 text-xs w-20" placeholder="HC" />
+        <Input size={1} type="number" value={d.cost} onChange={e => { const n = [...items]; n[i].cost = Number(e.target.value); setItems(n); }} className="h-7 text-xs w-24" placeholder="Cost" />
+      </div>
+    ))}
+    <Button variant="outline" size="sm" className="w-full text-xs mt-1" onClick={() => setItems([...items, { name: "", headcount: 0, cost: 0 }])}><Plus className="h-3 w-3 mr-1" /> Add Department</Button>
+  </div>
+);
+
 function OrgRedesignDialog({ open, onOpenChange, onRunAnalysis }: {
   open: boolean; onOpenChange: (o: boolean) => void; onRunAnalysis?: (data: Record<string, unknown>) => void;
 }) {
@@ -710,24 +728,6 @@ function OrgRedesignDialog({ open, onOpenChange, onRunAnalysis }: {
     onSuccess: (data) => { queryClient.invalidateQueries({ queryKey: ["wp", "orgRedesigns"] }); addToast({ title: "Org redesign created" }); onRunAnalysis?.(data); onOpenChange(false); },
     onError: () => addToast({ title: "Error creating org redesign", description: "Please try again" }),
   });
-
-  const DeptList = ({ items, setItems, label, color }: {
-    items: Array<{ name: string; headcount: number; cost: number }>;
-    setItems: (v: Array<{ name: string; headcount: number; cost: number }>) => void;
-    label: string; color: string;
-  }) => (
-    <div>
-      <Label className="mb-1 block text-xs">{label}</Label>
-      {items.map((d, i) => (
-        <div key={i} className={`flex items-center gap-2 mb-1 ${color} rounded p-1`}>
-          <Input size={1} value={d.name} onChange={e => { const n = [...items]; n[i].name = e.target.value; setItems(n); }} className="h-7 text-xs flex-1" placeholder="Name" />
-          <Input size={1} type="number" value={d.headcount} onChange={e => { const n = [...items]; n[i].headcount = Number(e.target.value); setItems(n); }} className="h-7 text-xs w-20" placeholder="HC" />
-          <Input size={1} type="number" value={d.cost} onChange={e => { const n = [...items]; n[i].cost = Number(e.target.value); setItems(n); }} className="h-7 text-xs w-24" placeholder="Cost" />
-        </div>
-      ))}
-      <Button variant="outline" size="sm" className="w-full text-xs mt-1" onClick={() => setItems([...items, { name: "", headcount: 0, cost: 0 }])}><Plus className="h-3 w-3 mr-1" /> Add Department</Button>
-    </div>
-  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

@@ -53,24 +53,22 @@ export default function LeavePage() {
   const addToast = useToastStore((s) => s.toast);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [employeeId, setEmployeeId] = useState("");
+  const [employeeId, setEmployeeId] = useState(() => {
+    try {
+      const stored = localStorage.getItem("auth-storage");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        return parsed?.state?.user?.email ?? "";
+      }
+    } catch {}
+    return "";
+  });
   const [form, setForm] = useState({
     startDate: "",
     endDate: "",
     leaveType: "VACATION",
     reason: "",
   });
-
-  useEffect(() => {
-    const stored = localStorage.getItem("auth-storage");
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        const user = parsed?.state?.user;
-        if (user?.email) setEmployeeId(user.email);
-      } catch {}
-    }
-  }, []);
 
   const { data: requests, isLoading } = useQuery({
     queryKey: ["leave"],

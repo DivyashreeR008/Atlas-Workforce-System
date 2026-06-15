@@ -21,8 +21,10 @@ NC='\033[0m'
 
 log_info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
 log_ok()    { echo -e "${GREEN}[PASS]${NC}  $*"; }
-log_fail()  { echo -e "${RED}[FAIL]${NC}  $*"; }
+log_fail()  { echo -e "${RED}[FAIL]${NC}  $*"; FAILED=1; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+
+FAILED=0
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -56,23 +58,30 @@ check_gateway_up() {
   return 1
 }
 
+check_http_code() {
+  local url="$1" expected="$2" desc="$3" token="$4"
+  local code
+  code=$(curl -so /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "$url" || echo "000")
+  local matched=false
+  for e in $expected; do
+    [ "$code" = "$e" ] && matched=true
+  done
+  if $matched; then
+    log_ok "$desc — returned $code (expected)"
+  else
+    log_fail "$desc — returned $code (expected one of: $expected)"
+  fi
+}
+
 check_other_services() {
   local token="$1"
   local endpoints=(
     "$API_GATEWAY/api/employee/employees?page=1&page_size=1"
     "$API_GATEWAY/api/leave"
   )
-  local all_ok=true
   for ep in "${endpoints[@]}"; do
-    local code
-    code=$(curl -so /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "$ep") || code=000
-    if [ "$code" = "200" ] || [ "$code" = "401" ] || [ "$code" = "403" ]; then
-      log_ok "Other service endpoint $ep returned $code (expected)"
-    else
-      log_warn "Other service endpoint $ep returned $code"
-    fi
+    check_http_code "$ep" "200 401 403" "Other service $ep" "$token"
   done
-  return 0
 }
 
 # ── Main ───────────────────────────────────────────────────────────────────
@@ -110,12 +119,7 @@ sleep "$SLEEP_BETWEEN"
 echo ""
 log_info "Step 3: Verifying gateway returns 503 for $SERVICE_NAME..."
 FAILED_ENDPOINT="$API_GATEWAY/api/attendance"
-HTTP_CODE=$(curl -so /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$FAILED_ENDPOINT" || echo "000")
-if [ "$HTTP_CODE" = "503" ] || [ "$HTTP_CODE" = "502" ] || [ "$HTTP_CODE" = "000" ]; then
-  log_ok "Gateway returned $HTTP_CODE for failed service (expected 503/502)"
-else
-  log_warn "Gateway returned $HTTP_CODE (expected 503/502)"
-fi
+check_http_code "$FAILED_ENDPOINT" "503 502 000" "Gateway for failed service" "$TOKEN"
 
 # 5. Verify other services remain available
 echo ""
@@ -141,14 +145,10 @@ sleep "$SLEEP_BETWEEN"
 # 7. Verify recovery
 echo ""
 log_info "Step 6: Verifying automatic recovery..."
-RECOVERY_CODE=$(curl -so /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$FAILED_ENDPOINT" || echo "000")
-if [ "$RECOVERY_CODE" = "200" ] || [ "$RECOVERY_CODE" = "401" ] || [ "$RECOVERY_CODE" = "403" ]; then
-  log_ok "Service recovered — endpoint returned $RECOVERY_CODE"
-else
-  log_warn "Recovery status: endpoint returned $RECOVERY_CODE"
-fi
+check_http_code "$FAILED_ENDPOINT" "200 401 403" "Service recovery" "$TOKEN"
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo "   Chaos Test Complete"
 echo "═══════════════════════════════════════════════════════════════"
+exit $FAILED

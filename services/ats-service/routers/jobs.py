@@ -10,7 +10,7 @@ import schemas
 router = APIRouter(tags=["jobs"])
 
 
-@router.get("/jobs", response_model=schemas.PaginatedResponse, summary="List jobs")
+@router.get("/jobs", response_model=schemas.JobListResponse, summary="List jobs")
 def list_jobs(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -93,7 +93,7 @@ def close_job(
 
 
 @router.get("/jobs/{job_id}/applications",
-            response_model=schemas.PaginatedResponse,
+            response_model=schemas.ApplicationListResponse,
             summary="Get applications for a job")
 def get_job_applications(
     job_id: str,

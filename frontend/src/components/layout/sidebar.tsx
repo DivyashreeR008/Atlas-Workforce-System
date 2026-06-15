@@ -70,12 +70,17 @@ function SidebarProvider({ children }: { children: React.ReactNode }) {
     const c = document.cookie.match(`(^| )${SIDEBAR_COOKIE}=([^;]+)`);
     return c ? c[2] === "true" : true;
   });
-  const [isMobile, setIsMobile] = useState(false);
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(max-width: 768px)").matches;
+  });
 
   useEffect(() => {
     const q = window.matchMedia("(max-width: 768px)");
-    setIsMobile(q.matches);
-    const h = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    const h = (e: MediaQueryListEvent) => {
+      setIsMobile(e.matches);
+      if (e.matches) setOpen(false);
+    };
     q.addEventListener("change", h);
     return () => q.removeEventListener("change", h);
   }, []);
@@ -83,10 +88,6 @@ function SidebarProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     document.cookie = `${SIDEBAR_COOKIE}=${open};path=/;max-age=604800`;
   }, [open]);
-
-  useEffect(() => {
-    if (isMobile) setOpen(false);
-  }, [isMobile]);
 
   const toggle = useCallback(() => setOpen((v) => !v), []);
 

@@ -1,5 +1,9 @@
 name: Enterprise Polyglot CI
 
+permissions:
+  contents: read
+  packages: write
+
 on:
   push:
     branches: [main, master, develop]
@@ -125,6 +129,19 @@ jobs:
         run: bandit -r . --severity high
         working-directory: services/${{ matrix.service }}
         continue-on-error: true
+      - name: Set test environment variables
+        run: |
+          echo "RABBITMQ_USER=guest" >> $GITHUB_ENV
+          echo "RABBITMQ_PASSWORD=guest" >> $GITHUB_ENV
+          if [[ "${{ matrix.service }}" == "employee-python-service" ]]; then
+            echo "MONGO_USER=test" >> $GITHUB_ENV
+            echo "MONGO_PASSWORD=test" >> $GITHUB_ENV
+            echo "INTERNAL_KEY=test-internal-key" >> $GITHUB_ENV
+          elif [[ "${{ matrix.service }}" == "analytics-python-service" ]]; then
+            echo "POSTGRES_USER=test" >> $GITHUB_ENV
+            echo "POSTGRES_PASSWORD=test" >> $GITHUB_ENV
+            echo "INTERNAL_JWT_SECRET=test-secret" >> $GITHUB_ENV
+          fi
       - name: Test Python
         run: pytest -v
         working-directory: services/${{ matrix.service }}
@@ -179,20 +196,26 @@ jobs:
         run: |
           if [[ "${{ matrix.image }}" == "frontend" ]]; then
             echo "context=frontend" >> $GITHUB_OUTPUT
-            echo "dockerfile=frontend/Dockerfile" >> $GITHUB_OUTPUT
+            echo "file=frontend/Dockerfile" >> $GITHUB_OUTPUT
+          elif [[ "${{ matrix.image }}" =~ python-service$ ]]; then
+            echo "context=." >> $GITHUB_OUTPUT
+            echo "file=services/${{ matrix.image }}/Dockerfile" >> $GITHUB_OUTPUT
           else
             echo "context=services/${{ matrix.image }}" >> $GITHUB_OUTPUT
-            echo "dockerfile=services/${{ matrix.image }}/Dockerfile" >> $GITHUB_OUTPUT
+            echo "file=services/${{ matrix.image }}/Dockerfile" >> $GITHUB_OUTPUT
           fi
+      - name: Lowercase repository name for Docker tags
+        id: repo_lower
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: ${{ steps.context.outputs.context }}
-          dockerfile: ${{ steps.context.outputs.dockerfile }}
+          file: ${{ steps.context.outputs.file }}
           push: ${{ github.event_name == 'push' }}
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}:${{ env.IMAGE_TAG }}
-            ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}:latest
+            ${{ env.REGISTRY }}/${{ steps.repo_lower.outputs.name }}/${{ matrix.image }}:${{ env.IMAGE_TAG }}
+            ${{ env.REGISTRY }}/${{ steps.repo_lower.outputs.name }}/${{ matrix.image }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -215,4 +238,4 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
-        if: always()
+        if: always() && hashFiles('trivy-results.sarif') != ''

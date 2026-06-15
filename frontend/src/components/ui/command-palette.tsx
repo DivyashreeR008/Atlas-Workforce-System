@@ -135,7 +135,10 @@ export function CommandPalette() {
     );
   }, [query]);
 
-  useEffect(() => { setSelectedIndex(0); }, [query]);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelectedIndex(0);
+  }, [query]);
 
   useEffect(() => {
     const el = listRef.current?.children[selectedIndex] as HTMLElement | undefined;

@@ -70,12 +70,12 @@ api.interceptors.response.use(
 
     original._retry = true;
     refreshPromise = axios
-      .post(`${API_BASE}/auth/refresh`)
+      .post(`${API_BASE}/auth/refresh`, {}, { withCredentials: true })
       .then(({ data }) => {
         setTokens(data.token);
         return data.token as string;
       })
-      .catch((err) => {
+      .catch(() => {
         clearAuth();
         if (typeof window !== "undefined") {
           const currentPath = window.location.pathname + window.location.search;
@@ -87,23 +87,10 @@ api.interceptors.response.use(
         refreshPromise = null;
       });
 
-    try {
-      const { data } = await api.post("/auth/refresh");
-      setTokens(data.token);
-      processQueue(data.token);
-      original.headers.Authorization = `Bearer ${data.token}`;
-      return api(original);
-    } catch {
-      processQueue(null);
-      clearAuth();
-      if (typeof window !== "undefined") {
-        const currentPath = window.location.pathname + window.location.search;
-        window.location.href = "/login?redirect=" + encodeURIComponent(currentPath);
-      }
-      return Promise.reject(error);
-    } finally {
-      refreshing = false;
-    }
+    const token = await refreshPromise;
+    if (!token) return Promise.reject(error);
+    original.headers.Authorization = `Bearer ${token}`;
+    return api(original);
   }
 );
 

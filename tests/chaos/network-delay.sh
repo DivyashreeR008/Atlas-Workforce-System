@@ -21,8 +21,10 @@ NC='\033[0m'
 
 log_info() { echo -e "${CYAN}[INFO]${NC}  $*"; }
 log_ok()   { echo -e "${GREEN}[PASS]${NC}  $*"; }
-log_fail() { echo -e "${RED}[FAIL]${NC}  $*"; }
+log_fail() { echo -e "${RED}[FAIL]${NC}  $*"; FAILED=1; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+
+FAILED=0
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -41,6 +43,21 @@ check_endpoint() {
   local code
   code=$(curl -so /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "$url" 2>/dev/null || echo "000")
   echo "$code"
+}
+
+check_http_code() {
+  local url="$1" expected="$2" desc="$3" token="$4"
+  local code
+  code=$(check_endpoint "$url" "$desc" "$token")
+  local matched=false
+  for e in $expected; do
+    [ "$code" = "$e" ] && matched=true
+  done
+  if $matched; then
+    log_ok "$desc — returned $code"
+  else
+    log_fail "$desc — returned $code (expected one of: $expected)"
+  fi
 }
 
 # ── Main ───────────────────────────────────────────────────────────────────
@@ -101,26 +118,36 @@ log_info "  Baseline request took ~${BASELINE_MS}ms"
 echo ""
 log_info "Step 4: Injecting ${DELAY_MS}ms network delay to $POSTGRES_CONTAINER..."
 
+if ! docker exec "$POSTGRES_CONTAINER" sh -c "command -v tc" 2>/dev/null; then
+  log_info "Installing iproute2..."
+  docker exec "$POSTGRES_CONTAINER" sh -c "
+    if command -v apk >/dev/null 2>&1; then
+      apk add -q iproute2 2>/dev/null || true
+    elif command -v apt-get >/dev/null 2>&1; then
+      apt-get update -qq && apt-get install -y -qq iproute2 2>/dev/null || true
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y -q iproute 2>/dev/null || true
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y -q iproute 2>/dev/null || true
+    fi
+  " || true
+fi
+
 INJECT_RESULT=$(docker exec "$POSTGRES_CONTAINER" sh -c "
-  if command -v apk >/dev/null 2>&1; then
-    apk add -q iproute2 2>/dev/null || true
-  elif command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq && apt-get install -y -qq iproute2 2>/dev/null || true
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y -q iproute 2>/dev/null || true
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q iproute 2>/dev/null || true
-  fi
   tc qdisc add dev eth0 root netem delay ${DELAY_MS}ms ${JITTER_MS}ms 2>&1
 ") || true
 
 if echo "$INJECT_RESULT" | grep -q "RTNETLINK answers: File exists"; then
-  log_warn "Delay rule already exists, replacing..."
-  docker exec "$POSTGRES_CONTAINER" sh -c "tc qdisc replace dev eth0 root netem delay ${DELAY_MS}ms ${JITTER_MS}ms" 2>/dev/null || true
+  REPLACE_RESULT=$(docker exec "$POSTGRES_CONTAINER" sh -c "tc qdisc replace dev eth0 root netem delay ${DELAY_MS}ms ${JITTER_MS}ms" 2>&1) || true
+  if [ -z "$REPLACE_RESULT" ]; then
+    log_ok "Delay rule replaced"
+  else
+    log_fail "Failed to replace delay rule: $REPLACE_RESULT"
+  fi
 elif [ -z "$INJECT_RESULT" ]; then
   log_ok "Delay injected successfully"
 else
-  log_warn "Inject result: $INJECT_RESULT"
+  log_fail "Delay injection failed: $INJECT_RESULT"
 fi
 
 sleep 2
@@ -137,18 +164,8 @@ if [ -n "$TOKEN" ]; then
   log_info "  Request with delay took ~${TEST_MS}ms"
   log_info "  Response code: $DELAY_CODE"
 
-  if [ "$DELAY_CODE" = "200" ] || [ "$DELAY_CODE" = "401" ] || [ "$DELAY_CODE" = "403" ]; then
-    log_ok "Service handled increased latency gracefully (code: $DELAY_CODE)"
-  else
-    log_warn "Service returned $DELAY_CODE under delay"
-  fi
-
-  # Test another endpoint
-  DELAY_CODE2=$(check_endpoint "$API_GATEWAY/api/leave" "leave" "$TOKEN")
-  log_info "  Leave endpoint code under delay: $DELAY_CODE2"
-  if [ "$DELAY_CODE2" = "200" ] || [ "$DELAY_CODE2" = "401" ] || [ "$DELAY_CODE2" = "403" ]; then
-    log_ok "Leave service handled gracefully"
-  fi
+  check_http_code "$API_GATEWAY/api/employee/employees?page=1&page_size=1" "200 401 403" "Employee endpoint under delay" "$TOKEN"
+  check_http_code "$API_GATEWAY/api/leave" "200 401 403" "Leave endpoint under delay" "$TOKEN"
 fi
 
 sleep 2
@@ -156,8 +173,12 @@ sleep 2
 # 6. Remove delay
 echo ""
 log_info "Step 6: Removing network delay..."
-docker exec "$POSTGRES_CONTAINER" sh -c "tc qdisc del dev eth0 root netem 2>/dev/null" || true
-log_ok "Network delay removed"
+REMOVE_RESULT=$(docker exec "$POSTGRES_CONTAINER" sh -c "tc qdisc del dev eth0 root netem 2>&1") || true
+if [ -z "$REMOVE_RESULT" ] || echo "$REMOVE_RESULT" | grep -q "RTNETLINK answers: No such file"; then
+  log_ok "Network delay removed"
+else
+  log_fail "Failed to remove network delay: $REMOVE_RESULT"
+fi
 
 sleep 2
 
@@ -165,13 +186,11 @@ sleep 2
 echo ""
 log_info "Step 7: Verifying recovery after delay removal..."
 if [ -n "$TOKEN" ]; then
-  RECOVERY_CODE=$(check_endpoint "$API_GATEWAY/api/employee/employees?page=1&page_size=1" "employee" "$TOKEN")
-  RECOVERY_END=$(date +%s%N)
-  log_info "  Recovery response code: $RECOVERY_CODE"
-  log_ok "Services returned to normal behavior"
+  check_http_code "$API_GATEWAY/api/employee/employees?page=1&page_size=1" "200 401 403" "Recovery check" "$TOKEN"
 fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo "   Chaos Test Complete"
 echo "═══════════════════════════════════════════════════════════════"
+exit $FAILED
