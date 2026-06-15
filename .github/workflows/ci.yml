@@ -125,6 +125,11 @@ jobs:
         run: bandit -r . --severity high
         working-directory: services/${{ matrix.service }}
         continue-on-error: true
+      - name: Set test environment variables
+        if: matrix.service == 'employee-python-service'
+        run: |
+          echo "MONGO_USER=test" >> $GITHUB_ENV
+          echo "MONGO_PASSWORD=test" >> $GITHUB_ENV
       - name: Test Python
         run: pytest -v
         working-directory: services/${{ matrix.service }}
@@ -194,8 +199,8 @@ jobs:
           dockerfile: ${{ steps.context.outputs.dockerfile }}
           push: ${{ github.event_name == 'push' }}
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}:${{ env.IMAGE_TAG }}
-            ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}:latest
+            ${{ env.REGISTRY }}/${{ lower(github.repository) }}/${{ matrix.image }}:${{ env.IMAGE_TAG }}
+            ${{ env.REGISTRY }}/${{ lower(github.repository) }}/${{ matrix.image }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -218,4 +223,4 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
-        if: always()
+        if: always() && hashFiles('trivy-results.sarif') != ''
