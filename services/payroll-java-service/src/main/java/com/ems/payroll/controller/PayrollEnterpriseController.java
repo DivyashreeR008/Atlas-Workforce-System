@@ -1,6 +1,7 @@
 package com.ems.payroll.controller;
 
 import com.ems.payroll.model.*;
+import com.ems.payroll.security.RequiresRole;
 import com.ems.payroll.service.PayrollEnterpriseService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
@@ -24,6 +25,7 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Dashboard
     // ============================================================
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/dashboard")
     public ResponseEntity<Map<String, Object>> getDashboard(
             @RequestHeader("X-Tenant-Id") String tenantId) {
@@ -33,12 +35,14 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Multi-country payroll
     // ============================================================
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/payrolls")
     public ResponseEntity<List<EnhancedPayrollRecord>> getPayrolls(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getAllPayrolls(tenantId));
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/payrolls/employee/{employeeId}")
     public ResponseEntity<List<EnhancedPayrollRecord>> getPayrollsByEmployee(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -46,6 +50,7 @@ public class PayrollEnterpriseController {
         return ResponseEntity.ok(service.getPayrollsByEmployee(tenantId, employeeId));
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/payrolls/period/{period}")
     public ResponseEntity<List<EnhancedPayrollRecord>> getPayrollsByPeriod(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -53,6 +58,7 @@ public class PayrollEnterpriseController {
         return ResponseEntity.ok(service.getPayrollsByPeriod(tenantId, period));
     }
 
+    @RequiresRole({"admin"})
     @PostMapping("/payrolls/run")
     public ResponseEntity<?> runPayroll(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -76,24 +82,28 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Tax config
     // ============================================================
+    @RequiresRole({"admin", "hr"})
     @GetMapping("/tax-configs")
     public ResponseEntity<List<CountryTaxConfig>> getTaxConfigs(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getTaxConfigs(tenantId));
     }
 
+    @RequiresRole({"admin"})
     @PostMapping("/tax-configs")
     public ResponseEntity<CountryTaxConfig> saveTaxConfig(
             @RequestBody CountryTaxConfig config) {
         return ResponseEntity.ok(service.saveTaxConfig(config));
     }
 
+    @RequiresRole({"admin", "hr"})
     @GetMapping("/tax-brackets")
     public ResponseEntity<List<TaxBracket>> getTaxBrackets(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getTaxBrackets(tenantId));
     }
 
+    @RequiresRole({"admin"})
     @PostMapping("/tax-brackets")
     public ResponseEntity<TaxBracket> saveTaxBracket(
             @RequestBody TaxBracket bracket) {
@@ -103,6 +113,7 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Tax simulations
     // ============================================================
+    @RequiresRole({"admin", "hr"})
     @PostMapping("/tax/simulate")
     public ResponseEntity<Map<String, Object>> simulateTax(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -112,6 +123,7 @@ public class PayrollEnterpriseController {
         return ResponseEntity.ok(service.simulateTax(tenantId, country, grossSalary));
     }
 
+    @RequiresRole({"admin", "hr"})
     @PostMapping("/tax/compare")
     public ResponseEntity<List<Map<String, Object>>> compareTax(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -125,6 +137,7 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Payroll forecasting
     // ============================================================
+    @RequiresRole({"admin", "hr"})
     @PostMapping("/forecasts/generate")
     public ResponseEntity<PayrollForecast> generateForecast(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -133,6 +146,7 @@ public class PayrollEnterpriseController {
         return ResponseEntity.ok(service.generateForecast(tenantId, period));
     }
 
+    @RequiresRole({"admin", "hr"})
     @GetMapping("/forecasts")
     public ResponseEntity<List<PayrollForecast>> getForecasts(
             @RequestHeader("X-Tenant-Id") String tenantId) {
@@ -142,6 +156,7 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Payroll auditing
     // ============================================================
+    @RequiresRole({"admin", "hr"})
     @GetMapping("/audit-logs")
     public ResponseEntity<List<PayrollAudit>> getAuditLogs(
             @RequestHeader("X-Tenant-Id") String tenantId) {
@@ -151,12 +166,14 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Payslip generation
     // ============================================================
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/payslips")
     public ResponseEntity<List<Payslip>> getPayslips(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getPayslips(tenantId));
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/payslips/employee/{employeeId}")
     public ResponseEntity<List<Payslip>> getEmployeePayslips(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -167,6 +184,7 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Bank integration
     // ============================================================
+    @RequiresRole({"admin"})
     @PostMapping("/bank/transactions")
     public ResponseEntity<BankTransaction> createBankTransaction(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -182,12 +200,14 @@ public class PayrollEnterpriseController {
         return ResponseEntity.ok(tx);
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/bank/transactions")
     public ResponseEntity<List<BankTransaction>> getBankTransactions(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getBankTransactions(tenantId));
     }
 
+    @RequiresRole({"admin"})
     @PostMapping("/bank/transactions/{id}/process")
     public ResponseEntity<BankTransaction> processBankTransaction(@PathVariable Long id) {
         return ResponseEntity.ok(service.processBankTransaction(id));
@@ -196,12 +216,14 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Expense reimbursements
     // ============================================================
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/expenses")
     public ResponseEntity<List<ExpenseReport>> getExpenses(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getExpenses(tenantId));
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/expenses/employee/{employeeId}")
     public ResponseEntity<List<ExpenseReport>> getExpensesByEmployee(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -209,6 +231,7 @@ public class PayrollEnterpriseController {
         return ResponseEntity.ok(service.getExpensesByEmployee(tenantId, employeeId));
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @PostMapping("/expenses")
     public ResponseEntity<ExpenseReport> submitExpense(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -223,6 +246,7 @@ public class PayrollEnterpriseController {
         return ResponseEntity.ok(expense);
     }
 
+    @RequiresRole({"admin", "hr"})
     @PostMapping("/expenses/{id}/approve")
     public ResponseEntity<ExpenseReport> approveExpense(
             @PathVariable Long id,
@@ -230,6 +254,7 @@ public class PayrollEnterpriseController {
         return ResponseEntity.ok(service.approveExpense(id, req.getOrDefault("approvedBy", "admin")));
     }
 
+    @RequiresRole({"admin", "hr"})
     @PostMapping("/expenses/{id}/reject")
     public ResponseEntity<ExpenseReport> rejectExpense(
             @PathVariable Long id,
@@ -240,12 +265,14 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Benefits administration
     // ============================================================
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/benefit-plans")
     public ResponseEntity<List<BenefitPlan>> getBenefitPlans(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getBenefitPlans(tenantId));
     }
 
+    @RequiresRole({"admin", "hr"})
     @PostMapping("/benefit-plans")
     public ResponseEntity<BenefitPlan> createBenefitPlan(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -261,12 +288,14 @@ public class PayrollEnterpriseController {
         return ResponseEntity.ok(plan);
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/benefit-enrollments")
     public ResponseEntity<List<BenefitEnrollment>> getBenefitEnrollments(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getBenefitEnrollments(tenantId));
     }
 
+    @RequiresRole({"admin", "hr", "employee"})
     @PostMapping("/benefit-enrollments")
     public ResponseEntity<BenefitEnrollment> enrollBenefit(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -280,12 +309,14 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Compensation planning
     // ============================================================
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/compensation-plans")
     public ResponseEntity<List<CompensationPlan>> getCompensationPlans(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getCompensationPlans(tenantId));
     }
 
+    @RequiresRole({"admin", "hr"})
     @PostMapping("/compensation-plans")
     public ResponseEntity<CompensationPlan> createCompensationPlan(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -304,12 +335,14 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Bonus management
     // ============================================================
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/bonuses")
     public ResponseEntity<List<Bonus>> getBonuses(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getBonuses(tenantId));
     }
 
+    @RequiresRole({"admin", "hr"})
     @PostMapping("/bonuses")
     public ResponseEntity<Bonus> createBonus(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -323,6 +356,7 @@ public class PayrollEnterpriseController {
         return ResponseEntity.ok(bonus);
     }
 
+    @RequiresRole({"admin"})
     @PostMapping("/bonuses/{id}/approve")
     public ResponseEntity<Bonus> approveBonus(
             @PathVariable Long id,
@@ -333,12 +367,14 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Equity management
     // ============================================================
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/equity")
     public ResponseEntity<List<EquityGrant>> getEquity(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getEquityGrants(tenantId));
     }
 
+    @RequiresRole({"admin"})
     @PostMapping("/equity")
     public ResponseEntity<EquityGrant> createEquityGrant(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -354,6 +390,7 @@ public class PayrollEnterpriseController {
         return ResponseEntity.ok(grant);
     }
 
+    @RequiresRole({"admin", "hr", "employee"})
     @GetMapping("/equity/employee/{employeeId}")
     public ResponseEntity<List<EquityGrant>> getEmployeeEquity(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -364,12 +401,14 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Salary benchmarking
     // ============================================================
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/benchmarks")
     public ResponseEntity<List<SalaryBenchmark>> getBenchmarks(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getBenchmarks(tenantId));
     }
 
+    @RequiresRole({"admin", "hr"})
     @PostMapping("/benchmarks")
     public ResponseEntity<SalaryBenchmark> addBenchmark(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -389,6 +428,7 @@ public class PayrollEnterpriseController {
         return ResponseEntity.ok(benchmark);
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @PostMapping("/benchmarks/compare")
     public ResponseEntity<Map<String, Object>> compareBenchmark(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -404,12 +444,14 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Compliance reports
     // ============================================================
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/compliance-reports")
     public ResponseEntity<List<PayrollComplianceReport>> getComplianceReports(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getComplianceReports(tenantId));
     }
 
+    @RequiresRole({"admin"})
     @PostMapping("/compliance-reports/generate")
     public ResponseEntity<PayrollComplianceReport> generateComplianceReport(
             @RequestHeader("X-Tenant-Id") String tenantId,
@@ -424,12 +466,14 @@ public class PayrollEnterpriseController {
     // ============================================================
     // Anomaly detection
     // ============================================================
+    @RequiresRole({"admin", "hr"})
     @GetMapping("/anomalies")
     public ResponseEntity<List<PayrollAnomaly>> getAnomalies(
             @RequestHeader("X-Tenant-Id") String tenantId) {
         return ResponseEntity.ok(service.getAnomalies(tenantId));
     }
 
+    @RequiresRole({"admin"})
     @PostMapping("/anomalies/{id}/resolve")
     public ResponseEntity<PayrollAnomaly> resolveAnomaly(
             @PathVariable Long id,

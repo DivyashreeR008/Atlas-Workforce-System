@@ -1,6 +1,7 @@
 package com.atlas.performance.controller;
 
 import com.atlas.performance.model.Goal;
+import com.atlas.performance.security.RequiresRole;
 import com.atlas.performance.service.PerformanceService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -20,6 +21,7 @@ public class GoalController {
         this.service = service;
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping
     public ResponseEntity<List<Goal>> listGoals(
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId,
@@ -29,6 +31,7 @@ public class GoalController {
         return ResponseEntity.ok(service.getGoals(tenantId, employeeId, status, category));
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @PostMapping
     public ResponseEntity<?> createGoal(
             @RequestBody Goal goal,
@@ -40,6 +43,7 @@ public class GoalController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/{id}")
     public ResponseEntity<?> getGoal(
             @PathVariable String id,
@@ -51,6 +55,7 @@ public class GoalController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @PutMapping("/{id}")
     public ResponseEntity<?> updateGoal(
             @PathVariable String id,
@@ -63,6 +68,7 @@ public class GoalController {
         }
     }
 
+    @RequiresRole({"admin", "hr"})
     @DeleteMapping("/{id}")
     public ResponseEntity<?> deleteGoal(
             @PathVariable String id,
@@ -75,6 +81,7 @@ public class GoalController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @PutMapping("/{id}/progress")
     public ResponseEntity<?> updateProgress(
             @PathVariable String id,
@@ -90,6 +97,7 @@ public class GoalController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @PutMapping("/{id}/status")
     public ResponseEntity<?> updateStatus(
             @PathVariable String id,

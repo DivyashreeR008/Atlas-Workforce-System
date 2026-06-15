@@ -1,5 +1,6 @@
 package com.ems.payroll;
 
+import com.ems.payroll.security.RequiresRole;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
@@ -19,11 +20,13 @@ public class PayrollController {
         this.service = service;
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping
     public ResponseEntity<List<PayrollRecord>> getAllPayrolls(@RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
         return ResponseEntity.ok(service.getAllPayrolls(tenantId));
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/employee/{employeeId}")
     public ResponseEntity<List<PayrollRecord>> getPayrollsByEmployee(
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId,
@@ -31,15 +34,11 @@ public class PayrollController {
         return ResponseEntity.ok(service.getPayrollsByEmployeeId(tenantId, employeeId));
     }
 
+    @RequiresRole({"admin"})
     @PostMapping("/run")
     public ResponseEntity<?> runPayroll(
             @RequestBody Map<String, Object> request,
-            @RequestHeader(value = "X-User-Role", required = false) String userRole,
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId) {
-        
-        if (userRole == null || !userRole.equalsIgnoreCase("admin")) {
-            return ResponseEntity.status(403).body(Map.of("message", "Access denied: Requires administrator privileges"));
-        }
 
         try {
             String employeeId = (String) request.get("employeeId");
