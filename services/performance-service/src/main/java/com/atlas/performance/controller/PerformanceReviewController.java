@@ -1,6 +1,7 @@
 package com.atlas.performance.controller;
 
 import com.atlas.performance.model.PerformanceReview;
+import com.atlas.performance.security.RequiresRole;
 import com.atlas.performance.service.PerformanceService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -19,6 +20,7 @@ public class PerformanceReviewController {
         this.service = service;
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping
     public ResponseEntity<List<PerformanceReview>> listReviews(
             @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenantId,
@@ -29,6 +31,7 @@ public class PerformanceReviewController {
         return ResponseEntity.ok(service.getReviews(tenantId, employeeId, reviewerId, status, cycle));
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @PostMapping
     public ResponseEntity<?> createReview(
             @RequestBody PerformanceReview review,
@@ -40,6 +43,7 @@ public class PerformanceReviewController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/{id}")
     public ResponseEntity<?> getReview(
             @PathVariable String id,
@@ -51,6 +55,7 @@ public class PerformanceReviewController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @PutMapping("/{id}")
     public ResponseEntity<?> updateReview(
             @PathVariable String id,
@@ -63,6 +68,7 @@ public class PerformanceReviewController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @PutMapping("/{id}/submit")
     public ResponseEntity<?> submitReview(
             @PathVariable String id,
@@ -74,6 +80,7 @@ public class PerformanceReviewController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @PutMapping("/{id}/acknowledge")
     public ResponseEntity<?> acknowledgeReview(
             @PathVariable String id,
@@ -85,6 +92,7 @@ public class PerformanceReviewController {
         }
     }
 
+    @RequiresRole({"admin", "hr", "manager"})
     @GetMapping("/cycle/{cycle}")
     public ResponseEntity<List<PerformanceReview>> getReviewsByCycle(
             @PathVariable String cycle,
@@ -92,6 +100,7 @@ public class PerformanceReviewController {
         return ResponseEntity.ok(service.getReviewsByCycle(tenantId, cycle));
     }
 
+    @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/employee/{employeeId}")
     public ResponseEntity<List<PerformanceReview>> getReviewHistory(
             @PathVariable String employeeId,
