@@ -10,7 +10,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const user = useAuthStore((s) => s.user);
-  const authenticated = isAuthenticated() || !!user;
+  const authenticated = isAuthenticated();
 
   useEffect(() => {
     if (!authenticated) {
