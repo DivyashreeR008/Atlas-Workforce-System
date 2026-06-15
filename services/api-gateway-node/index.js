@@ -738,7 +738,7 @@ server.on('upgrade', (req, socket, head) => {
       return;
     }
     try {
-      const payload = jwt.verify(token, jwtSecret);
+      const payload = jwt.verify(token, jwtSecret, { algorithms: ['HS256'] });
       const internalPayload = {
         user_id: payload.id || payload.sub,
         user_role: payload.role || 'employee',
