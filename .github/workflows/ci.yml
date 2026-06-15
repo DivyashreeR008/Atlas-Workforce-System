@@ -203,7 +203,7 @@ jobs:
           elif [[ "${{ matrix.image }}" =~ python-service$ ]]; then
             echo "context=." >> $GITHUB_OUTPUT
             echo "file=services/${{ matrix.image }}/Dockerfile" >> $GITHUB_OUTPUT
-          elif [[ "${{ matrix.image }}" =~ -java-service$ ]]; then
+          elif [[ "${{ matrix.image }}" == "payroll-java-service" ]] || [[ "${{ matrix.image }}" == "leave-service" ]] || [[ "${{ matrix.image }}" == "performance-service" ]]; then
             echo "context=." >> $GITHUB_OUTPUT
             echo "file=services/${{ matrix.image }}/Dockerfile" >> $GITHUB_OUTPUT
           else
