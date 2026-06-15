@@ -1,18 +1,42 @@
-const TOKEN_KEY = "atlas_access_token";
 const USER_KEY = "atlas_user";
 
+let inMemoryToken: string | null = null;
+let _initialized = false;
+
 export function getAccessToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem(TOKEN_KEY);
+  return inMemoryToken;
 }
 
 export function setTokens(access: string): void {
-  localStorage.setItem(TOKEN_KEY, access);
+  inMemoryToken = access;
 }
 
 export function clearAuth(): void {
-  localStorage.removeItem(TOKEN_KEY);
+  inMemoryToken = null;
+  _initialized = false;
   localStorage.removeItem(USER_KEY);
+}
+
+export async function initializeAuth(): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  if (_initialized) return true;
+  try {
+    const res = await fetch("/api/auth/token");
+    const data = await res.json();
+    if (data.token) {
+      inMemoryToken = data.token;
+      _initialized = true;
+      return true;
+    }
+  } catch {
+    // network error — proceed as unauthenticated
+  }
+  _initialized = true;
+  return false;
+}
+
+export function isInitialized(): boolean {
+  return _initialized;
 }
 
 export function setStoredUser(user: object): void {
