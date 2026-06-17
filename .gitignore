@@ -25,6 +25,9 @@ npm-debug.log*
 *.swp
 *.swo
 
+# Java / Maven build output
+target/
+
 # OS
 .DS_Store
 Thumbs.db
