@@ -1396,6 +1396,35 @@ app.post('/saml/acs', createUserRateLimiter('saml_acs', 20), async (req, res) =>
       if (!signatureVerified) {
         return res.status(401).json({ message: 'SAML signature verification failed' });
       }
+
+      const conditions = doc.getElementsByTagNameNS
+        ? doc.getElementsByTagNameNS('urn:oasis:names:tc:SAML:2.0:assertion', 'Conditions')
+        : doc.getElementsByTagName('Conditions');
+
+      if (conditions.length > 0) {
+        const condition = conditions[0];
+        const notBefore = condition.getAttribute('NotBefore');
+        const notOnOrAfter = condition.getAttribute('NotOnOrAfter');
+        const now = new Date();
+
+        if (notBefore && now < new Date(notBefore)) {
+          return res.status(401).json({ message: 'SAML assertion is not yet valid (NotBefore)' });
+        }
+
+        if (notOnOrAfter && now >= new Date(notOnOrAfter)) {
+          return res.status(401).json({ message: 'SAML assertion has expired (NotOnOrAfter)' });
+        }
+
+        const audienceNodes = doc.getElementsByTagNameNS
+          ? doc.getElementsByTagNameNS('urn:oasis:names:tc:SAML:2.0:assertion', 'Audience')
+          : doc.getElementsByTagName('Audience');
+
+        for (let i = 0; i < audienceNodes.length; i++) {
+          if (audienceNodes[i].textContent === SAML_IDP_ENTITY_ID) {
+            break;
+          }
+        }
+      }
     }
 
     const nameIdMatch = decodedXml.match(/<saml2:NameID[^>]*>([^<]+)<\/saml2:NameID>/);
