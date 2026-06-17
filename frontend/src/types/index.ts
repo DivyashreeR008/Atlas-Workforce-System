@@ -17,8 +17,6 @@ export interface AuthResponse {
 }
 
 export interface Employee {
-  _id?: string;
-  id?: number;
   name: string;
   department: string;
   position: string;
