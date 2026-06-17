@@ -8,7 +8,7 @@ import schemas
 router = APIRouter(tags=["referral-management"])
 
 
-@router.get("/referrals", response_model=schemas.PaginatedResponse, summary="List referrals")
+@router.get("/referrals", response_model=schemas.PaginatedResponse[schemas.ReferralResponse], summary="List referrals")
 def list_referrals(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),

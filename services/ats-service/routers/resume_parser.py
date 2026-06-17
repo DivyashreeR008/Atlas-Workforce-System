@@ -49,7 +49,7 @@ def upload_resume(
     return resume
 
 
-@router.get("/resumes", response_model=schemas.PaginatedResponse, summary="List resumes")
+@router.get("/resumes", response_model=schemas.PaginatedResponse[schemas.ResumeUploadResponse], summary="List resumes")
 def list_resumes(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),

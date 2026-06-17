@@ -7,7 +7,7 @@ import schemas
 router = APIRouter(tags=["offer-letters"])
 
 
-@router.get("/offer-templates", response_model=schemas.PaginatedResponse, summary="List offer templates")
+@router.get("/offer-templates", response_model=schemas.PaginatedResponse[schemas.OfferTemplateResponse], summary="List offer templates")
 def list_templates(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),

@@ -8,7 +8,7 @@ import schemas
 router = APIRouter(tags=["campus-recruitment"])
 
 
-@router.get("/campus/drives", response_model=schemas.PaginatedResponse, summary="List campus drives")
+@router.get("/campus/drives", response_model=schemas.PaginatedResponse[schemas.CampusDriveResponse], summary="List campus drives")
 def list_drives(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -65,7 +65,7 @@ def delete_drive(
     return {"message": "Campus drive deleted successfully"}
 
 
-@router.get("/campus/registrations", response_model=schemas.PaginatedResponse, summary="List campus registrations")
+@router.get("/campus/registrations", response_model=schemas.PaginatedResponse[schemas.CampusRegistrationResponse], summary="List campus registrations")
 def list_registrations(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),

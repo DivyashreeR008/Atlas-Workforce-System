@@ -1,11 +1,13 @@
 from datetime import datetime, date
 from decimal import Decimal
-from typing import List, Optional
+from typing import Generic, List, Optional, TypeVar
 from pydantic import BaseModel, Field
 
+T = TypeVar("T")
 
-class PaginatedResponse(BaseModel):
-    items: List
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    items: List[T]
     total: int
     page: int
     page_size: int

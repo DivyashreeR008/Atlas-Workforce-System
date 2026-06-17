@@ -10,7 +10,7 @@ import schemas
 router = APIRouter(tags=["candidates"])
 
 
-@router.get("/candidates", response_model=schemas.PaginatedResponse, summary="List candidates")
+@router.get("/candidates", response_model=schemas.PaginatedResponse[schemas.CandidateResponse], summary="List candidates")
 def list_candidates(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -73,7 +73,7 @@ def delete_candidate(
 
 
 @router.get("/candidates/{candidate_id}/applications",
-            response_model=schemas.PaginatedResponse,
+            response_model=schemas.PaginatedResponse[schemas.ApplicationListResponse],
             summary="Get applications by candidate")
 def get_candidate_applications(
     candidate_id: str,

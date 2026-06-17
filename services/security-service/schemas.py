@@ -1,7 +1,9 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Generic, Optional, TypeVar
 from uuid import UUID
 from pydantic import BaseModel, Field
+
+T = TypeVar("T")
 
 class ZeroTrustPolicyCreate(BaseModel):
     tenant_id: str = Field(..., max_length=50)
@@ -254,8 +256,8 @@ class SessionRecordingResponse(BaseModel):
     ended_at: Optional[datetime]
     model_config = {"from_attributes": True}
 
-class PaginatedResponse(BaseModel):
-    items: list
+class PaginatedResponse(BaseModel, Generic[T]):
+    items: list[T]
     total: int
     page: int
     page_size: int

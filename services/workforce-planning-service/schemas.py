@@ -1,18 +1,21 @@
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, Generic, Optional, TypeVar
 from uuid import UUID
 from pydantic import BaseModel, Field
+
+T = TypeVar("T")
 
 
 class MessageResponse(BaseModel):
     message: str
 
 
-class PaginatedResponse(BaseModel):
-    items: list[Any]
+class PaginatedResponse(BaseModel, Generic[T]):
+    items: list[T]
     total: int
     page: int
     page_size: int
+    total_pages: int
 
 
 class DashboardResponse(BaseModel):

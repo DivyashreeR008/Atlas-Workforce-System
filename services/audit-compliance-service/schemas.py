@@ -1,8 +1,18 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Generic, Optional, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+T = TypeVar("T")
+
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    items: list[T]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
 
 
 class AuditLogCreate(BaseModel):
@@ -43,14 +53,6 @@ class AuditLogResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-class PaginatedResponse(BaseModel):
-    items: list
-    total: int
-    page: int
-    page_size: int
-    total_pages: int
 
 
 class AuditLogPaginated(PaginatedResponse):
