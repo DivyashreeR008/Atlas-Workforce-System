@@ -29,6 +29,23 @@ CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
 INTERNAL_JWT_SECRET = os.environ.get("INTERNAL_JWT_SECRET")
 
+# ── Eviction Configuration ──────────────────────────────────────────────────
+
+POLL_TTL_SECONDS = int(os.getenv("POLL_TTL_SECONDS", "86400"))
+INCIDENT_TTL_SECONDS = int(os.getenv("INCIDENT_TTL_SECONDS", "604800"))
+CHAT_ROOM_TTL_SECONDS = int(os.getenv("CHAT_ROOM_TTL_SECONDS", "86400"))
+MAX_INCIDENTS_PER_ID = int(os.getenv("MAX_INCIDENTS_PER_ID", "100"))
+PRESENCE_TTL_SECONDS = int(os.getenv("PRESENCE_TTL_SECONDS", "3600"))
+EVICTION_INTERVAL_SECONDS = int(os.getenv("EVICTION_INTERVAL_SECONDS", "300"))
+
+_INTERNAL_FIELDS = {"_created_at", "_last_seen"}
+
+def _strip_internal(data: dict) -> dict:
+    return {k: v for k, v in data.items() if k not in _INTERNAL_FIELDS}
+
+def _strip_internal_from_list(items: list[dict]) -> list[dict]:
+    return [_strip_internal(item) for item in items]
+
 # ── In-Memory Channel State ─────────────────────────────────────────────────
 
 class ChannelManager:
@@ -45,6 +62,58 @@ class ChannelManager:
         self.incidents: dict[str, list[dict]] = defaultdict(lambda: [])
         self.sla_status: dict[str, dict] = {}
         self.staffing: dict[str, dict] = {}
+
+    def evict(self) -> dict[str, int]:
+        now = datetime.now(timezone.utc).timestamp()
+        removed = {"polls": 0, "chat_rooms": 0, "presence": 0, "incidents": 0}
+
+        stale_polls = [
+            pid for pid, poll in self.polls.items()
+            if now - poll.get("_created_at", 0) > POLL_TTL_SECONDS
+        ]
+        for pid in stale_polls:
+            del self.polls[pid]
+            removed["polls"] += 1
+
+        for room in list(self.chat_rooms.keys()):
+            messages = self.chat_rooms[room]
+            if not messages:
+                del self.chat_rooms[room]
+                removed["chat_rooms"] += 1
+            else:
+                last_ts = messages[-1].get("timestamp", "")
+                if last_ts:
+                    try:
+                        last_time = datetime.fromisoformat(last_ts).timestamp()
+                        if now - last_time > CHAT_ROOM_TTL_SECONDS:
+                            del self.chat_rooms[room]
+                            removed["chat_rooms"] += 1
+                    except (ValueError, TypeError):
+                        pass
+
+        stale_presence = [
+            uid for uid, p in self.presence.items()
+            if now - p.get("_last_seen", 0) > PRESENCE_TTL_SECONDS
+        ]
+        for uid in stale_presence:
+            del self.presence[uid]
+            removed["presence"] += 1
+
+        for inc_id in list(self.incidents.keys()):
+            entries = self.incidents[inc_id]
+            if len(entries) > MAX_INCIDENTS_PER_ID:
+                self.incidents[inc_id] = entries[-MAX_INCIDENTS_PER_ID:]
+                removed["incidents"] += len(entries) - MAX_INCIDENTS_PER_ID
+
+        return removed
+
+    async def _eviction_loop(self):
+        while True:
+            await asyncio.sleep(EVICTION_INTERVAL_SECONDS)
+            removed = self.evict()
+            total = sum(removed.values())
+            if total:
+                logger.info("eviction.cleanup", extra={"removed": removed, "total": total})
 
     async def broadcast_sse(self, channel: str, event: str, data: dict):
         self.event_sequences[channel] += 1
@@ -301,6 +370,7 @@ async def internal_auth_middleware(request: Request, call_next):
 async def lifespan(app: FastAPI):
     asyncio.create_task(rabbitmq_consumer())
     asyncio.create_task(notifications_consumer())
+    asyncio.create_task(manager._eviction_loop())
     yield
 
 app = FastAPI(title="Atlas Live Service", description="Real-time SSE + WebSocket engine for 25 live channels", version="1.0.0", lifespan=lifespan)
@@ -545,9 +615,12 @@ async def websocket_presence(websocket: WebSocket, token: Optional[str] = Query(
         while True:
             data = await websocket.receive_json()
             update = PresenceUpdate(**data)
-            manager.presence[update.user_id] = update.model_dump()
-            await manager.broadcast_ws("presence", {"event": "presence.update", "data": update.model_dump()})
-            await manager.broadcast_sse("presence", "presence.update", update.model_dump())
+            entry = update.model_dump()
+            entry["_last_seen"] = datetime.now(timezone.utc).timestamp()
+            manager.presence[update.user_id] = entry
+            public = _strip_internal(entry)
+            await manager.broadcast_ws("presence", {"event": "presence.update", "data": public})
+            await manager.broadcast_sse("presence", "presence.update", public)
     except WebSocketDisconnect:
         pass
     finally:
@@ -556,7 +629,7 @@ async def websocket_presence(websocket: WebSocket, token: Optional[str] = Query(
 # ── REST Endpoints ──────────────────────────────────────────────────────────
 
 @app.post("/api/v1/live/publish/{channel}")
-async def publish_event(channel: str, event: str = Query(...), request: Request):
+async def publish_event(channel: str, request: Request, event: str = Query(...)):
     body = await request.json()
     await manager.broadcast_sse(channel, event, body)
     await manager.broadcast_ws(channel, {"event": event, "data": body})
@@ -564,14 +637,17 @@ async def publish_event(channel: str, event: str = Query(...), request: Request)
 
 @app.post("/api/v1/live/presence")
 async def update_presence(update: PresenceUpdate):
-    manager.presence[update.user_id] = update.model_dump()
-    await manager.broadcast_sse("presence", "presence.update", update.model_dump())
-    await manager.broadcast_ws("presence", {"event": "presence.update", "data": update.model_dump()})
+    entry = update.model_dump()
+    entry["_last_seen"] = datetime.now(timezone.utc).timestamp()
+    manager.presence[update.user_id] = entry
+    public = _strip_internal(entry)
+    await manager.broadcast_sse("presence", "presence.update", public)
+    await manager.broadcast_ws("presence", {"event": "presence.update", "data": public})
     return {"status": "ok"}
 
 @app.get("/api/v1/live/presence")
 async def get_presence():
-    return {"users": list(manager.presence.values())}
+    return {"users": _strip_internal_from_list(manager.presence.values())}
 
 @app.post("/api/v1/live/attendance")
 async def publish_attendance(event: AttendanceEvent):
@@ -664,9 +740,12 @@ async def create_poll(poll: Poll):
         poll.poll_id = str(uuid.uuid4())
     if not poll.votes:
         poll.votes = {opt: 0 for opt in poll.options}
-    manager.polls[poll.poll_id] = poll.model_dump()
-    await manager.broadcast_ws("poll", {"event": "poll.created", "data": poll.model_dump()})
-    return poll
+    entry = poll.model_dump()
+    entry["_created_at"] = datetime.now(timezone.utc).timestamp()
+    manager.polls[poll.poll_id] = entry
+    public = _strip_internal(entry)
+    await manager.broadcast_ws("poll", {"event": "poll.created", "data": public})
+    return public
 
 @app.post("/api/v1/live/poll/vote")
 async def vote_poll(vote: PollVote):
@@ -679,11 +758,11 @@ async def vote_poll(vote: PollVote):
         poll["votes"][vote.option] = poll["votes"].get(vote.option, 0) + 1
         votes_snapshot = dict(poll["votes"])
     await manager.broadcast_ws("poll", {"event": "poll.vote", "data": {"poll_id": vote.poll_id, "votes": votes_snapshot}})
-    return poll
+    return _strip_internal(poll)
 
 @app.get("/api/v1/live/polls")
 async def get_polls():
-    return {"polls": list(manager.polls.values())}
+    return {"polls": _strip_internal_from_list(manager.polls.values())}
 
 @app.post("/api/v1/live/emergency")
 async def broadcast_emergency(emergency: EmergencyBroadcast):
@@ -697,10 +776,15 @@ async def report_incident(incident: IncidentManagement):
     if not incident.incident_id:
         incident.incident_id = str(uuid.uuid4())
     entry = incident.model_dump()
-    manager.incidents[incident.incident_id or incident.incident_id].append(entry)
-    await manager.broadcast_sse("incident", "incident.new", entry)
-    await manager.broadcast_ws("incident", {"event": "incident.new", "data": entry})
-    return entry
+    entry["_created_at"] = datetime.now(timezone.utc).timestamp()
+    inc_id = incident.incident_id
+    manager.incidents[inc_id].append(entry)
+    if len(manager.incidents[inc_id]) > MAX_INCIDENTS_PER_ID:
+        manager.incidents[inc_id] = manager.incidents[inc_id][-MAX_INCIDENTS_PER_ID:]
+    public = _strip_internal(entry)
+    await manager.broadcast_sse("incident", "incident.new", public)
+    await manager.broadcast_ws("incident", {"event": "incident.new", "data": public})
+    return public
 
 @app.get("/api/v1/live/incidents")
 async def get_incidents(status: Optional[str] = None):
@@ -709,7 +793,8 @@ async def get_incidents(status: Optional[str] = None):
         for inc in inc_list:
             if not status or inc.get("status") == status:
                 all_inc.append(inc)
-    return {"incidents": sorted(all_inc, key=lambda x: x.get("timestamp", ""), reverse=True)}
+    sorted_inc = sorted(all_inc, key=lambda x: x.get("_created_at", 0), reverse=True)
+    return {"incidents": _strip_internal_from_list(sorted_inc)}
 
 @app.get("/api/v1/live/history/{channel}")
 async def get_channel_history(channel: str):
@@ -718,6 +803,17 @@ async def get_channel_history(channel: str):
 @app.get("/api/v1/live/chat/{room}")
 async def get_chat_history(room: str):
     return {"room": room, "messages": manager.chat_rooms.get(room, [])}
+
+@app.get("/api/v1/live/stats")
+async def get_stats():
+    return {
+        "channels": len(manager.channel_history),
+        "chat_rooms": len(manager.chat_rooms),
+        "polls": len(manager.polls),
+        "presence_users": len(manager.presence),
+        "incident_groups": len(manager.incidents),
+        "sla_services": len(manager.sla_status),
+    }
 
 @app.get("/health")
 async def health():
