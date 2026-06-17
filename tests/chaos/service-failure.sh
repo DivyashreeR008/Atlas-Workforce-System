@@ -12,6 +12,30 @@ AUTH_URL="${AUTH_URL:-http://localhost:8010}"
 SLEEP_BETWEEN="${SLEEP_BETWEEN:-3}"
 MAX_RETRIES=12
 
+# ── Service-to-Endpoint Mapping ─────────────────────────────────────────────
+get_service_endpoint() {
+  local name="$1"
+  case "$name" in
+    attendance-service)          echo "/api/attendance" ;;
+    auth-service)                echo "/api/auth" ;;
+    employee-service)            echo "/api/employee" ;;
+    analytics-service)           echo "/api/analytics" ;;
+    notification-service)        echo "/api/notification" ;;
+    leave-service)               echo "/api/leave" ;;
+    payroll-service)             echo "/api/payroll" ;;
+    ats-service)                 echo "/api/ats" ;;
+    lms-service)                 echo "/api/lms" ;;
+    performance-service)         echo "/api/performance" ;;
+    ai-copilot-service)          echo "/api/copilot" ;;
+    audit-compliance-service)    echo "/api/audit" ;;
+    integration-service)         echo "/api/integration" ;;
+    employee-lifecycle-service)  echo "/api/lifecycle" ;;
+    security-service)            echo "/api/security" ;;
+    ai-service)                  echo "/api/ai" ;;
+    *)                           echo "" ;;
+  esac
+}
+
 # ── Colors ─────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -109,7 +133,12 @@ sleep "$SLEEP_BETWEEN"
 # 4. Verify the API gateway returns 503 for the failed service
 echo ""
 log_info "Step 3: Verifying gateway returns 503 for $SERVICE_NAME..."
-FAILED_ENDPOINT="$API_GATEWAY/api/attendance"
+SERVICE_PATH=$(get_service_endpoint "$SERVICE_NAME")
+if [ -z "$SERVICE_PATH" ]; then
+  log_fail "Unknown service '$SERVICE_NAME' — no API endpoint mapping available"
+  exit 1
+fi
+FAILED_ENDPOINT="$API_GATEWAY$SERVICE_PATH"
 HTTP_CODE=$(curl -so /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$FAILED_ENDPOINT" || echo "000")
 if [ "$HTTP_CODE" = "503" ] || [ "$HTTP_CODE" = "502" ] || [ "$HTTP_CODE" = "000" ]; then
   log_ok "Gateway returned $HTTP_CODE for failed service (expected 503/502)"
