@@ -13,6 +13,7 @@ const axios = require('axios');
 const redis = require('redis');
 const { DOMParser } = require('@xmldom/xmldom');
 const { SignedXml } = require('xml-crypto');
+const { rateLimit } = require('express-rate-limit');
 const { subtle } = crypto.webcrypto;
 const {
   generateRegistrationOptions,
@@ -95,6 +96,21 @@ function metricsMiddleware(req, res, next) {
 }
 app.use(metricsMiddleware);
 
+// Baseline abuse protection on every route. The stricter per-route custom
+// limiters (createUserRateLimiter, Redis-backed) stay in place for
+// credential-bearing endpoints; this global limiter is defense in depth.
+const globalRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  // The gateway passes the real client IP in x-real-client-ip; never trust
+  // X-Forwarded-For. Using it here also avoids trust-proxy misconfiguration.
+  keyGenerator: (req) => getClientIp(req),
+  message: { message: 'Too many requests. Please try again later.' },
+});
+app.use(globalRateLimiter);
+
 const PORT = process.env.PORT || 8010;
 const NODE_ENV = process.env.NODE_ENV || 'production';
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -173,7 +189,11 @@ function resolveScimTenant(providedKey) {
 
 function getScimKeyId(providedKey, tenant) {
   try {
-    const hash = crypto.createHash('sha256').update(String(providedKey)).digest('hex').slice(0, 8);
+    // Keyed fingerprint for log correlation only (never a password hash and
+    // never used for authentication). HMAC avoids an unsalted fast hash of
+    // the raw provisioning secret.
+    const hmacKey = INTERNAL_JWT_SECRET || JWT_SECRET;
+    const hash = crypto.createHmac('sha256', hmacKey).update(String(providedKey)).digest('hex').slice(0, 16);
     return `scim:${tenant || 'unknown'}:${hash}`;
   } catch {
     return `scim:${tenant || 'unknown'}`;
@@ -275,6 +295,20 @@ function isEncryptedOAuthSecret(value) {
   }
 }
 
+const OKTA_FALLBACK_BASE = 'https://dev-000000.okta.com';
+
+// Build an Okta base URL from tenant-configured provider data. The subdomain
+// is strictly validated so attacker-controlled provider config cannot smuggle
+// an arbitrary host into authorize/token/userinfo URLs (e.g. a client_id of
+// "evil.com/.okta.com" must not produce "https://evil.okta.com...").
+function resolveOktaBaseUrl(clientId) {
+  const match = String(clientId || '').match(/^([a-zA-Z0-9-]{1,63})\.okta\.com$/);
+  if (match) {
+    return `https://${match[1]}.okta.com`;
+  }
+  return OKTA_FALLBACK_BASE;
+}
+
 function validateOAuthIdToken(idToken, provider, expectedClientId, expectedEmail) {
   if (!idToken) return { valid: true, skipped: true };
   let payload;
@@ -300,8 +334,18 @@ function validateOAuthIdToken(idToken, provider, expectedClientId, expectedEmail
     github: [],
   };
   const prefixes = expectedIssPrefixes[provider] || [];
-  if (prefixes.length > 0) {
-    const matched = prefixes.some(function (p) { return iss.indexOf(p) !== -1; });
+  if (provider === 'okta') {
+    // Hostname-suffix check on the parsed URL: a substring test would accept
+    // "https://evil.com/?x=.okta.com" as a genuine Okta issuer.
+    let host = '';
+    try {
+      host = new URL(iss).hostname.toLowerCase();
+    } catch {
+      host = '';
+    }
+    if (!host.endsWith('.okta.com')) return { valid: false, reason: 'issuer mismatch: ' + iss };
+  } else if (prefixes.length > 0) {
+    const matched = prefixes.some(function (p) { return iss.indexOf(p) === 0; });
     if (!matched) return { valid: false, reason: 'issuer mismatch: ' + iss };
   }
   if (payload.aud && payload.aud !== expectedClientId) {
@@ -528,6 +572,7 @@ async function issueLoginSession(user, req, res) {
     sameSite: 'strict',
     maxAge: REFRESH_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
   });
+  mintCsrfCookie(res);
   return { sessionId, accessToken, refreshToken };
 }
 
@@ -641,6 +686,33 @@ function requireScimAuth(req, res, next) {
 }
 
 const rateLimitStore = new Map();
+
+// Double-submit CSRF protection for cookie-authenticated routes (/refresh,
+// /logout), mirroring the api-gateway policy. Browser clients carry a
+// readable csrf_token cookie and must echo it in the x-csrf-token header on
+// unsafe requests. Requests without the cookie (curl, mobile, service
+// clients) pass through. All other state-changing routes use Bearer JWTs,
+// which are immune to CSRF.
+function requireCsrfDoubleSubmit(req, res, next) {
+  const cookieToken = req.cookies?.csrf_token;
+  if (!cookieToken) return next();
+  const headerToken = req.headers['x-csrf-token'];
+  if (typeof headerToken === 'string' && headerToken.length > 0 && headerToken === cookieToken) {
+    return next();
+  }
+  return res.status(403).json({ message: 'CSRF token mismatch' });
+}
+
+function mintCsrfCookie(res) {
+  try {
+    res.cookie('csrf_token', crypto.randomBytes(32).toString('hex'), {
+      httpOnly: false,
+      secure: NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: REFRESH_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
+    });
+  } catch {}
+}
 
 // Atomic Redis rate-limit check via Lua script: INCR + PEXPIRE on first hit.
 // Returns { count, ttl } or null on error.
@@ -1292,7 +1364,7 @@ app.post('/login', createUserRateLimiter('login', 20, 15 * 60 * 1000, { keyByEma
   }
 });
 
-app.post('/refresh', async (req, res) => {
+app.post('/refresh', createUserRateLimiter('refresh', 100), requireCsrfDoubleSubmit, async (req, res) => {
   const refreshToken = req.cookies?.refreshToken;
   if (!refreshToken) {
     return res.status(400).json({ message: 'Refresh token is required' });
@@ -1346,6 +1418,7 @@ app.post('/refresh', async (req, res) => {
       sameSite: 'strict',
       maxAge: REFRESH_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
     });
+    mintCsrfCookie(res);
 
     res.status(200).json({
       message: 'Token refreshed',
@@ -1358,7 +1431,7 @@ app.post('/refresh', async (req, res) => {
   }
 });
 
-app.post('/logout', async (req, res) => {
+app.post('/logout', createUserRateLimiter('logout', 100), requireCsrfDoubleSubmit, async (req, res) => {
   const refreshToken = req.cookies?.refreshToken;
   const sessionId = req.headers['x-session-id'];
   let userId = null;
@@ -1394,6 +1467,7 @@ app.post('/logout', async (req, res) => {
     }
 
     res.clearCookie('refreshToken');
+    res.clearCookie('csrf_token');
 
     if (userId) {
       await sendAuditEvent('auth.logout', userId, userEmail, {
@@ -3003,7 +3077,7 @@ app.post('/webauthn/authenticate/complete', createUserRateLimiter('webauthn_auth
   }
 });
 
-app.get('/webauthn/credentials', requireRole(), async (req, res) => {
+app.get('/webauthn/credentials', requireRole(), createUserRateLimiter('webauthn_list', 60), async (req, res) => {
   try {
     const userId = req.user.id;
     const result = await pool.query(
@@ -3020,7 +3094,7 @@ app.get('/webauthn/credentials', requireRole(), async (req, res) => {
   }
 });
 
-app.delete('/webauthn/credentials/:id', requireRole(), async (req, res) => {
+app.delete('/webauthn/credentials/:id', requireRole(), createUserRateLimiter('webauthn_delete', 20), async (req, res) => {
   try {
     const userId = req.user.id;
     const result = await pool.query(
@@ -3040,7 +3114,7 @@ app.delete('/webauthn/credentials/:id', requireRole(), async (req, res) => {
 
 // ── OAuth Enterprise Login ─────────────────────────────────────────────────
 
-app.get('/oauth/providers', requireRole('admin'), async (req, res) => {
+app.get('/oauth/providers', requireRole('admin'), createUserRateLimiter('oauth_providers_list', 60), async (req, res) => {
   try {
     const tenantId = req.user.tenant_id || 'default';
     const result = await pool.query(
@@ -3054,7 +3128,7 @@ app.get('/oauth/providers', requireRole('admin'), async (req, res) => {
   }
 });
 
-app.post('/oauth/providers', requireRole('admin'), async (req, res) => {
+app.post('/oauth/providers', requireRole('admin'), createUserRateLimiter('oauth_providers_create', 20), async (req, res) => {
   try {
     const { provider, client_id, client_secret, redirect_uri, scopes } = req.body;
     const tenantId = req.user.tenant_id || 'default';
@@ -3135,7 +3209,7 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
         },
       },
       okta: {
-        authUrl: `${prov.client_id.includes('.okta.com') ? `https://${prov.client_id.split('.')[0]}.okta.com` : 'https://dev-000000.okta.com'}/oauth2/v1/authorize`,
+        authUrl: `${resolveOktaBaseUrl(prov.client_id)}/oauth2/v1/authorize`,
         params: {
           client_id: prov.client_id,
           redirect_uri: prov.redirect_uri || `${req.protocol}://${req.get('host')}/oauth/callback/${provider}`,
@@ -3207,8 +3281,8 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
         userInfoHeaders: { Accept: 'application/json' },
       },
       okta: {
-        tokenUrl: `${prov.client_id.includes('.okta.com') ? `https://${prov.client_id.split('.')[0]}.okta.com` : 'https://dev-000000.okta.com'}/oauth2/v1/token`,
-        userInfoUrl: `${prov.client_id.includes('.okta.com') ? `https://${prov.client_id.split('.')[0]}.okta.com` : 'https://dev-000000.okta.com'}/oauth2/v1/userinfo`,
+        tokenUrl: `${resolveOktaBaseUrl(prov.client_id)}/oauth2/v1/token`,
+        userInfoUrl: `${resolveOktaBaseUrl(prov.client_id)}/oauth2/v1/userinfo`,
       },
     };
 
@@ -3337,7 +3411,13 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
       });
     } catch (oauthErr) {
       if (res.headersSent) return;
-      console.error('OAuth token exchange error:', oauthErr.response?.data || oauthErr.message);
+      // Never log the upstream response body: it can carry access/refresh
+      // tokens and PII. Status code plus error message is enough to diagnose.
+      console.error('OAuth token exchange error:', {
+        provider,
+        status: oauthErr.response?.status || null,
+        message: oauthErr.message,
+      });
       res.status(502).json({ message: `OAuth ${provider} authentication failed` });
     }
   } catch (err) {
@@ -3347,7 +3427,7 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
   }
 });
 
-app.get('/oauth/links', requireRole(), async (req, res) => {
+app.get('/oauth/links', requireRole(), createUserRateLimiter('oauth_links_list', 60), async (req, res) => {
   try {
     const userId = req.user.id;
     const result = await pool.query(
@@ -3361,7 +3441,7 @@ app.get('/oauth/links', requireRole(), async (req, res) => {
   }
 });
 
-app.delete('/oauth/links/:provider', requireRole(), async (req, res) => {
+app.delete('/oauth/links/:provider', requireRole(), createUserRateLimiter('oauth_links_delete', 20), async (req, res) => {
   try {
     const userId = req.user.id;
     const result = await pool.query(
@@ -3405,6 +3485,11 @@ module.exports = {
   validatePassword,
   hashToken,
   sanitizeUser,
+  resolveOktaBaseUrl,
+  getScimKeyId,
+  requireCsrfDoubleSubmit,
+  mintCsrfCookie,
+  validateOAuthIdToken,
 };
 
 if (require.main === module) {

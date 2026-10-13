@@ -141,6 +141,7 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: services/${{ matrix.service }}/gosec-results.sarif
+          category: gosec-${{ matrix.service }}
         if: always() && hashFiles('services/**/gosec-results.sarif') != ''
 
   python-services-check:
@@ -178,6 +179,7 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: services/${{ matrix.service }}/bandit-results.sarif
+          category: bandit-${{ matrix.service }}
         if: always() && hashFiles('services/**/bandit-results.sarif') != ''
       - name: Set test environment variables
         run: |
@@ -585,4 +587,5 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
+          category: trivy-fs
         if: always() && hashFiles('trivy-results.sarif') != ''
