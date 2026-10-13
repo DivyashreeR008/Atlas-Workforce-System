@@ -73,6 +73,8 @@ describe("DashboardPage", () => {
 
     renderPage();
 
+    // The page retries failed queries once (retry: 1), so the error UI
+    // settles later than Testing Library's default 1s waitFor timeout.
     await waitFor(() => {
       // Attendance + hiring widgets surface the chart error state.
       expect(screen.getAllByText("Failed to load chart data").length).toBeGreaterThan(0);
@@ -80,7 +82,7 @@ describe("DashboardPage", () => {
       expect(screen.getByText("Failed to load activity")).toBeInTheDocument();
       // Live check-ins surface their error state.
       expect(screen.getByText("Unable to load check-in data")).toBeInTheDocument();
-    });
+    }, { timeout: 10000 });
 
     // Mock totals must never stand in for live data.
     expect(screen.queryByText("1,248")).not.toBeInTheDocument();

@@ -282,11 +282,9 @@ func (c *Client) readPump() {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]string{"status": "Notification Service is running"}); err != nil {
 		log.Printf("Failed to encode health response")
 	}
-}
 }
 
 func canAcceptConnection(ip string) bool {
@@ -392,11 +390,9 @@ func listNotificationsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	notifications := store.List(tenantID)
-	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(notifications); err != nil {
 		log.Printf("Failed to encode notifications response")
 	}
-}
 }
 
 func markReadHandler(w http.ResponseWriter, r *http.Request) {
@@ -412,11 +408,9 @@ func markReadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	store.MarkRead(req.IDs)
-	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
 		log.Printf("Failed to encode mark-read response")
 	}
-}
 }
 
 // sanitizeLogArg strips line breaks from externally-influenced values so a
