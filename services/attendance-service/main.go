@@ -63,6 +63,19 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+// validPort reports whether p is a digits-only TCP port string.
+func validPort(p string) bool {
+	if p == "" || len(p) > 5 {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		if p[i] < '0' || p[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func initDatabase() {
 	dsn := os.Getenv("POSTGRES_URL")
 	if dsn == "" {
@@ -439,6 +452,9 @@ func main() {
 	if port == "" {
 		port = "8005"
 	}
+	if !validPort(port) {
+		log.Fatal("FATAL: invalid PORT environment variable")
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -454,6 +470,7 @@ func main() {
 		}
 	}()
 
+	// #nosec G706 -- port is validated digits-only above; no log forgery possible
 	log.Printf("Atlas Attendance Service v2.0 listening on port %s", port)
 	if err := app.Listen(":" + port); err != nil {
 		log.Fatalf("Server error: %v", err)

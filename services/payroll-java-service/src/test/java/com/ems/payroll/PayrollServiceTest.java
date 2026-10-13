@@ -31,7 +31,13 @@ class PayrollServiceTest {
         when(repository.findByTenantIdAndEmployeeIdAndPeriod("t1", "e1", "2026-01"))
                 .thenReturn(List.of());
         when(repository.save(any(PayrollRecord.class)))
-                .thenAnswer(inv -> inv.getArgument(0));
+                .thenAnswer(inv -> {
+                    PayrollRecord saved = inv.getArgument(0);
+                    // Mocked save must assign an id: runPayroll embeds it in the
+                    // outbox payload via Map.of, which rejects null values.
+                    saved.setId(1L);
+                    return saved;
+                });
 
         // 0.10 + 0.20 - 0.00 = 0.30 gross, below the 3000 tax threshold.
         PayrollRecord record = service.runPayroll(
@@ -47,7 +53,13 @@ class PayrollServiceTest {
         when(repository.findByTenantIdAndEmployeeIdAndPeriod("t1", "e2", "2026-01"))
                 .thenReturn(List.of());
         when(repository.save(any(PayrollRecord.class)))
-                .thenAnswer(inv -> inv.getArgument(0));
+                .thenAnswer(inv -> {
+                    PayrollRecord saved = inv.getArgument(0);
+                    // Mocked save must assign an id: runPayroll embeds it in the
+                    // outbox payload via Map.of, which rejects null values.
+                    saved.setId(2L);
+                    return saved;
+                });
 
         // 5000 gross: (5000 - 3000) * 15% = 300.00 tax, 4700.00 net.
         PayrollRecord record = service.runPayroll(

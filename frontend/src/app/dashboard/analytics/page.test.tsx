@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { AxiosResponse } from "axios";
 import { render, screen, waitFor } from "@/lib/test-utils";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import AnalyticsPage from "./page";
@@ -33,9 +34,9 @@ describe("AnalyticsPage", () => {
   it("calls the analytics and attendance APIs for its widgets", async () => {
     vi.mocked(analyticsApi.department).mockResolvedValue({
       data: [{ department: "Engineering", count: 10 }],
-    });
-    vi.mocked(analyticsApi.performance).mockResolvedValue({ data: {} });
-    vi.mocked(attendanceApi.heatmap).mockResolvedValue({ data: [] });
+    } as unknown as AxiosResponse);
+    vi.mocked(analyticsApi.performance).mockResolvedValue({ data: {} } as unknown as AxiosResponse);
+    vi.mocked(attendanceApi.heatmap).mockResolvedValue({ data: [] } as unknown as AxiosResponse);
 
     renderPage();
 
@@ -71,9 +72,9 @@ describe("AnalyticsPage", () => {
   });
 
   it("renders an empty state when the APIs return no rows", async () => {
-    vi.mocked(analyticsApi.department).mockResolvedValue({ data: [] });
-    vi.mocked(analyticsApi.performance).mockResolvedValue({ data: null });
-    vi.mocked(attendanceApi.heatmap).mockResolvedValue({ data: [] });
+    vi.mocked(analyticsApi.department).mockResolvedValue({ data: [] } as unknown as AxiosResponse);
+    vi.mocked(analyticsApi.performance).mockResolvedValue({ data: null } as unknown as AxiosResponse);
+    vi.mocked(attendanceApi.heatmap).mockResolvedValue({ data: [] } as unknown as AxiosResponse);
 
     renderPage();
 

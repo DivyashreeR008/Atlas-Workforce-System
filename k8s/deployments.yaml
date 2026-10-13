@@ -157,7 +157,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: atlas-secrets
-              key: redis-url
+              key: REDIS_URL
               optional: true
         envFrom:
         - secretRef:

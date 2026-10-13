@@ -60,7 +60,8 @@ async function testHelperSetsCookieAndSessionRow() {
   const helperSrc = extractHelper();
 
   const queries = [];
-  let cookie = null;
+  const cookies = [];
+  const csrfMinted = [];
   const fakePool = {
     query: async (text, params) => {
       queries.push({ text, params });
@@ -70,7 +71,7 @@ async function testHelperSetsCookieAndSessionRow() {
   const fakeReq = { headers: { 'x-device-id': 'test-device', 'user-agent': 'test-agent' }, ip: '127.0.0.1' };
   const fakeRes = {
     cookie: (name, value, opts) => {
-      cookie = { name, value, opts };
+      cookies.push({ name, value, opts });
     },
   };
 
@@ -82,6 +83,7 @@ async function testHelperSetsCookieAndSessionRow() {
     'uuidv4',
     'REFRESH_EXPIRY_DAYS',
     'NODE_ENV',
+    'mintCsrfCookie',
     'user',
     'req',
     'res',
@@ -96,6 +98,7 @@ async function testHelperSetsCookieAndSessionRow() {
     () => 'session-id-123',
     7,
     'test',
+    (res) => { csrfMinted.push(res); },
     { id: 42 },
     fakeReq,
     fakeRes
@@ -104,10 +107,12 @@ async function testHelperSetsCookieAndSessionRow() {
   assert.strictEqual(result.sessionId, 'session-id-123');
   assert.strictEqual(result.accessToken, 'access-token');
   assert.strictEqual(result.refreshToken, 'refresh-token');
+  const cookie = cookies.find((c) => c.name === 'refreshToken');
   assert.ok(cookie, 'helper must set a cookie');
   assert.strictEqual(cookie.name, 'refreshToken');
   assert.strictEqual(cookie.value, 'refresh-token');
   assert.strictEqual(cookie.opts.httpOnly, true);
+  assert.strictEqual(csrfMinted.length, 1, 'helper must mint the CSRF cookie');
   const sessionInsert = queries.find((q) => q.text.includes('INSERT INTO sessions'));
   assert.ok(sessionInsert, 'helper must insert a sessions row');
   assert.strictEqual(sessionInsert.params[0], 'session-id-123');

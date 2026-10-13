@@ -950,11 +950,10 @@ app.post('/api/webhooks/slack', express.urlencoded({
   }
 }), async (req, res) => {
   if (!SLACK_SIGNING_SECRET && !SLACK_WEBHOOK_SECRET) {
-    if (NODE_ENV !== 'development') {
-      console.error('Slack webhook rejected: no signing secret configured');
-      return res.status(503).json({ response_type: 'ephemeral', text: 'Webhook not configured' });
-    }
-    console.warn('Slack webhook verification bypassed in development (no secret configured)');
+    // Fail closed in every environment: an unverifiable webhook must never
+    // execute actions, including in development.
+    console.error('Slack webhook rejected: no signing secret configured');
+    return res.status(503).json({ response_type: 'ephemeral', text: 'Webhook not configured' });
   } else {
     const verification = verifySlackRequest(req);
     if (!verification.valid) {

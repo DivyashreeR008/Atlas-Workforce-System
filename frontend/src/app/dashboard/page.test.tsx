@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { AxiosResponse } from "axios";
 import { render, screen, waitFor } from "@/lib/test-utils";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import DashboardPage from "./page";
@@ -43,12 +44,12 @@ describe("DashboardPage", () => {
   });
 
   it("calls the backing APIs for its widgets", async () => {
-    vi.mocked(analyticsApi.department).mockResolvedValue({ data: [] });
-    vi.mocked(employeeApi.list).mockResolvedValue({ data: { total: 0 } });
-    vi.mocked(attendanceApi.list).mockResolvedValue({ data: [] });
-    vi.mocked(attendanceApi.heatmap).mockResolvedValue({ data: [] });
-    vi.mocked(commandCenterApi.hiringPipeline).mockResolvedValue({ data: {} });
-    vi.mocked(commandCenterApi.activityFeed).mockResolvedValue({ data: {} });
+    vi.mocked(analyticsApi.department).mockResolvedValue({ data: [] } as unknown as AxiosResponse);
+    vi.mocked(employeeApi.list).mockResolvedValue({ data: { total: 0 } } as unknown as AxiosResponse);
+    vi.mocked(attendanceApi.list).mockResolvedValue({ data: [] } as unknown as AxiosResponse);
+    vi.mocked(attendanceApi.heatmap).mockResolvedValue({ data: [] } as unknown as AxiosResponse);
+    vi.mocked(commandCenterApi.hiringPipeline).mockResolvedValue({ data: {} } as unknown as AxiosResponse);
+    vi.mocked(commandCenterApi.activityFeed).mockResolvedValue({ data: {} } as unknown as AxiosResponse);
 
     renderPage();
 
@@ -87,12 +88,12 @@ describe("DashboardPage", () => {
   });
 
   it("renders empty states when the APIs return no rows", async () => {
-    vi.mocked(analyticsApi.department).mockResolvedValue({ data: [] });
-    vi.mocked(employeeApi.list).mockResolvedValue({ data: { total: 0 } });
-    vi.mocked(attendanceApi.list).mockResolvedValue({ data: [] });
-    vi.mocked(attendanceApi.heatmap).mockResolvedValue({ data: [] });
-    vi.mocked(commandCenterApi.hiringPipeline).mockResolvedValue({ data: {} });
-    vi.mocked(commandCenterApi.activityFeed).mockResolvedValue({ data: {} });
+    vi.mocked(analyticsApi.department).mockResolvedValue({ data: [] } as unknown as AxiosResponse);
+    vi.mocked(employeeApi.list).mockResolvedValue({ data: { total: 0 } } as unknown as AxiosResponse);
+    vi.mocked(attendanceApi.list).mockResolvedValue({ data: [] } as unknown as AxiosResponse);
+    vi.mocked(attendanceApi.heatmap).mockResolvedValue({ data: [] } as unknown as AxiosResponse);
+    vi.mocked(commandCenterApi.hiringPipeline).mockResolvedValue({ data: {} } as unknown as AxiosResponse);
+    vi.mocked(commandCenterApi.activityFeed).mockResolvedValue({ data: {} } as unknown as AxiosResponse);
 
     renderPage();
 

@@ -45,6 +45,7 @@ from crud import (
 )
 from models import AuditLog, Base
 from schemas import (
+    AuditLogCreate,
     AuditLogPaginated,
     AuditLogResponse,
     CompliancePolicyCreate,

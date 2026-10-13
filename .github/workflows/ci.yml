@@ -39,7 +39,53 @@ jobs:
       - name: Run unit tests
         run: npm test
       - name: Security audit
-        run: npm audit --audit-level=high
+        # Same allowlist gate as node-services-check (GHSA-vfj7-8cjw-p6xm has
+        # no patched version; see comment there).
+        run: |
+          npm audit --json > /tmp/npm-audit.json || true
+          python3 -c "
+          import json, sys
+          allowlist = {'GHSA-vfj7-8cjw-p6xm'}
+          allow_urls = {'https://github.com/advisories/' + a for a in allowlist}
+          try:
+              data = json.load(open('/tmp/npm-audit.json'))
+          except Exception as e:
+              print(f'FAIL: could not parse npm audit output: {e}')
+              sys.exit(1)
+          vulns = data.get('vulnerabilities') or {}
+          def advisory_urls(name, seen=None):
+              # npm links chain entries by package name; resolve transitively
+              # to the leaf advisory objects.
+              seen = seen or set()
+              if name in seen:
+                  return set()
+              seen.add(name)
+              info = vulns.get(name)
+              if not info:
+                  return set()
+              urls = set()
+              for v in info.get('via', []) or []:
+                  if isinstance(v, dict):
+                      if v.get('url'):
+                          urls.add(v['url'])
+                  elif isinstance(v, str):
+                      urls |= advisory_urls(v, seen)
+              return urls
+          bad = []
+          for name, info in vulns.items():
+              sev = (info.get('severity') or '').lower()
+              if sev not in ('high', 'critical'):
+                  continue
+              urls = advisory_urls(name)
+              if urls and urls <= allow_urls:
+                  print(f'allowlisted: {name} ({sorted(urls)})')
+                  continue
+              bad.append((name, sev))
+          if bad:
+              print(f'FAIL: npm audit findings above allowlist: {bad}')
+              sys.exit(1)
+          print('npm audit gate passed')
+          "
       - name: Build
         run: npm run build
         env:
@@ -81,7 +127,56 @@ jobs:
         run: npm ci
         working-directory: services/${{ matrix.service }}
       - name: Security audit
-        run: npm audit --audit-level=high
+        # Fail on high/critical findings except explicitly allowlisted
+        # advisories. Allowlist (documented accepted risk, no patched version
+        # exists): GHSA-vfj7-8cjw-p6xm — braces stack-exhaustion via
+        # micromatch (transitive of http-proxy-middleware); patterns matched
+        # are static server-side proxy config, not attacker input.
+        run: |
+          npm audit --json > /tmp/npm-audit.json || true
+          python3 -c "
+          import json, sys
+          allowlist = {'GHSA-vfj7-8cjw-p6xm'}
+          allow_urls = {'https://github.com/advisories/' + a for a in allowlist}
+          try:
+              data = json.load(open('/tmp/npm-audit.json'))
+          except Exception as e:
+              print(f'FAIL: could not parse npm audit output: {e}')
+              sys.exit(1)
+          vulns = data.get('vulnerabilities') or {}
+          def advisory_urls(name, seen=None):
+              # npm links chain entries by package name; resolve transitively
+              # to the leaf advisory objects.
+              seen = seen or set()
+              if name in seen:
+                  return set()
+              seen.add(name)
+              info = vulns.get(name)
+              if not info:
+                  return set()
+              urls = set()
+              for v in info.get('via', []) or []:
+                  if isinstance(v, dict):
+                      if v.get('url'):
+                          urls.add(v['url'])
+                  elif isinstance(v, str):
+                      urls |= advisory_urls(v, seen)
+              return urls
+          bad = []
+          for name, info in vulns.items():
+              sev = (info.get('severity') or '').lower()
+              if sev not in ('high', 'critical'):
+                  continue
+              urls = advisory_urls(name)
+              if urls and urls <= allow_urls:
+                  print(f'allowlisted: {name} ({sorted(urls)})')
+                  continue
+              bad.append((name, sev))
+          if bad:
+              print(f'FAIL: npm audit findings above allowlist: {bad}')
+              sys.exit(1)
+          print('npm audit gate passed')
+          "
         working-directory: services/${{ matrix.service }}
       - name: Syntax check
         run: node -c index.js
@@ -147,6 +242,20 @@ jobs:
   python-services-check:
     name: Python Services CI
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: atlas_user
+          POSTGRES_PASSWORD: atlas_password
+          POSTGRES_DB: atlas_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U atlas_user -d atlas_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     strategy:
       matrix:
         service: [employee-python-service, analytics-python-service, integration-service, ai-service, security-service, live-service, employee-lifecycle-service, workforce-planning-service, ats-service, audit-compliance-service, ai-copilot-service]
@@ -206,7 +315,10 @@ jobs:
           elif [[ "${{ matrix.service }}" == "workforce-planning-service" ]]; then
             echo "DATABASE_URL=sqlite:///test.db" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "ats-service" ]]; then
-            echo "DATABASE_URL=sqlite:///test.db" >> $GITHUB_ENV
+            # ATS uses PostgreSQL-only columns (UUID/ARRAY): run it against
+            # the job's postgres service instead of sqlite. The service
+            # defaults (atlas_user/atlas_password@localhost/atlas_db) match
+            # the container above, so no DATABASE_URL override is needed.
             echo "INTERNAL_JWT_SECRET=test-secret" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "audit-compliance-service" ]]; then
             echo "DATABASE_URL=sqlite:///test.db" >> $GITHUB_ENV
@@ -406,14 +518,22 @@ jobs:
               errors.append(f"docker-build missing: {sorted(missing_docker)}")
 
           # Every prometheus scrape target must be a service in docker-compose.yml,
-          # otherwise the target stays down and the ServiceDown alert fires (issue #162)
+          # otherwise the target stays down and the ServiceDown alert fires (issue #162).
+          # Skip http(s):// probe URLs (blackbox-exporter targets are URLs, not
+          # hostnames) and infra-only jobs that intentionally live in
+          # docker-compose.monitoring.yml (node-exporter, blackbox-exporter).
           compose = yaml.safe_load(pathlib.Path("docker-compose.yml").read_text())
           compose_services = set(compose.get("services", {}) or {})
           prom = yaml.safe_load(pathlib.Path("prometheus.yml").read_text())
+          infra_jobs = {"node-exporter", "blackbox-exporter", "prometheus"}
           prom_targets = set()
           for scrape in prom.get("scrape_configs", []) or []:
+              if scrape.get("job_name") in infra_jobs:
+                  continue
               for static in scrape.get("static_configs", []) or []:
                   for target in static.get("targets", []) or []:
+                      if target.startswith("http://") or target.startswith("https://"):
+                          continue
                       host = target.split(":")[0]
                       if host != "localhost":
                           prom_targets.add(host)

@@ -240,16 +240,16 @@ func (c *Client) writePump() {
 	for {
 		select {
 		case message, ok := <-c.send:
-			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if !ok {
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
 				return
 			}
 		case <-ticker.C:
-			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
@@ -267,9 +267,9 @@ func (c *Client) readPump() {
 		_ = c.conn.Close()
 	}()
 
-	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	_ = c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	c.conn.SetPongHandler(func(string) error {
-		c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		_ = c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		return nil
 	})
 
@@ -283,7 +283,10 @@ func (c *Client) readPump() {
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "Notification Service is running"})
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "Notification Service is running"}); err != nil {
+		log.Printf("Failed to encode health response")
+	}
+}
 }
 
 func canAcceptConnection(ip string) bool {
@@ -390,7 +393,10 @@ func listNotificationsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	notifications := store.List(tenantID)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(notifications)
+	if err := json.NewEncoder(w).Encode(notifications); err != nil {
+		log.Printf("Failed to encode notifications response")
+	}
+}
 }
 
 func markReadHandler(w http.ResponseWriter, r *http.Request) {
@@ -407,7 +413,10 @@ func markReadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	store.MarkRead(req.IDs)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
+		log.Printf("Failed to encode mark-read response")
+	}
+}
 }
 
 // sanitizeLogArg strips line breaks from externally-influenced values so a
@@ -418,6 +427,19 @@ func sanitizeLogArg(v any) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	return s
+}
+
+// validPort reports whether p is a digits-only TCP port string.
+func validPort(p string) bool {
+	if p == "" || len(p) > 5 {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		if p[i] < '0' || p[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func setupRabbitMQConsumer(ctx context.Context) {
@@ -459,7 +481,7 @@ func setupRabbitMQConsumer(ctx context.Context) {
 
 		err = ch.ExchangeDeclare("notifications_exchange", "fanout", true, false, false, false, nil)
 		if err != nil {
-			//nosec G706 -- broker-provided error text is neutralized by sanitizeLogArg above
+			// #nosec G706 -- broker-provided error text is neutralized by sanitizeLogArg above
 			log.Printf("Failed to declare exchange (%s), reconnecting", sanitizeLogArg(err))
 			_ = ch.Close()
 			_ = conn.Close()
@@ -599,6 +621,9 @@ func main() {
 	if port == "" {
 		port = "8004"
 	}
+	if !validPort(port) {
+		log.Fatal("FATAL: invalid PORT environment variable")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -656,6 +681,7 @@ func main() {
 		}
 	}()
 
+	// #nosec G706 -- port is validated digits-only in main; no log forgery possible
 	log.Printf("Notification Service listening on port %s", port)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Failed to start server: %v", err)
