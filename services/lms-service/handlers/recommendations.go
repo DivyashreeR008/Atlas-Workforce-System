@@ -82,8 +82,10 @@ func (h *RecommendationHandler) Generate(c *fiber.Ctx) error {
 	}
 
 	if len(recs) > 0 {
-		for _, rec := range recs {
-			h.DB.Create(&rec)
+		for i := range recs {
+			if err := h.DB.Create(&recs[i]).Error; err != nil {
+				return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to save recommendations"})
+			}
 		}
 	}
 

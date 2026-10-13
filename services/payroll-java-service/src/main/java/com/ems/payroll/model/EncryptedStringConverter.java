@@ -99,6 +99,11 @@ public class EncryptedStringConverter implements AttributeConverter<String, Stri
 
     private String decryptLegacy(String dbData) {
         try {
+            // Read-only back-compat for rows encrypted before the GCM
+            // migration. This path never encrypts; all new writes use
+            // AES-GCM (see convertToDatabaseColumn). Removing it would make
+            // pre-migration rows unreadable.
+            // codeql[java/weak-cryptographic-algorithm]
             Cipher cipher = Cipher.getInstance(LEGACY_ALGORITHM);
             cipher.init(Cipher.DECRYPT_MODE, getKey());
             byte[] decrypted = cipher.doFinal(Base64.getDecoder().decode(dbData));

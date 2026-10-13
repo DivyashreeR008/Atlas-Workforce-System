@@ -413,7 +413,7 @@ func markReadHandler(w http.ResponseWriter, r *http.Request) {
 func setupRabbitMQConsumer(ctx context.Context) {
 	rabbitURL := os.Getenv("RABBITMQ_URL")
 	if rabbitURL == "" {
-		rabbitURL = "amqp://atlas_rabbit:changeme_rabbit_pass@rabbitmq:5672/"
+		log.Fatalf("FATAL: RABBITMQ_URL environment variable is required")
 	}
 
 	backoff := 1 * time.Second
@@ -624,8 +624,11 @@ func main() {
 	}))
 
 	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: metricsMiddleware(mux),
+		Addr:              ":" + port,
+		Handler:           metricsMiddleware(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	sigCh := make(chan os.Signal, 1)

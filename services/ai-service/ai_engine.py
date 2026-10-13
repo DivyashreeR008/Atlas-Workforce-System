@@ -651,20 +651,35 @@ def _generate_workflow(process_name: str, department: str, description: str, con
 
 
 _AUTOMATION_FIELD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,64}$")
-_AUTOMATION_CONDITION_RE = re.compile(
-    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(==|!=|>=|<=|>|<)\s*(.+?)\s*$"
-)
+# Multi-char operators must come before their single-char prefixes.
+_AUTOMATION_OPERATORS = ("==", "!=", ">=", "<=", ">", "<")
+_AUTOMATION_MAX_CONDITION = 500
 _AUTOMATION_FORMAT = "atlas-automation-definition/v1"
 _AUTOMATION_MAX_ACTIONS = 10
 _AUTOMATION_MAX_TEXT = 200
 
 
+def _split_condition(raw: str) -> tuple[str | None, str | None, str | None]:
+    """Split one 'field operator value' condition without regex.
+
+    Plain string scanning keeps parsing linear-time on uncontrolled input,
+    where a lazy-group regex would backtrack.
+    """
+    s = (raw or "").strip()
+    if not s or len(s) > _AUTOMATION_MAX_CONDITION:
+        return None, None, None
+    for op in _AUTOMATION_OPERATORS:
+        idx = s.find(op)
+        if idx > 0:
+            return s[:idx].strip(), op, s[idx + len(op):].strip()
+    return None, None, None
+
+
 def _parse_automation_condition(raw: str) -> tuple[dict | None, str | None]:
     """Parse one 'field operator value' condition into data. Never eval'd."""
-    match = _AUTOMATION_CONDITION_RE.match(raw or "")
-    if not match:
+    field, operator, value_text = _split_condition(raw)
+    if not field or not operator or not value_text:
         return None, raw
-    field, operator, value_text = match.groups()
     if not _AUTOMATION_FIELD_RE.match(field):
         return None, raw
     try:

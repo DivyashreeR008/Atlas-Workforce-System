@@ -177,7 +177,7 @@ type NFCRegistration struct {
 }
 
 func migrateDB(db *gorm.DB) {
-	db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&AttendanceRecord{},
 		&GeoFence{},
 		&Shift{},
@@ -189,5 +189,7 @@ func migrateDB(db *gorm.DB) {
 		&AnomalyLog{},
 		&WFHTracking{},
 		&NFCRegistration{},
-	)
+	); err != nil {
+		log.Fatalf("FATAL: attendance database migration failed: %v", err)
+	}
 }

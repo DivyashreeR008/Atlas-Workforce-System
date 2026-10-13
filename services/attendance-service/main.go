@@ -85,7 +85,11 @@ func initDatabase() {
 func initRabbitMQ() {
 	rabbitURL := os.Getenv("RABBITMQ_URL")
 	if rabbitURL == "" {
-		rabbitURL = "amqp://atlas_rabbit:changeme_rabbit_pass@rabbitmq:5672/"
+		// No embedded default credentials: refusing to fall back to a
+		// hardcoded password. RabbitMQ integration stays disabled; the
+		// service works without it.
+		log.Printf("Warning: RABBITMQ_URL is not set; RabbitMQ integration disabled")
+		return
 	}
 
 	conn, err := amqp.Dial(rabbitURL)
@@ -117,7 +121,8 @@ func initRabbitMQ() {
 func consumeEmployeeDeletions(ctx context.Context) {
 	rabbitURL := os.Getenv("RABBITMQ_URL")
 	if rabbitURL == "" {
-		rabbitURL = "amqp://atlas_rabbit:changeme_rabbit_pass@rabbitmq:5672/"
+		log.Printf("Warning: RABBITMQ_URL is not set; employee-deletion consumer disabled")
+		return
 	}
 
 	backoff := 1 * time.Second
@@ -146,7 +151,7 @@ func consumeEmployeeDeletions(ctx context.Context) {
 		ch, err := conn.Channel()
 		if err != nil {
 			log.Printf("Warning: Could not open channel (%v), reconnecting", err)
-			conn.Close()
+			_ = conn.Close()
 			time.Sleep(backoff)
 			continue
 		}
@@ -154,8 +159,8 @@ func consumeEmployeeDeletions(ctx context.Context) {
 		err = ch.ExchangeDeclare("notifications_exchange", "fanout", true, false, false, false, nil)
 		if err != nil {
 			log.Printf("Warning: Could not declare exchange (%v), reconnecting", err)
-			ch.Close()
-			conn.Close()
+			_ = ch.Close()
+			_ = conn.Close()
 			time.Sleep(backoff)
 			continue
 		}
@@ -163,8 +168,8 @@ func consumeEmployeeDeletions(ctx context.Context) {
 		q, err := ch.QueueDeclare("", false, false, true, false, nil)
 		if err != nil {
 			log.Printf("Warning: Could not declare queue (%v), reconnecting", err)
-			ch.Close()
-			conn.Close()
+			_ = ch.Close()
+			_ = conn.Close()
 			time.Sleep(backoff)
 			continue
 		}
@@ -172,8 +177,8 @@ func consumeEmployeeDeletions(ctx context.Context) {
 		err = ch.QueueBind(q.Name, "", "notifications_exchange", false, nil)
 		if err != nil {
 			log.Printf("Warning: Could not bind queue (%v), reconnecting", err)
-			ch.Close()
-			conn.Close()
+			_ = ch.Close()
+			_ = conn.Close()
 			time.Sleep(backoff)
 			continue
 		}
@@ -181,8 +186,8 @@ func consumeEmployeeDeletions(ctx context.Context) {
 		msgs, err := ch.Consume(q.Name, "", true, false, false, false, nil)
 		if err != nil {
 			log.Printf("Warning: Could not start consuming (%v), reconnecting", err)
-			ch.Close()
-			conn.Close()
+			_ = ch.Close()
+			_ = conn.Close()
 			time.Sleep(backoff)
 			continue
 		}
@@ -194,14 +199,14 @@ func consumeEmployeeDeletions(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				log.Println("Employee deletion consumer shutting down")
-				ch.Close()
-				conn.Close()
+				_ = ch.Close()
+				_ = conn.Close()
 				return
 			case msg, ok := <-msgs:
 				if !ok {
 					log.Printf("RabbitMQ connection lost for deletion consumer, reconnecting")
-					ch.Close()
-					conn.Close()
+					_ = ch.Close()
+					_ = conn.Close()
 					break consumeLoop
 				}
 				var event struct {

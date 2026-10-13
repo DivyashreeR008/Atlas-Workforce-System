@@ -41,7 +41,10 @@ _SKILLS_SET: set[str] = {s.lower() for s in _COMMON_SKILLS}
 #  Pattern compilation
 # ──────────────────────────────────────────────
 
-_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+_EMAIL_CANDIDATE_RE = re.compile(r"[^\s@]{1,64}@[^\s@]{1,253}")
+# Strict validation applied with fullmatch to a short candidate only. All
+# repetitions are single-level and bounded, so matching is linear-time.
+_EMAIL_VALID_RE = re.compile(r"[a-zA-Z0-9._%+-]{1,64}@[a-zA-Z0-9.-]{1,253}\.[a-zA-Z]{2,10}")
 _PHONE_RE = re.compile(r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}")
 _NAME_RE = re.compile(
     r"(?:^|\n)\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)",
@@ -71,8 +74,15 @@ def extract_skills(text: str) -> list[str]:
 
 
 def extract_email(text: str) -> Optional[str]:
-    match = _EMAIL_RE.search(text)
-    return match.group(0) if match else None
+    # Two linear steps instead of one backtracking-prone pattern: find a
+    # short candidate, then strictly validate it.
+    match = _EMAIL_CANDIDATE_RE.search(text or "")
+    if not match:
+        return None
+    candidate = match.group(0)
+    if "@" not in candidate or candidate.count("@") != 1:
+        return None
+    return candidate if _EMAIL_VALID_RE.fullmatch(candidate) else None
 
 
 def extract_phone(text: str) -> Optional[str]:
@@ -119,7 +129,21 @@ def extract_experience(text: str) -> list[dict]:
             years = 0
 
             start_str = year_range.group(0)
-            parts = re.split(r"\s*(?:–|-|to|–)\s*", start_str, flags=re.IGNORECASE)
+            # Split the year range without regex: normalize dashes, then split
+            # on '-' or on a standalone 'to'. Keeps parsing linear-time on
+            # attacker-controlled resume text.
+            normalized = start_str.replace("–", "-").replace("—", "-")
+            if "-" in normalized:
+                raw_parts = normalized.split("-")
+            else:
+                lowered = normalized.lower()
+                to_idx = lowered.find("to")
+                raw_parts = (
+                    [normalized[:to_idx], normalized[to_idx + 2:]]
+                    if to_idx != -1
+                    else [normalized]
+                )
+            parts = [p.strip() for p in raw_parts]
             if len(parts) == 2:
                 try:
                     start_year = int(parts[0].strip())
