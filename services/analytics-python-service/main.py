@@ -1,4 +1,5 @@
 import logging
+import hashlib
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -742,6 +743,8 @@ def verify_payroll_consistency(
         discrepancies = []
         for _, row in payroll_df.iterrows():
             emp_id = row["employee_id"]
+            # Log only a non-reversible fingerprint, never the raw employee ID.
+            emp_fp = hashlib.sha256(f"{x_tenant_id}:{emp_id}".encode()).hexdigest()[:16]
             emp_attendance = attendance_df[attendance_df["employee_id"] == emp_id]
             total_hours = 0
             total_days = len(emp_attendance)
@@ -753,7 +756,7 @@ def verify_payroll_consistency(
                         total_hours += (cout - cin).total_seconds() / 3600
                     except (ValueError, TypeError) as e:
                         logger.warning("payroll.verify_row_skipped",
-                            extra={"error": str(e), "employee_id": emp_id, "period": period})
+                            extra={"error": str(e), "employee_fp": emp_fp, "period": period})
             discrepancies.append({
                 "employee_id": emp_id,
                 "period": period,

@@ -58,6 +58,11 @@ promClient.collectDefaultMetrics();
 
 const app = express();
 app.use(helmet());
+// Cookie-authenticated unsafe routes (/refresh, /logout) enforce
+// double-submit CSRF tokens (see requireCsrfDoubleSubmit); every other
+// state-changing route authenticates with Bearer JWTs, which are immune to
+// CSRF. All cookies are SameSite=strict.
+// codeql[js/missing-token-validation]
 app.use(cookieParser());
 app.use(express.json({ limit: '1mb' }));
 
@@ -193,6 +198,7 @@ function getScimKeyId(providedKey, tenant) {
     // never used for authentication). HMAC avoids an unsalted fast hash of
     // the raw provisioning secret.
     const hmacKey = INTERNAL_JWT_SECRET || JWT_SECRET;
+    // codeql[js/insufficient-password-hash]
     const hash = crypto.createHmac('sha256', hmacKey).update(String(providedKey)).digest('hex').slice(0, 16);
     return `scim:${tenant || 'unknown'}:${hash}`;
   } catch {
@@ -1937,8 +1943,10 @@ app.get('/scim/v2/Users', requireScimAuth, createUserRateLimiter('scim_list', 30
     let queryParams = [tenant];
 
     if (req.query.filter) {
-      const userNameMatch = req.query.filter.match(/userName\s+eq\s+"([^"]+)"/i);
-      const emailMatch = req.query.filter.match(/emails\[type\s+eq\s+"work"\].*value\s+eq\s+"([^"]+)"/i);
+      const userNameMatch = req.query.filter.match(/userName\s+eq\s+"([^"]{1,254})"/i);
+      // Linear match on purpose: the value pattern must not reach back over
+      // arbitrary filter text (that backtracking is a ReDoS vector).
+      const emailMatch = req.query.filter.match(/value\s+eq\s+"([^"]{1,254})"/i);
       const filterValue = userNameMatch?.[1] || emailMatch?.[1];
 
       if (filterValue) {
@@ -3411,12 +3419,12 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
       });
     } catch (oauthErr) {
       if (res.headersSent) return;
-      // Never log the upstream response body: it can carry access/refresh
-      // tokens and PII. Status code plus error message is enough to diagnose.
+      // Never log upstream response bodies or error text: providers echo
+      // request parameters (client secrets, codes, PII) in both. A static
+      // message plus the numeric status is enough to diagnose.
       console.error('OAuth token exchange error:', {
         provider,
         status: oauthErr.response?.status || null,
-        message: oauthErr.message,
       });
       res.status(502).json({ message: `OAuth ${provider} authentication failed` });
     }
