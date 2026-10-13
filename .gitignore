@@ -11,6 +11,12 @@ build/
 *.test
 *.out
 
+# Java / Maven build output (never commit compiled classes)
+target/
+*.class
+*.jar
+*.war
+
 # Node
 node_modules/
 npm-debug.log*
