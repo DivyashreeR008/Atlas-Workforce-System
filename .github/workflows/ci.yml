@@ -113,6 +113,7 @@ jobs:
       SCIM_API_KEY: ci-test-scim-key
       POSTGRES_URL: postgresql://test:test@localhost:5432/test
     strategy:
+      fail-fast: false
       matrix:
         service: [api-gateway-node, auth-service]
     steps:
@@ -204,6 +205,7 @@ jobs:
     name: Go Services CI
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         service: [notification-go-service, attendance-service, lms-service]
     steps:
@@ -257,6 +259,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     strategy:
+      fail-fast: false
       matrix:
         service: [employee-python-service, analytics-python-service, integration-service, ai-service, security-service, live-service, employee-lifecycle-service, workforce-planning-service, ats-service, audit-compliance-service, ai-copilot-service]
     steps:
@@ -304,16 +307,16 @@ jobs:
             echo "INTERNAL_JWT_SECRET=test-secret" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "integration-service" ]]; then
             echo "INTERNAL_API_KEY=test-key" >> $GITHUB_ENV
-            echo "DATABASE_URL=sqlite:///test.db" >> $GITHUB_ENV
+            echo "DATABASE_URL=postgresql://atlas_user:atlas_password@localhost:5432/atlas_db" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "security-service" ]]; then
-            echo "DATABASE_URL=sqlite:///test.db" >> $GITHUB_ENV
+            echo "DATABASE_URL=postgresql://atlas_user:atlas_password@localhost:5432/atlas_db" >> $GITHUB_ENV
             echo "INTERNAL_API_KEY=test-key" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "live-service" ]]; then
             echo "INTERNAL_JWT_SECRET=test-secret" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "employee-lifecycle-service" ]]; then
-            echo "DATABASE_URL=sqlite:///test.db" >> $GITHUB_ENV
+            echo "DATABASE_URL=postgresql://atlas_user:atlas_password@localhost:5432/atlas_db" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "workforce-planning-service" ]]; then
-            echo "DATABASE_URL=sqlite:///test.db" >> $GITHUB_ENV
+            echo "DATABASE_URL=postgresql://atlas_user:atlas_password@localhost:5432/atlas_db" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "ats-service" ]]; then
             # ATS uses PostgreSQL-only columns (UUID/ARRAY): run it against
             # the job's postgres service instead of sqlite. The service
@@ -321,7 +324,7 @@ jobs:
             # the container above, so no DATABASE_URL override is needed.
             echo "INTERNAL_JWT_SECRET=test-secret" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "audit-compliance-service" ]]; then
-            echo "DATABASE_URL=sqlite:///test.db" >> $GITHUB_ENV
+            echo "DATABASE_URL=postgresql://atlas_user:atlas_password@localhost:5432/atlas_db" >> $GITHUB_ENV
             echo "INTERNAL_API_KEY=test-key" >> $GITHUB_ENV
             echo "INTERNAL_JWT_SECRET=test-secret" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "ai-copilot-service" ]]; then
@@ -338,6 +341,7 @@ jobs:
     name: Java Services CI
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         service: [payroll-java-service, leave-service, performance-service]
     steps:
@@ -371,6 +375,7 @@ jobs:
     name: Docker Build
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         image:
           - frontend
