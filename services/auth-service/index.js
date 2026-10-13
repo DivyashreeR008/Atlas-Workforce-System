@@ -3420,12 +3420,12 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
     } catch (oauthErr) {
       if (res.headersSent) return;
       // Never log upstream response bodies or error text: providers echo
-      // request parameters (client secrets, codes, PII) in both. A static
-      // message plus the numeric status is enough to diagnose.
-      console.error('OAuth token exchange error:', {
-        provider,
-        status: oauthErr.response?.status || null,
-      });
+      // request parameters (client secrets, codes, PII) in both. Log only a
+      // static status bucket plus the provider name — no value derived from
+      // the upstream response may reach the logs.
+      const sc = oauthErr && oauthErr.response ? oauthErr.response.status : null;
+      const statusClass = typeof sc === 'number' && sc >= 500 ? 'upstream-5xx' : 'upstream-4xx-or-unknown';
+      console.error('OAuth token exchange error:', { provider, statusClass });
       res.status(502).json({ message: `OAuth ${provider} authentication failed` });
     }
   } catch (err) {

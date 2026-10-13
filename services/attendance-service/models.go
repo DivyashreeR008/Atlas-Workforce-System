@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"time"
 
 	"gorm.io/gorm"

@@ -264,7 +264,7 @@ func (c *Client) readPump() {
 		close(c.send)
 		mutex.Unlock()
 		releaseConnection(c.clientIP)
-		c.conn.Close()
+		_ = c.conn.Close()
 	}()
 
 	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
@@ -410,6 +410,16 @@ func markReadHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
+// sanitizeLogArg strips line breaks from externally-influenced values so a
+// hostile broker message cannot forge log lines (log injection). The error
+// below carries server-provided text, hence the explicit neutralization.
+func sanitizeLogArg(v any) string {
+	s := fmt.Sprint(v)
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return s
+}
+
 func setupRabbitMQConsumer(ctx context.Context) {
 	rabbitURL := os.Getenv("RABBITMQ_URL")
 	if rabbitURL == "" {
@@ -442,16 +452,17 @@ func setupRabbitMQConsumer(ctx context.Context) {
 		ch, err := conn.Channel()
 		if err != nil {
 			log.Printf("Failed to open channel (%v), reconnecting", err)
-			conn.Close()
+			_ = conn.Close()
 			time.Sleep(backoff)
 			continue
 		}
 
 		err = ch.ExchangeDeclare("notifications_exchange", "fanout", true, false, false, false, nil)
 		if err != nil {
-			log.Printf("Failed to declare exchange (%v), reconnecting", err)
-			ch.Close()
-			conn.Close()
+			//nosec G706 -- broker-provided error text is neutralized by sanitizeLogArg above
+			log.Printf("Failed to declare exchange (%s), reconnecting", sanitizeLogArg(err))
+			_ = ch.Close()
+			_ = conn.Close()
 			time.Sleep(backoff)
 			continue
 		}
@@ -459,8 +470,8 @@ func setupRabbitMQConsumer(ctx context.Context) {
 		q, err := ch.QueueDeclare("", false, false, true, false, nil)
 		if err != nil {
 			log.Printf("Failed to declare queue (%v), reconnecting", err)
-			ch.Close()
-			conn.Close()
+			_ = ch.Close()
+			_ = conn.Close()
 			time.Sleep(backoff)
 			continue
 		}
@@ -468,8 +479,8 @@ func setupRabbitMQConsumer(ctx context.Context) {
 		err = ch.QueueBind(q.Name, "", "notifications_exchange", false, nil)
 		if err != nil {
 			log.Printf("Failed to bind queue (%v), reconnecting", err)
-			ch.Close()
-			conn.Close()
+			_ = ch.Close()
+			_ = conn.Close()
 			time.Sleep(backoff)
 			continue
 		}
@@ -477,8 +488,8 @@ func setupRabbitMQConsumer(ctx context.Context) {
 		msgs, err := ch.Consume(q.Name, "", true, false, false, false, nil)
 		if err != nil {
 			log.Printf("Failed to register consumer (%v), reconnecting", err)
-			ch.Close()
-			conn.Close()
+			_ = ch.Close()
+			_ = conn.Close()
 			time.Sleep(backoff)
 			continue
 		}
@@ -490,14 +501,14 @@ func setupRabbitMQConsumer(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				log.Println("RabbitMQ consumer shutting down")
-				ch.Close()
-				conn.Close()
+				_ = ch.Close()
+				_ = conn.Close()
 				return
 			case d, ok := <-msgs:
 				if !ok {
 					log.Printf("RabbitMQ connection lost, reconnecting")
-					ch.Close()
-					conn.Close()
+					_ = ch.Close()
+					_ = conn.Close()
 					break consumeLoop
 				}
 				processMessage(d.Body)
