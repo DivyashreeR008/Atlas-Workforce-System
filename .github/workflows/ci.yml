@@ -302,15 +302,18 @@ jobs:
             echo "MONGO_PASSWORD=test" >> $GITHUB_ENV
             echo "INTERNAL_KEY=test-internal-key" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "analytics-python-service" ]]; then
-            echo "POSTGRES_USER=test" >> $GITHUB_ENV
-            echo "POSTGRES_PASSWORD=test" >> $GITHUB_ENV
+            echo "POSTGRES_USER=atlas_user" >> $GITHUB_ENV
+            echo "POSTGRES_PASSWORD=atlas_password" >> $GITHUB_ENV
+            echo "POSTGRES_HOST=localhost" >> $GITHUB_ENV
             echo "INTERNAL_JWT_SECRET=test-secret" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "integration-service" ]]; then
             echo "INTERNAL_API_KEY=test-key" >> $GITHUB_ENV
             echo "DATABASE_URL=postgresql://atlas_user:atlas_password@localhost:5432/atlas_db" >> $GITHUB_ENV
+            echo "WEBHOOK_ALLOW_HTTP=true" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "security-service" ]]; then
             echo "DATABASE_URL=postgresql://atlas_user:atlas_password@localhost:5432/atlas_db" >> $GITHUB_ENV
             echo "INTERNAL_API_KEY=test-key" >> $GITHUB_ENV
+            echo "INTERNAL_JWT_SECRET=test-secret" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "live-service" ]]; then
             echo "INTERNAL_JWT_SECRET=test-secret" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "employee-lifecycle-service" ]]; then
@@ -699,6 +702,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: maven
+      - name: Warm Maven cache for Trivy
+        # Trivy resolves pom.xml dependencies over the network and fails hard
+        # on Maven Central 429s. Pre-populating ~/.m2 (shared via the cache
+        # above) keeps the scan deterministic; retry a few times because the
+        # throttle is transient per-IP burst limiting.
+        run: |
+          for svc in atlas-common payroll-java-service leave-service performance-service; do
+            for attempt in 1 2 3; do
+              if mvn -q -DskipTests -f services/$svc/pom.xml dependency:resolve; then
+                break
+              fi
+              echo "Warmup attempt $attempt failed for $svc, retrying in 90s..."
+              sleep 90
+            done
+          done
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
