@@ -1,4 +1,4 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 
 // Recharts ResponsiveContainer needs ResizeObserver, which jsdom does not
 // provide. Stub it so chart components render (at zero size) in unit tests
