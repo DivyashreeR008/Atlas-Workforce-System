@@ -1,5 +1,5 @@
 # Stage 1: Build dependencies
-FROM python:3.10-slim AS builder
+FROM python:3.11-slim AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends gcc g++ libpq-dev && rm -rf /var/lib/apt/lists/*
 COPY services/analytics-python-service/requirements.txt .
@@ -11,7 +11,7 @@ RUN pip install --user --no-cache-dir --no-deps -e ./services/atlas_observabilit
     pip install --user --no-cache-dir prometheus-client>=0.19.0
 
 # Stage 2: Final minimal runner
-FROM python:3.10-slim
+FROM python:3.11-slim
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends libpq5 && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /root/.local /root/.local
