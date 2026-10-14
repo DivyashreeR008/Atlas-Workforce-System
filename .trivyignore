@@ -1,0 +1,8 @@
+# Trivy filesystem-scan exceptions (applies to `trivy fs .` in CI).
+# Each entry must keep its justification comment: no silent ignores.
+
+# CVE-2026-93687 (braces via micromatch <- http-proxy-middleware, gateway):
+# no patched version exists upstream (affected <= 3.0.3, fixed: none).
+# The matched patterns are static server-side proxy route config, never
+# attacker-controlled input, so the stack-exhaustion path is unreachable.
+CVE-2026-93687

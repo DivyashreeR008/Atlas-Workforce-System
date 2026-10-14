@@ -9,7 +9,6 @@ scikit-learn==1.9.1
 numpy==2.2.2
 pandas==2.2.3
 textblob==0.18.0
-nltk==3.10.3
 aio-pika==9.5.3
 sse-starlette==2.2.1
 redis==5.2.1
