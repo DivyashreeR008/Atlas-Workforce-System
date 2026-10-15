@@ -147,7 +147,7 @@ async def test_get_employees_requires_auth():
     async with AsyncClient(transport=transport, base_url="http://test") as unauth:
         response = await unauth.get("/employees")
         assert response.status_code == 401
-        assert "Missing internal authentication" in response.json().get("error", "")
+        assert "Missing internal authentication" in response.json().get("detail", "")
 
 
 @pytest.mark.asyncio

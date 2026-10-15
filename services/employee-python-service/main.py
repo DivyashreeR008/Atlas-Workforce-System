@@ -144,7 +144,7 @@ async def internal_auth_middleware(request: Request, call_next):
 
     auth_header = request.headers.get("x-internal-auth")
     if not auth_header:
-        return JSONResponse(status_code=401, content={"error": "Missing internal authentication"})
+        return JSONResponse(status_code=401, content={"detail": "Missing internal authentication"})
 
     try:
         claims = verify_internal_auth(request, INTERNAL_JWT_SECRET)
@@ -152,13 +152,13 @@ async def internal_auth_middleware(request: Request, call_next):
         request.state.user_id = claims.get("user_id", "")
         request.state.user_role = claims.get("user_role", "employee")
     except HTTPException as e:
-        return JSONResponse(status_code=e.status_code, content={"error": e.detail})
+        return JSONResponse(status_code=e.status_code, content={"detail": e.detail})
     except (ValueError, KeyError, AttributeError, TypeError, UnicodeError) as e:
         log_event("warning", "auth.unexpected_claims_shape", error=str(e), error_type=type(e).__name__)
-        return JSONResponse(status_code=401, content={"error": "Invalid internal authentication"})
+        return JSONResponse(status_code=401, content={"detail": "Invalid internal authentication"})
     except Exception:
         logger.exception("auth.middleware_unexpected_error")
-        return JSONResponse(status_code=401, content={"error": "Invalid internal authentication"})
+        return JSONResponse(status_code=401, content={"detail": "Invalid internal authentication"})
 
     return await call_next(request)
 
