@@ -1,36 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Atlas Workforce Frontend
 
-## Getting Started
+Next.js 16 + React 19 + Tailwind 4 dashboard for the Atlas Workforce System. It covers employees, lifecycle, attendance, payroll, LMS, ATS, analytics, AI copilots, live views, and admin screens, talking to the API gateway.
 
-First, run the development server:
+## Quick start
 
 ```bash
+cd frontend
+npm ci
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+App runs on `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+The app calls the gateway at `http://localhost:8080/api` via `NEXT_PUBLIC_API_URL`. Copy `.env.example` if present and set:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+NEXT_PUBLIC_API_URL=http://localhost:8080/api
+NEXT_PUBLIC_WS_URL=ws://localhost:8080/api/notification/ws
+```
 
-## Learn More
+Gateway default port is `8080`. Frontend default port is `3000`.
 
-To learn more about Next.js, take a look at the following resources:
+## Scripts
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run dev      # dev server on :3000
+npm run lint     # eslint, must pass
+npx tsc --noEmit # typecheck, must pass
+npm test         # vitest run
+npm run build    # production build, needs NEXT_PUBLIC_API_URL set
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Build example:
 
-## Deploy on Vercel
+```bash
+NEXT_PUBLIC_API_URL=http://localhost:8080/api npm run build
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Structure
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```text
+frontend/src/
+  app/         # Next.js routes: (auth), dashboard/*, live, ai, settings
+  components/  # ui/* primitives plus layout, live, and feature widgets
+  hooks/       # data and realtime hooks: use-websocket, use-realtime, use-keyboard-shortcuts
+  stores/      # zustand stores: auth-store, toast-store
+  lib/         # api client, auth helpers, csv/excel, utils, reconnect backoff
+```
+
+`app/dashboard` holds feature pages. Shared UI lives in `components/ui`. API access is centralized in `lib/api`.
