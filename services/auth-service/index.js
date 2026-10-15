@@ -1820,9 +1820,11 @@ app.post('/devices/register', requireRole(), createUserRateLimiter('device_regis
 app.get('/devices', requireRole(), async (req, res) => {
   try {
     const userId = req.user.id;
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 100);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
     const result = await pool.query(
-      'SELECT id, device_id, device_name, device_type, os, browser, ip_address, is_trusted, last_used_at, created_at FROM user_devices WHERE user_id = $1 ORDER BY last_used_at DESC NULLS LAST',
-      [userId]
+      'SELECT id, device_id, device_name, device_type, os, browser, ip_address, is_trusted, last_used_at, created_at FROM user_devices WHERE user_id = $1 ORDER BY last_used_at DESC NULLS LAST LIMIT $2 OFFSET $3',
+      [userId, limit, offset]
     );
     res.json(result.rows);
   } catch (error) {
@@ -2694,9 +2696,11 @@ app.post('/auth/admin/password-reset', requireRole('admin'), createUserRateLimit
 app.get('/sessions', requireRole(), async (req, res) => {
   try {
     const userId = req.user.id;
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 100);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
     const result = await pool.query(
-      'SELECT id, ip_address, user_agent, device_id, is_active, created_at, expires_at FROM sessions WHERE user_id = $1 ORDER BY created_at DESC',
-      [userId]
+      'SELECT id, ip_address, user_agent, device_id, is_active, created_at, expires_at FROM sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
+      [userId, limit, offset]
     );
     res.json(result.rows);
   } catch (error) {
@@ -3088,9 +3092,11 @@ app.post('/webauthn/authenticate/complete', createUserRateLimiter('webauthn_auth
 app.get('/webauthn/credentials', requireRole(), createUserRateLimiter('webauthn_list', 60), async (req, res) => {
   try {
     const userId = req.user.id;
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 100);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
     const result = await pool.query(
-      "SELECT id, credential_id, device_name, device_type, counter, is_active, created_at, last_used_at FROM webauthn_credentials WHERE user_id = $1 AND credential_id NOT LIKE 'challenge:%' ORDER BY created_at DESC",
-      [userId]
+      "SELECT id, credential_id, device_name, device_type, counter, is_active, created_at, last_used_at FROM webauthn_credentials WHERE user_id = $1 AND credential_id NOT LIKE 'challenge:%' ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+      [userId, limit, offset]
     );
     res.json(result.rows.map(r => ({
       ...r,
@@ -3125,9 +3131,11 @@ app.delete('/webauthn/credentials/:id', requireRole(), createUserRateLimiter('we
 app.get('/oauth/providers', requireRole('admin'), createUserRateLimiter('oauth_providers_list', 60), async (req, res) => {
   try {
     const tenantId = req.user.tenant_id || 'default';
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 100);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
     const result = await pool.query(
-      'SELECT id, provider, client_id, redirect_uri, scopes, enabled, tenant_id FROM oauth_providers WHERE tenant_id = $1 ORDER BY provider',
-      [tenantId]
+      'SELECT id, provider, client_id, redirect_uri, scopes, enabled, tenant_id FROM oauth_providers WHERE tenant_id = $1 ORDER BY provider LIMIT $2 OFFSET $3',
+      [tenantId, limit, offset]
     );
     res.json(result.rows);
   } catch (err) {
@@ -3438,9 +3446,11 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
 app.get('/oauth/links', requireRole(), createUserRateLimiter('oauth_links_list', 60), async (req, res) => {
   try {
     const userId = req.user.id;
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 100);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
     const result = await pool.query(
-      'SELECT provider, provider_user_id, created_at FROM oauth_links WHERE user_id = $1',
-      [userId]
+      'SELECT provider, provider_user_id, created_at FROM oauth_links WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
+      [userId, limit, offset]
     );
     res.json(result.rows);
   } catch (err) {
