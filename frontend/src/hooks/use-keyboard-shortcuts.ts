@@ -93,11 +93,20 @@ export function formatShortcutLabel(shortcut: Pick<Shortcut, "key" | "ctrl" | "m
   return parts.join(" + ");
 }
 
-export function useKeyboardShortcutsDialog() {
-  const shortcuts = useKeyboardShortcuts;
+export type ShortcutRow = Pick<Shortcut, "key" | "ctrl" | "meta" | "shift" | "alt" | "description">;
 
+const DIALOG_SHORTCUTS: ShortcutRow[] = [
+  { key: "k", ctrl: true, description: "Open command palette (Ctrl)" },
+  { key: "k", meta: true, description: "Open command palette (Cmd)" },
+  { key: "Escape", description: "Close dialog or palette" },
+  { key: "Enter", description: "Confirm highlighted result" },
+  { key: "ArrowDown", description: "Move to next result" },
+  { key: "ArrowUp", description: "Move to previous result" },
+];
+
+export function useKeyboardShortcutsDialog() {
   return {
-    shortcuts,
+    shortcuts: DIALOG_SHORTCUTS,
     formatShortcutLabel,
   };
 }
