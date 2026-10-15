@@ -4,7 +4,9 @@ interface ToastItem {
   id: string;
   title?: string;
   description?: string;
-  variant?: "default" | "destructive";
+  variant?: "default" | "destructive" | "success";
+  /** Auto-dismiss delay in ms. Defaults to 5000, destructive defaults to 10000. Use Infinity or 0 to stay until dismissed. */
+  duration?: number;
 }
 
 interface ToastState {
@@ -20,9 +22,12 @@ export const useToastStore = create<ToastState>((set) => ({
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     set((s) => ({ toasts: [...s.toasts, { ...item, id }] }));
-    setTimeout(() => {
-      set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
-    }, 5000);
+    const duration = item.duration ?? (item.variant === "destructive" ? 10000 : 5000);
+    if (duration !== Infinity && duration > 0) {
+      setTimeout(() => {
+        set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+      }, duration);
+    }
   },
   dismiss: (id) =>
     set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
