@@ -102,6 +102,8 @@ def get_job_rankings(
     job_id: str,
     x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
     db: Session = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
 ):
     rankings = (
         db.query(crud.models.ResumeRanking)
@@ -110,11 +112,22 @@ def get_job_rankings(
             crud.models.ResumeRanking.tenant_id == x_tenant_id,
         )
         .order_by(crud.models.ResumeRanking.rank.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
     )
+    candidate_ids = [r.candidate_id for r in rankings]
+    candidates = (
+        db.query(crud.models.Candidate)
+        .filter(crud.models.Candidate.id.in_(candidate_ids))
+        .all()
+        if candidate_ids
+        else []
+    )
+    by_id = {c.id: c for c in candidates}
     result = []
     for r in rankings:
-        c = db.query(crud.models.Candidate).filter(crud.models.Candidate.id == r.candidate_id).first()
+        c = by_id.get(r.candidate_id)
         result.append({
             "candidate_id": str(r.candidate_id),
             "candidate_name": f"{c.first_name} {c.last_name}" if c else "Unknown",
