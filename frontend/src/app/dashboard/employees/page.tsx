@@ -147,8 +147,11 @@ export default function EmployeesPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="relative max-w-sm">
+            <Label htmlFor="employee-search" className="sr-only">Search employees</Label>
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
+              id="employee-search"
+              aria-label="Search employees"
               placeholder="Search by name, email, department..."
               className="pl-9"
               value={search}
