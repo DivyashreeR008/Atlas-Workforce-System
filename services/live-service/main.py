@@ -100,10 +100,18 @@ class ChannelManager:
             removed["presence"] += 1
 
         for inc_id in list(self.incidents.keys()):
-            entries = self.incidents[inc_id]
+            entries = [
+                entry for entry in self.incidents[inc_id]
+                if now - entry.get("_created_at", 0) <= INCIDENT_TTL_SECONDS
+            ]
+            removed["incidents"] += len(self.incidents[inc_id]) - len(entries)
             if len(entries) > MAX_INCIDENTS_PER_ID:
-                self.incidents[inc_id] = entries[-MAX_INCIDENTS_PER_ID:]
                 removed["incidents"] += len(entries) - MAX_INCIDENTS_PER_ID
+                entries = entries[-MAX_INCIDENTS_PER_ID:]
+            if entries:
+                self.incidents[inc_id] = entries
+            else:
+                del self.incidents[inc_id]
 
         return removed
 
