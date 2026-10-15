@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 from main import get_db
 from file_security import MAX_FILE_SIZE
@@ -10,7 +10,7 @@ router = APIRouter(tags=["resume-parser"])
 
 
 @router.post("/resumes/parse", response_model=schemas.ResumeParseResponse, summary="Parse resume text")
-def parse_resume(raw_text: str = Query(...)):
+def parse_resume(raw_text: str = Body(..., max_length=MAX_FILE_SIZE)):
     result = crud.parse_resume_text(raw_text)
     return result
 
