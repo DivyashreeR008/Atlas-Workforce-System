@@ -2,7 +2,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 from main import get_db
-from file_security import MAX_FILE_SIZE
+from file_security import MAX_FILE_SIZE, validate_file
 import crud
 import schemas
 
@@ -26,6 +26,9 @@ def upload_resume(
         raw_bytes = data.raw_text.encode('utf-8')
         if len(raw_bytes) > MAX_FILE_SIZE:
             raise HTTPException(status_code=413, detail="Resume content exceeds maximum allowed size")
+        ok, reason = validate_file(data.filename or "resume.txt", raw_bytes)
+        if not ok:
+            raise HTTPException(status_code=400, detail=reason)
     parsed = crud.parse_resume_text(data.raw_text)
     enriched = data.model_dump()
     enriched["parsed_skills"] = enriched.get("parsed_skills") or parsed["skills"]
