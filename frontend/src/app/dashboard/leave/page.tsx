@@ -54,6 +54,7 @@ export default function LeavePage() {
   const addToast = useToastStore((s) => s.toast);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [dateError, setDateError] = useState("");
   // Use auth store directly - persisted under "atlas-auth" (not "auth-storage")
   const user = useAuthStore((s) => s.user);
   const employeeId = user?.email ?? "";
@@ -78,6 +79,11 @@ export default function LeavePage() {
       addToast({ title: "Employee ID not found", variant: "destructive" });
       return;
     }
+    if (form.startDate && form.endDate && form.endDate < form.startDate) {
+      setDateError("End date cannot be before start date.");
+      return;
+    }
+    setDateError("");
     setSubmitting(true);
     try {
       await leaveApi.request({
@@ -154,8 +160,11 @@ export default function LeavePage() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="endDate">End Date</Label>
-                  <Input id="endDate" type="date" required value={form.endDate} onChange={(e) => setForm((f) => ({ ...f, endDate: e.target.value }))} />
+                  <Input id="endDate" type="date" required value={form.endDate} onChange={(e) => { setForm((f) => ({ ...f, endDate: e.target.value })); if (dateError) setDateError(""); }} aria-invalid={!!dateError} aria-describedby={dateError ? "leave-date-error" : undefined} />
                 </div>
+                {dateError && (
+                  <p id="leave-date-error" role="alert" className="text-sm text-destructive">{dateError}</p>
+                )}
                 <div className="space-y-2">
                   <Label htmlFor="reason">Reason (optional)</Label>
                   <Input id="reason" value={form.reason} onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} />
