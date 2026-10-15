@@ -133,8 +133,15 @@ func (h *KnowledgeHandler) Update(c *fiber.Ctx) error {
 func (h *KnowledgeHandler) Delete(c *fiber.Ctx) error {
 	tenantID := middleware.GetTenant(c)
 	id := c.Params("id")
-	if err := h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).Delete(&models.KnowledgeArticle{}).Error; err != nil {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Article not found"})
+	var article models.KnowledgeArticle
+	if err := h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).First(&article).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Article not found"})
+		}
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch article"})
+	}
+	if err := h.DB.Delete(&article).Error; err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to delete article"})
 	}
 	return c.JSON(fiber.Map{"message": "Article deleted"})
 }

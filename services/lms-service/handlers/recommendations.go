@@ -165,8 +165,15 @@ func (h *JourneyHandler) Update(c *fiber.Ctx) error {
 func (h *JourneyHandler) Delete(c *fiber.Ctx) error {
 	tenantID := middleware.GetTenant(c)
 	id := c.Params("id")
-	if err := h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).Delete(&models.LearningJourney{}).Error; err != nil {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Journey not found"})
+	var journey models.LearningJourney
+	if err := h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).First(&journey).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Journey not found"})
+		}
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch journey"})
+	}
+	if err := h.DB.Delete(&journey).Error; err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to delete journey"})
 	}
 	return c.JSON(fiber.Map{"message": "Journey deleted"})
 }

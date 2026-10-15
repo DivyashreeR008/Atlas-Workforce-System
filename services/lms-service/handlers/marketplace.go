@@ -113,8 +113,15 @@ func (h *MarketplaceHandler) Update(c *fiber.Ctx) error {
 func (h *MarketplaceHandler) Delete(c *fiber.Ctx) error {
 	tenantID := middleware.GetTenant(c)
 	id := c.Params("id")
-	if err := h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).Delete(&models.MarketplaceListing{}).Error; err != nil {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Listing not found"})
+	var listing models.MarketplaceListing
+	if err := h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).First(&listing).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Listing not found"})
+		}
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch listing"})
+	}
+	if err := h.DB.Delete(&listing).Error; err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to delete listing"})
 	}
 	return c.JSON(fiber.Map{"message": "Listing deleted"})
 }
