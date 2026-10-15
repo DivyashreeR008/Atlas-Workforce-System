@@ -27,6 +27,7 @@ export default function LoginPage() {
   const isLoading = useAuthStore((s) => s.isLoading);
   const [mfaStep, setMfaStep] = useState(false);
   const [mfaCode, setMfaCode] = useState("");
+  const [mfaError, setMfaError] = useState("");
   const [isBackupCode, setIsBackupCode] = useState(false);
   const {
     register,
@@ -56,12 +57,18 @@ export default function LoginPage() {
 
   const onMfaSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!mfaCode.trim()) {
-      toast({ title: "Code required", description: "Enter your TOTP code or backup code.", variant: "destructive" });
+    const trimmed = mfaCode.replace(/\s/g, "");
+    if (!trimmed) {
+      setMfaError("Enter your TOTP code or backup code.");
       return;
     }
+    if (!isBackupCode && !/^\d{6}$/.test(trimmed)) {
+      setMfaError("Enter the 6-digit numeric code from your authenticator app.");
+      return;
+    }
+    setMfaError("");
     try {
-      await validateMfa(mfaCode.trim(), isBackupCode);
+      await validateMfa(trimmed, isBackupCode);
       toast({ title: "Welcome back", description: "MFA verified, signed in successfully." });
       router.push("/dashboard");
     } catch {
@@ -95,15 +102,26 @@ export default function LoginPage() {
                 placeholder={isBackupCode ? "Enter backup code" : "Enter 6-digit code"}
                 className="border-white/20 bg-white/10 text-white placeholder:text-slate-400"
                 value={mfaCode}
-                onChange={(e) => setMfaCode(e.target.value)}
+                onChange={(e) => {
+                  setMfaCode(e.target.value);
+                  if (mfaError) setMfaError("");
+                }}
+                aria-invalid={!!mfaError}
+                aria-describedby={mfaError ? "mfa-error" : undefined}
               />
+              {mfaError && (
+                <p id="mfa-error" role="alert" className="text-sm text-red-400">{mfaError}</p>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <input
                 id="isBackup"
                 type="checkbox"
                 checked={isBackupCode}
-                onChange={(e) => setIsBackupCode(e.target.checked)}
+                onChange={(e) => {
+                  setIsBackupCode(e.target.checked);
+                  setMfaError("");
+                }}
                 className="rounded"
               />
               <Label htmlFor="isBackup" className="text-slate-300 text-sm">
