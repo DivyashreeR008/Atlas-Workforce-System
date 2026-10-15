@@ -310,6 +310,7 @@ jobs:
             echo "INTERNAL_API_KEY=test-key" >> $GITHUB_ENV
             echo "DATABASE_URL=postgresql://atlas_user:atlas_password@localhost:5432/atlas_db" >> $GITHUB_ENV
             echo "WEBHOOK_ALLOW_HTTP=true" >> $GITHUB_ENV
+            echo "WEBHOOK_ALLOW_PRIVATE_IPS=true" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "security-service" ]]; then
             echo "DATABASE_URL=postgresql://atlas_user:atlas_password@localhost:5432/atlas_db" >> $GITHUB_ENV
             echo "INTERNAL_API_KEY=test-key" >> $GITHUB_ENV
@@ -328,6 +329,7 @@ jobs:
             echo "INTERNAL_JWT_SECRET=test-secret" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "audit-compliance-service" ]]; then
             echo "DATABASE_URL=postgresql://atlas_user:atlas_password@localhost:5432/atlas_db" >> $GITHUB_ENV
+            echo "TEST_DATABASE_URL=postgresql://atlas_user:atlas_password@localhost:5432/atlas_db" >> $GITHUB_ENV
             echo "INTERNAL_API_KEY=test-key" >> $GITHUB_ENV
             echo "INTERNAL_JWT_SECRET=test-secret" >> $GITHUB_ENV
           elif [[ "${{ matrix.service }}" == "ai-copilot-service" ]]; then

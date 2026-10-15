@@ -8,5 +8,5 @@ python-dotenv==1.2.4
 alembic==1.13.0
 httpx==0.25.2
 pytest==9.1.1
-pytest-asyncio==0.23.2
+pytest-asyncio==1.4.0
 -e ../atlas_observability

@@ -59,8 +59,9 @@ async def test_department_analytics_no_data(client):
         "/analytics/department",
         headers={"X-Tenant-Id": "test-tenant"},
     )
-    # We expect either 200 with empty list or 500 depending on env
-    assert response.status_code in (200, 500)
+    # 200 with empty list when reachable-but-empty, 502 when the employee
+    # service is unreachable (its designed unavailable signal).
+    assert response.status_code in (200, 502)
 
 
 @pytest.mark.asyncio
