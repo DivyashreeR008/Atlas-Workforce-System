@@ -252,6 +252,9 @@ export default function DashboardPage() {
           <div className="col-span-12 xl:col-span-8 2xl:col-span-7">
             <HeadcountChart
               data={headcountData}
+              loading={empQuery.isLoading}
+              error={empQuery.isError}
+              onRetry={handleRetry(empQuery)}
             />
           </div>
           <div className="col-span-12 xl:col-span-4 2xl:col-span-5">
@@ -281,7 +284,12 @@ export default function DashboardPage() {
             />
           </div>
           <div className="col-span-12 xl:col-span-4">
-            <WorkforceGrowthChart data={growthData} />
+            <WorkforceGrowthChart
+              data={growthData}
+              loading={deptQuery.isLoading}
+              error={deptQuery.isError}
+              onRetry={handleRetry(deptQuery)}
+            />
           </div>
 
           {/* === Row 4: Activity Feed + Live Check-ins === */}
