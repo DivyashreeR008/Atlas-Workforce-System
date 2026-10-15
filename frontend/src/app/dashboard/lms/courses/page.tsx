@@ -104,8 +104,11 @@ export default function CoursesPage() {
         <CardContent>
           <div className="flex flex-wrap gap-3">
             <div className="relative flex-1 min-w-[200px]">
+              <label htmlFor="course-search" className="sr-only">Search courses</label>
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
+                id="course-search"
+                aria-label="Search courses"
                 placeholder="Search courses..."
                 className="pl-9"
                 value={search}
