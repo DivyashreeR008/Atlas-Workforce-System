@@ -275,6 +275,17 @@ const apiLimiter = rateLimit({
     sendCommand: (...args) => redisClient.sendCommand(args),
     prefix: 'rl:api:',
   }),
+  skip: (req) => {
+    const p = req.path || '';
+    return (
+      p.startsWith('/api/auth') ||
+      p.startsWith('/api/payroll') ||
+      p.startsWith('/api/compliance') ||
+      p.startsWith('/api/audit') ||
+      p.startsWith('/api/billing') ||
+      p.startsWith('/api/ats/career')
+    );
+  },
 });
 
 const sensitiveLimiter = rateLimit({
@@ -327,6 +338,10 @@ app.use('/api/billing', sensitiveLimiter);
 
 app.use('/api/ats/career', careerLimiter);
 app.use('/api/ats/career/apply', careerApplyLimiter);
+
+// General API surface guard; specific tiers above keep their own counters
+// (skip in apiLimiter avoids double-counting, login 5/15 stays tightest).
+app.use('/api', apiLimiter);
 
 const services = {
   auth: process.env.AUTH_SERVICE_URL || 'http://auth-service:8010',
