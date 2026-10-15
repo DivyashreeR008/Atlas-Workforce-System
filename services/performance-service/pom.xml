@@ -15,6 +15,12 @@
 	<description>Atlas Performance Management &amp; Succession Planning Service</description>
 	<properties>
 		<java.version>17</java.version>
+		<!-- Dependency upgrades for Trivy HIGH/CRITICAL findings. -->
+		<jackson-bom.version>2.21.7</jackson-bom.version>
+		<tomcat.version>10.1.58</tomcat.version>
+		<rabbit-amqp-client.version>5.36.1</rabbit-amqp-client.version>
+		<log4j2.version>2.25.5</log4j2.version>
+		<postgresql.version>42.7.12</postgresql.version>
 	</properties>
 	<dependencies>
 		<dependency>
