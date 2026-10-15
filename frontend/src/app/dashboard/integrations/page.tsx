@@ -414,8 +414,9 @@ function WebhookForm({
       <h3 className="mb-4 text-lg font-semibold text-white">New Webhook</h3>
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
-          <label className="block text-sm text-gray-400">Name</label>
+          <label htmlFor="wh-name" className="block text-sm text-gray-400">Name</label>
           <input
+            id="wh-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             className="mt-1 w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white"
@@ -423,8 +424,9 @@ function WebhookForm({
           />
         </div>
         <div>
-          <label className="block text-sm text-gray-400">URL</label>
+          <label htmlFor="wh-url" className="block text-sm text-gray-400">URL</label>
           <input
+            id="wh-url"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             className="mt-1 w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white"
@@ -432,8 +434,9 @@ function WebhookForm({
           />
         </div>
         <div>
-          <label className="block text-sm text-gray-400">Event Types (comma-separated, * for all)</label>
+          <label htmlFor="wh-events" className="block text-sm text-gray-400">Event Types (comma-separated, * for all)</label>
           <input
+            id="wh-events"
             value={eventTypes}
             onChange={(e) => setEventTypes(e.target.value)}
             className="mt-1 w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white"
@@ -442,8 +445,9 @@ function WebhookForm({
         </div>
         <div className="flex gap-4">
           <div className="flex-1">
-            <label className="block text-sm text-gray-400">Retry Count</label>
+            <label htmlFor="wh-retry" className="block text-sm text-gray-400">Retry Count</label>
             <input
+              id="wh-retry"
               type="number"
               value={retryCount}
               onChange={(e) => setRetryCount(e.target.value)}
@@ -453,8 +457,9 @@ function WebhookForm({
             />
           </div>
           <div className="flex-1">
-            <label className="block text-sm text-gray-400">Timeout (sec)</label>
+            <label htmlFor="wh-timeout" className="block text-sm text-gray-400">Timeout (sec)</label>
             <input
+              id="wh-timeout"
               type="number"
               value={timeoutSec}
               onChange={(e) => setTimeoutSec(e.target.value)}
@@ -510,8 +515,9 @@ function SubscriptionForm({
       <h3 className="mb-4 text-lg font-semibold text-white">New Event Subscription</h3>
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
-          <label className="block text-sm text-gray-400">Event Type</label>
+          <label htmlFor="sub-event" className="block text-sm text-gray-400">Event Type</label>
           <input
+            id="sub-event"
             value={eventType}
             onChange={(e) => setEventType(e.target.value)}
             className="mt-1 w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white"
@@ -519,8 +525,9 @@ function SubscriptionForm({
           />
         </div>
         <div>
-          <label className="block text-sm text-gray-400">Kafka Topic</label>
+          <label htmlFor="sub-topic" className="block text-sm text-gray-400">Kafka Topic</label>
           <input
+            id="sub-topic"
             value={kafkaTopic}
             onChange={(e) => setKafkaTopic(e.target.value)}
             className="mt-1 w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white"
@@ -528,8 +535,9 @@ function SubscriptionForm({
           />
         </div>
         <div>
-          <label className="block text-sm text-gray-400">Source Service (optional)</label>
+          <label htmlFor="sub-source" className="block text-sm text-gray-400">Source Service (optional)</label>
           <input
+            id="sub-source"
             value={sourceService}
             onChange={(e) => setSourceService(e.target.value)}
             className="mt-1 w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white"
