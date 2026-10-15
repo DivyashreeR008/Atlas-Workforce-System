@@ -1,5 +1,6 @@
 import logging
 import hashlib
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -772,7 +773,7 @@ def verify_payroll_consistency(
             "total_payroll_records": len(payroll_df),
             "total_attendance_records": len(attendance_df),
             "discrepancies": discrepancies,
-            "verified_at": str(pd.Timestamp.now()),
+            "verified_at": datetime.now(timezone.utc).isoformat(),
         }
     except HTTPException:
         raise
