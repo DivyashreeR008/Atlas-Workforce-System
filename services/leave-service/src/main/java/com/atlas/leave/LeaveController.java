@@ -9,6 +9,7 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 
@@ -43,19 +44,33 @@ public class LeaveController {
     public ResponseEntity<?> requestLeave(
             @RequestBody Map<String, String> request,
             @TenantId String tenantId) {
+        String employeeId = request.get("employeeId");
+        String startStr = request.get("startDate");
+        String endStr = request.get("endDate");
+        if (employeeId == null || employeeId.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "employeeId is required"));
+        }
+        if (startStr == null || startStr.isBlank() || endStr == null || endStr.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "startDate and endDate are required"));
+        }
+        final LocalDate startDate;
+        final LocalDate endDate;
         try {
-            String employeeId = request.get("employeeId");
-            LocalDate startDate = LocalDate.parse(request.get("startDate"));
-            LocalDate endDate = LocalDate.parse(request.get("endDate"));
+            startDate = LocalDate.parse(startStr);
+            endDate = LocalDate.parse(endStr);
+        } catch (DateTimeParseException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Invalid date format, expected YYYY-MM-DD"));
+        }
+        try {
             String leaveType = request.get("leaveType");
             String reason = request.get("reason");
 
             LeaveRecord record = service.requestLeave(tenantId, employeeId, startDate, endDate, leaveType, reason);
             return ResponseEntity.ok(record);
         } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            return ResponseEntity.internalServerError().body(Map.of("message", "Error submitting leave request"));
+            return ResponseEntity.internalServerError().body(Map.of("error", "Error submitting leave request"));
         }
     }
 
@@ -66,16 +81,19 @@ public class LeaveController {
             @RequestBody Map<String, String> request,
             @TenantId String tenantId) {
 
+        String status = request.get("status");
+        if (status == null || status.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "status is required"));
+        }
         try {
-            String status = request.get("status");
             ServletRequestAttributes attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
             String userRole = attrs != null ? (String) attrs.getRequest().getAttribute("x-user-role") : "employee";
             LeaveRecord record = service.updateLeaveStatus(tenantId, id, status, userRole);
             return ResponseEntity.ok(record);
         } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            return ResponseEntity.internalServerError().body(Map.of("message", "Error updating leave status"));
+            return ResponseEntity.internalServerError().body(Map.of("error", "Error updating leave status"));
         }
     }
 }
