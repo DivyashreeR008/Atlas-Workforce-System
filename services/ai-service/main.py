@@ -153,11 +153,18 @@ MAX_REQUEST_SIZE = 1_000_000
 @app.middleware("http")
 async def limit_request_size(request: Request, call_next):
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > MAX_REQUEST_SIZE:
-        return JSONResponse(
-            status_code=413,
-            content={"detail": "Request body too large (max 1MB)"},
-        )
+    if content_length:
+        try:
+            if int(content_length) > MAX_REQUEST_SIZE:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request body too large (max 1MB)"},
+                )
+        except (ValueError, TypeError):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Invalid Content-Length header"},
+            )
     return await call_next(request)
 
 # ── Helper ──
