@@ -471,13 +471,6 @@ function isWsPath(pathname) {
   if (pathname === '/api/live/ws' || pathname.startsWith('/api/live/ws/')) return true;
   return false;
 }
-const PUBLIC_AUTH_PATHS = ['/api/auth/login', '/api/auth/register'];
-
-function isPublicPath(path) {
-  if (path === '/health' || path === '/metrics') return true;
-  return PUBLIC_AUTH_PATHS.some((p) => path === p || path.startsWith(p + '?'));
-}
-
 function deviceTrustHeaderMiddleware(req, res, next) {
   const deviceId = req.headers['x-device-id'];
   const deviceFingerprint = req.headers['x-device-fingerprint'];
@@ -1290,7 +1283,6 @@ module.exports = {
   services,
   authMiddleware,
   isPublicOrAuthPath,
-  isPublicPath,
 };
 
 if (require.main === module) {
