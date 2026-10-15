@@ -42,7 +42,7 @@ func (h *EnrollmentHandler) List(c *fiber.Ctx) error {
 	offset := (page - 1) * pageSize
 
 	var total int64
-	h.DB.Model(&models.Enrollment{}).Where("tenant_id = ?", tenantID).Count(&total)
+	query.Session(&gorm.Session{}).Model(&models.Enrollment{}).Count(&total)
 
 	var enrollments []models.Enrollment
 	if err := query.Preload("Course").Order("created_at DESC").
