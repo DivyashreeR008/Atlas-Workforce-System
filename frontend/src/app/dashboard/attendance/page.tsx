@@ -301,14 +301,14 @@ function GeoFenceTab() {
           <DialogContent>
             <DialogHeader><DialogTitle>{editing ? "Edit" : "New"} Geo-Fence</DialogTitle><DialogDescription>Define an attendance zone with GPS coordinates</DialogDescription></DialogHeader>
             <div className="space-y-3">
-              <div><Label>Name</Label><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Office HQ" /></div>
+              <div><Label htmlFor="geofence-name">Name</Label><Input id="geofence-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Office HQ" /></div>
               <div className="grid grid-cols-2 gap-2">
-                <div><Label>Latitude</Label><Input value={lat} onChange={(e) => setLat(e.target.value)} placeholder="12.9716" /></div>
-                <div><Label>Longitude</Label><Input value={lng} onChange={(e) => setLng(e.target.value)} placeholder="77.5946" /></div>
+                <div><Label htmlFor="geofence-lat">Latitude</Label><Input id="geofence-lat" value={lat} onChange={(e) => setLat(e.target.value)} placeholder="12.9716" /></div>
+                <div><Label htmlFor="geofence-lng">Longitude</Label><Input id="geofence-lng" value={lng} onChange={(e) => setLng(e.target.value)} placeholder="77.5946" /></div>
               </div>
               <Button variant="outline" size="sm" onClick={getCurrentLocation}><MapPin className="h-4 w-4" /> Use My Location</Button>
-              <div><Label>Radius (meters)</Label><Input value={radius} onChange={(e) => setRadius(e.target.value)} placeholder="100" type="number" /></div>
-              <div><Label>Address</Label><Input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="123 Main St" /></div>
+              <div><Label htmlFor="geofence-radius">Radius (meters)</Label><Input id="geofence-radius" value={radius} onChange={(e) => setRadius(e.target.value)} placeholder="100" type="number" /></div>
+              <div><Label htmlFor="geofence-address">Address</Label><Input id="geofence-address" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="123 Main St" /></div>
               <Button onClick={handleSave} className="w-full">{editing ? "Update" : "Create"} Geo-Fence</Button>
             </div>
           </DialogContent>
@@ -381,17 +381,17 @@ function ShiftsTab() {
           <DialogContent>
             <DialogHeader><DialogTitle>Create Shift</DialogTitle></DialogHeader>
             <div className="space-y-3">
-              <div><Label>Shift Name</Label><Input value={shiftName} onChange={(e) => setShiftName(e.target.value)} placeholder="Morning Shift" /></div>
+              <div><Label htmlFor="shift-name">Shift Name</Label><Input id="shift-name" value={shiftName} onChange={(e) => setShiftName(e.target.value)} placeholder="Morning Shift" /></div>
               <div className="grid grid-cols-2 gap-2">
-                <div><Label>Start Time</Label><Input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} /></div>
-                <div><Label>End Time</Label><Input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} /></div>
+                <div><Label htmlFor="shift-start">Start Time</Label><Input id="shift-start" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} /></div>
+                <div><Label htmlFor="shift-end">End Time</Label><Input id="shift-end" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} /></div>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <div><Label>Grace (min)</Label><Input type="number" value={grace} onChange={(e) => setGrace(e.target.value)} /></div>
-                <div><Label>Max OT (hrs)</Label><Input type="number" value={maxOT} onChange={(e) => setMaxOT(e.target.value)} /></div>
+                <div><Label htmlFor="shift-grace">Grace (min)</Label><Input id="shift-grace" type="number" value={grace} onChange={(e) => setGrace(e.target.value)} /></div>
+                <div><Label htmlFor="shift-maxot">Max OT (hrs)</Label><Input id="shift-maxot" type="number" value={maxOT} onChange={(e) => setMaxOT(e.target.value)} /></div>
               </div>
               <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={isNight} onChange={(e) => setIsNight(e.target.checked)} /> Night Shift</label>
-              <div><Label>Days of Week (1=Mon)</Label><Input value={days} onChange={(e) => setDays(e.target.value)} placeholder="1,2,3,4,5" /></div>
+              <div><Label htmlFor="shift-days">Days of Week (1=Mon)</Label><Input id="shift-days" value={days} onChange={(e) => setDays(e.target.value)} placeholder="1,2,3,4,5" /></div>
               <Button onClick={handleCreateShift} className="w-full">Create Shift</Button>
             </div>
           </DialogContent>
