@@ -57,7 +57,7 @@ function RecordsTab() {
   const [running, setRunning] = useState(false);
   const [form, setForm] = useState({ employeeId: "", period: "", baseSalary: "", allowances: "0", deductions: "0" });
 
-  const { data: records, isLoading } = useQuery({
+  const { data: records, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["payroll"],
     queryFn: async () => { const { data } = await payrollApi.list(); return (Array.isArray(data) ? data : []) as PayrollRecord[]; },
   });
@@ -103,7 +103,9 @@ function RecordsTab() {
       <div className="grid gap-3 md:grid-cols-3">
         {isLoading ? Array.from({ length: 3 }).map((_, i) => (
           <Card key={i}><CardHeader><Skeleton className="h-5 w-24" /><Skeleton className="h-4 w-32 mt-1" /></CardHeader><CardContent><Skeleton className="h-8 w-28" /></CardContent></Card>
-        )) : !records || records.length === 0 ? (
+        )) : isError ? (
+          <Card className="col-span-full border-destructive/50"><CardContent className="py-8 text-center space-y-3"><p className="font-medium text-destructive">Failed to load payroll records</p><p className="text-sm text-muted-foreground">{error instanceof Error ? error.message : "Something went wrong. Please try again."}</p><Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>{isFetching ? "Retrying..." : "Retry"}</Button></CardContent></Card>
+        ) : !records || records.length === 0 ? (
           <Card className="col-span-full"><CardContent className="py-8 text-center text-muted-foreground">No payroll records found</CardContent></Card>
         ) : records.slice(-3).reverse().map((run) => (
           <Card key={run.id}>
@@ -128,7 +130,9 @@ function RecordsTab() {
             <TableBody>
               {isLoading ? Array.from({ length: 3 }).map((_, i) => (
                 <TableRow key={i}><TableCell colSpan={6}><Skeleton className="h-5 w-full" /></TableCell></TableRow>
-              )) : !records || records.length === 0 ? (
+              )) : isError ? (
+                <TableRow><TableCell colSpan={6} className="text-center py-8"><span className="text-destructive font-medium">Failed to load payroll history. </span><Button variant="outline" size="sm" className="ml-2" onClick={() => refetch()} disabled={isFetching}>{isFetching ? "Retrying..." : "Retry"}</Button></TableCell></TableRow>
+              ) : !records || records.length === 0 ? (
                 <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">No payroll history found</TableCell></TableRow>
               ) : [...records].reverse().map((run) => (
                 <TableRow key={run.id}>
