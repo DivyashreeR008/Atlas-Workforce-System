@@ -86,10 +86,10 @@ function RecordsTab() {
                 <DialogDescription>Process payroll for an employee</DialogDescription>
               </DialogHeader>
               <div className="space-y-3 py-4">
-                <div><Label>Employee ID</Label><Input required value={form.employeeId} onChange={(e) => setForm((f) => ({ ...f, employeeId: e.target.value }))} /></div>
-                <div><Label>Period</Label><Input placeholder="2026-05" required value={form.period} onChange={(e) => setForm((f) => ({ ...f, period: e.target.value }))} /></div>
-                <div><Label>Base Salary</Label><Input type="number" required value={form.baseSalary} onChange={(e) => setForm((f) => ({ ...f, baseSalary: e.target.value }))} /></div>
-                <div className="grid grid-cols-2 gap-2"><div><Label>Allowances</Label><Input type="number" value={form.allowances} onChange={(e) => setForm((f) => ({ ...f, allowances: e.target.value }))} /></div><div><Label>Deductions</Label><Input type="number" value={form.deductions} onChange={(e) => setForm((f) => ({ ...f, deductions: e.target.value }))} /></div></div>
+                <div><Label htmlFor="payroll-employee-id">Employee ID</Label><Input id="payroll-employee-id" required value={form.employeeId} onChange={(e) => setForm((f) => ({ ...f, employeeId: e.target.value }))} /></div>
+                <div><Label htmlFor="payroll-period">Period</Label><Input id="payroll-period" placeholder="2026-05" required value={form.period} onChange={(e) => setForm((f) => ({ ...f, period: e.target.value }))} /></div>
+                <div><Label htmlFor="payroll-base-salary">Base Salary</Label><Input id="payroll-base-salary" type="number" required value={form.baseSalary} onChange={(e) => setForm((f) => ({ ...f, baseSalary: e.target.value }))} /></div>
+                <div className="grid grid-cols-2 gap-2"><div><Label htmlFor="payroll-allowances">Allowances</Label><Input id="payroll-allowances" type="number" value={form.allowances} onChange={(e) => setForm((f) => ({ ...f, allowances: e.target.value }))} /></div><div><Label htmlFor="payroll-deductions">Deductions</Label><Input id="payroll-deductions" type="number" value={form.deductions} onChange={(e) => setForm((f) => ({ ...f, deductions: e.target.value }))} /></div></div>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
@@ -184,11 +184,11 @@ function MultiCountryTab() {
       {showRun && (
         <Card><CardContent className="p-4 space-y-3">
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            <div><Label>Employee ID</Label><Input value={form.employeeId} onChange={(e) => setForm((f) => ({ ...f, employeeId: e.target.value }))} /></div>
-            <div><Label>Period</Label><Input value={form.period} onChange={(e) => setForm((f) => ({ ...f, period: e.target.value }))} placeholder="2026-05" /></div>
-            <div><Label>Base Salary</Label><Input type="number" value={form.baseSalary} onChange={(e) => setForm((f) => ({ ...f, baseSalary: e.target.value }))} /></div>
-            <div><Label>Country</Label><Input value={form.country} onChange={(e) => setForm((f) => ({ ...f, country: e.target.value }))} /></div>
-            <div><Label>Currency</Label><Input value={form.currency} onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value }))} /></div>
+            <div><Label htmlFor="mc-employee-id">Employee ID</Label><Input id="mc-employee-id" value={form.employeeId} onChange={(e) => setForm((f) => ({ ...f, employeeId: e.target.value }))} /></div>
+            <div><Label htmlFor="mc-period">Period</Label><Input id="mc-period" value={form.period} onChange={(e) => setForm((f) => ({ ...f, period: e.target.value }))} placeholder="2026-05" /></div>
+            <div><Label htmlFor="mc-base-salary">Base Salary</Label><Input id="mc-base-salary" type="number" value={form.baseSalary} onChange={(e) => setForm((f) => ({ ...f, baseSalary: e.target.value }))} /></div>
+            <div><Label htmlFor="mc-country">Country</Label><Input id="mc-country" value={form.country} onChange={(e) => setForm((f) => ({ ...f, country: e.target.value }))} /></div>
+            <div><Label htmlFor="mc-currency">Currency</Label><Input id="mc-currency" value={form.currency} onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value }))} /></div>
             <div className="flex items-end"><Button onClick={handleRun} className="w-full"><Globe className="h-4 w-4" /> Process</Button></div>
           </div>
         </CardContent></Card>
@@ -501,13 +501,13 @@ function BenefitsTab() {
       <div className="flex justify-between items-center"><h2 className="text-lg font-semibold flex items-center gap-2"><Heart className="h-4 w-4" /> Benefits Administration</h2><Button size="sm" onClick={() => setShow(!show)}><Plus className="h-4 w-4" /> New Plan</Button></div>
       {show && (
         <Card><CardContent className="p-4 grid grid-cols-2 md:grid-cols-3 gap-3">
-          <div><Label>Name</Label><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Health Plan" /></div>
-          <div><Label>Type</Label><Input value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))} /></div>
-          <div><Label>Employer Contribution</Label><Input type="number" value={form.employerContribution} onChange={(e) => setForm((f) => ({ ...f, employerContribution: e.target.value }))} /></div>
-          <div><Label>Employee Contribution</Label><Input type="number" value={form.employeeContribution} onChange={(e) => setForm((f) => ({ ...f, employeeContribution: e.target.value }))} /></div>
-          <div><Label>Max Amount</Label><Input type="number" value={form.maxBenefitAmount} onChange={(e) => setForm((f) => ({ ...f, maxBenefitAmount: e.target.value }))} /></div>
+          <div><Label htmlFor="benefit-name">Name</Label><Input id="benefit-name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Health Plan" /></div>
+          <div><Label htmlFor="benefit-type">Type</Label><Input id="benefit-type" value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))} /></div>
+          <div><Label htmlFor="benefit-employer">Employer Contribution</Label><Input id="benefit-employer" type="number" value={form.employerContribution} onChange={(e) => setForm((f) => ({ ...f, employerContribution: e.target.value }))} /></div>
+          <div><Label htmlFor="benefit-employee">Employee Contribution</Label><Input id="benefit-employee" type="number" value={form.employeeContribution} onChange={(e) => setForm((f) => ({ ...f, employeeContribution: e.target.value }))} /></div>
+          <div><Label htmlFor="benefit-max">Max Amount</Label><Input id="benefit-max" type="number" value={form.maxBenefitAmount} onChange={(e) => setForm((f) => ({ ...f, maxBenefitAmount: e.target.value }))} /></div>
           <div className="flex items-end"><Button onClick={handleCreate} className="w-full">Create Plan</Button></div>
-          <div className="col-span-full"><Label>Description</Label><Input value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} /></div>
+          <div className="col-span-full"><Label htmlFor="benefit-desc">Description</Label><Input id="benefit-desc" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} /></div>
         </CardContent></Card>
       )}
 
