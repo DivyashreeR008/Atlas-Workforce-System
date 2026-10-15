@@ -50,8 +50,16 @@ load_dotenv()
 
 logger = get_logger("security-service")
 
-DATABASE_URL = os.environ["DATABASE_URL"]
-INTERNAL_API_KEY = os.environ["INTERNAL_API_KEY"]
+DATABASE_URL = os.getenv("DATABASE_URL")
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
+
+_missing_env = [
+    name
+    for name, value in (("DATABASE_URL", DATABASE_URL), ("INTERNAL_API_KEY", INTERNAL_API_KEY))
+    if not value
+]
+if _missing_env:
+    raise SystemExit(f"Missing required environment variables: {', '.join(_missing_env)}")
 MAX_PAGE_SIZE = int(os.getenv("MAX_PAGE_SIZE", "100"))
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 
