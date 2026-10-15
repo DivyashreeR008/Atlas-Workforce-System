@@ -259,6 +259,7 @@ function GeoFenceTab() {
   const [editing, setEditing] = useState<GeoFence | null>(null);
   const [name, setName] = useState(""); const [lat, setLat] = useState(""); const [lng, setLng] = useState("");
   const [radius, setRadius] = useState("100"); const [address, setAddress] = useState("");
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   const { data: fences } = useQuery({
     queryKey: ["geo-fences"],
@@ -281,9 +282,12 @@ function GeoFenceTab() {
     } catch { addToast({ title: "Failed to save geo-fence", variant: "destructive" }); }
   };
 
-  const handleDelete = async (id: number) => {
-    try { await attendanceApi.geoFences.delete(id); addToast({ title: "Geo-fence deleted" }); void queryClient.invalidateQueries({ queryKey: ["geo-fences"] }); }
+  const handleDelete = async (fence: GeoFence) => {
+    if (!window.confirm(`Delete geo-fence "${fence.name}"? This cannot be undone.`)) return;
+    setDeletingId(fence.id);
+    try { await attendanceApi.geoFences.delete(fence.id); addToast({ title: "Geo-fence deleted" }); void queryClient.invalidateQueries({ queryKey: ["geo-fences"] }); }
     catch { addToast({ title: "Failed to delete", variant: "destructive" }); }
+    finally { setDeletingId(null); }
   };
 
   const getCurrentLocation = () => {
@@ -334,7 +338,7 @@ function GeoFenceTab() {
               </div>
               <div className="flex gap-2 mt-3">
                 <Button variant="outline" size="sm" className="flex-1" onClick={() => { setEditing(f); setName(f.name); setLat(String(f.latitude)); setLng(String(f.longitude)); setRadius(String(f.radiusMeters)); setAddress(f.address); setDialogOpen(true); }}>Edit</Button>
-                <Button variant="destructive" size="sm" onClick={() => handleDelete(f.id)}><Trash2 className="h-3 w-3" /></Button>
+                <Button variant="destructive" size="sm" onClick={() => handleDelete(f)} disabled={deletingId === f.id} aria-label={`Delete geo-fence ${f.name}`} title={`Delete geo-fence ${f.name}`}><Trash2 className="h-3 w-3" /></Button>
               </div>
             </CardContent>
           </Card>
