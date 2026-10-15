@@ -198,10 +198,7 @@ app.include_router(recruitment_analytics.router, prefix="/api/v1")
 def health_check():
     try:
         with engine.connect() as conn:
-            conn.execute(
-                engine.dialect.statement_compiler(
-                    engine.dialect,
-                    None).__class__.__module__ and text("SELECT 1"))
+            conn.execute(text("SELECT 1")).scalar()
             db_status = "connected"
     except (SQLAlchemyError, OSError):
         db_status = "disconnected"
