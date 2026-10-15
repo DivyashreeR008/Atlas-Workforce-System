@@ -146,9 +146,13 @@ async def limit_upload_size(request: Request, call_next):
     if content_length:
         try:
             if int(content_length) > MAX_UPLOAD_SIZE:
-                raise HTTPException(status_code=413, detail="File too large. Maximum size is 10MB.")
+                return JSONResponse(status_code=413, content={"detail": "File too large. Maximum size is 10MB."})
         except ValueError:
             pass
+    else:
+        body = await request.body()
+        if len(body) > MAX_UPLOAD_SIZE:
+            return JSONResponse(status_code=413, content={"detail": "File too large. Maximum size is 10MB."})
     response = await call_next(request)
     return response
 
