@@ -115,26 +115,22 @@ export default function AnalyticsPage() {
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <HeadcountChart data={headcountData} />
-        {deptLoading ? (
-          <div className="rounded-xl border bg-card p-6">
-            <Skeleton className="h-[300px] w-full" />
-          </div>
-        ) : deptError ? (
-          <div className="rounded-xl border bg-card p-6">
-            <div className="flex h-[300px] flex-col items-center justify-center gap-2 text-muted-foreground">
-              <p className="text-sm">Failed to load department data</p>
-              <button
-                onClick={() => refetchDept()}
-                className="rounded-md bg-primary/10 px-3 py-1 text-xs font-medium text-primary hover:bg-primary/20 transition-colors"
-              >
-                Retry
-              </button>
-            </div>
-          </div>
-        ) : (
-          <DepartmentChart data={realDeptBreakdown} />
-        )}
+        <HeadcountChart
+          data={headcountData}
+          loading={deptLoading}
+          error={deptError}
+          onRetry={() => {
+            refetchDept();
+          }}
+        />
+        <DepartmentChart
+          data={realDeptBreakdown}
+          loading={deptLoading}
+          error={deptError}
+          onRetry={() => {
+            refetchDept();
+          }}
+        />
       </div>
 
       {perfLoading ? (
