@@ -365,7 +365,8 @@ function PayslipsTab() {
   return (
     <div className="space-y-4">
       <h2 className="text-lg font-semibold flex items-center gap-2"><FileText className="h-4 w-4" /> Payslips</h2>
-      <Input placeholder="Filter by employee ID..." value={empId} onChange={(e) => setEmpId(e.target.value)} className="max-w-xs" />
+      <label htmlFor="payslip-filter" className="sr-only">Filter payslips by employee ID</label>
+      <Input id="payslip-filter" aria-label="Filter payslips by employee ID" placeholder="Filter by employee ID..." value={empId} onChange={(e) => setEmpId(e.target.value)} className="max-w-xs" />
       <Card><CardContent className="p-0">
         <div className="overflow-x-auto rounded-lg border">
           <table className="w-full text-sm">
