@@ -22,13 +22,13 @@ Unacceptable behavior includes:
 - Trolling, insulting or derogatory comments, and personal or political attacks
 - Public or private harassment
 - Publishing others' private information (e.g. physical or email addresses) without explicit permission
-- Spam PRs / unassigned PRs / mass low-effort contributions during Sprint 26
+- Unassigned PRs during Sprint 26
 - Pinging maintainers directly after being asked to use mentor channels
 - Other conduct which could reasonably be considered inappropriate in a professional setting
 
 ## Sprint 26 Specifics
 
-- Claim **one** `osn-sprint-26` issue at a time. Do not open PRs for unassigned issues.
+- Do not open PRs for unassigned issues.
 - Ask mentors in OpenSourceNest WhatsApp/Discord first — do not DM maintainers for help.
 - Mentors are the first line of review. Respect their feedback; repeated disregard may lead to unassignment.
 

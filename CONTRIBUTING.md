@@ -18,7 +18,6 @@ We follow the official Sprint 26 flow. Mentors triage first; maintainers do fina
    - Find an open issue tagged [`osn-sprint-26`](https://github.com/Senthil455/Atlas-Workforce-System/labels/osn-sprint-26).
    - Leave a comment asking to be assigned (e.g. `/assign` or "Please assign me").
    - **Do NOT open a Pull Request for an unassigned issue.** Unclaimed PRs will be closed.
-   - One issue per contributor at a time unless a mentor says otherwise.
 3. **Build and connect**
    - Fork the repo, create a branch from `main` (see §4).
    - If you get stuck, ask in **OpenSourceNest WhatsApp / Discord** and tag a mentor. **Do not ping the maintainer directly.**
@@ -98,7 +97,7 @@ git checkout -b <type>/<issue>-<short-desc>
 # example: fix/42-attendance-overtime-null
 ```
 
-- Keep PRs small and scoped to **one issue / one service** where possible.
+- Keep PRs small and focused where possible.
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `feat(ats): add ...`, `fix(auth): ...`, `docs: ...`, `test(lms): ...`.
 - Do not commit `.env`, binaries (`*.exe`), logs, `tsbuildinfo`, `.next/`, or files >1MB — CI (`guard-against-binaries`) will fail.
 
@@ -214,4 +213,4 @@ Use the issue templates (`.github/ISSUE_TEMPLATE/`). Include: service + port, re
 - Async-first: GitHub issues/PRs beat DMs. Author: Senthil Raja R — see `README.md` for contact.
 - Maintainer Sprint checklist: [`docs/osn-sprint-26-maintainer-guide.md`](docs/osn-sprint-26-maintainer-guide.md).
 
-Thank you for keeping Atlas spam-free and shippable. Happy sprint!
+Thank you for contributing to Atlas. Happy sprint!

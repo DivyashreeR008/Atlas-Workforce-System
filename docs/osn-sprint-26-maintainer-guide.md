@@ -1,6 +1,6 @@
 # OSN Sprint 26 — Maintainer Guide (Atlas Workforce System)
 
-Checklist for **Senthil** to get listed and run a spam-free sprint. Sprint: **Sept 20 – Oct 17, 2026**.
+Checklist for **Senthil** to get listed and run Sprint 26. Sprint: **Sept 20 – Oct 17, 2026**.
 
 ## 1. One-time repo setup (required by OSN automated script)
 
@@ -38,7 +38,7 @@ Each issue must have: scope (one service), acceptance criteria, repro/test comma
 
 ## 5. During the sprint (your shield workflow)
 
-1. Contributor comments to claim → assign them (one at a time).
+1. Contributor comments to claim → assign them.
 2. Contributor opens PR → **mentor reviews first** (style/tests). You don't need to jump in yet.
 3. Mentor approves (or adds `osn-mentor-approved`) → you do **final review + merge**.
 4. Close / unassign stale claims after ~3–4 days of silence so others can pick them up.

@@ -1,6 +1,6 @@
 ## Summary
 
-> What does this PR change? One issue, one service preferred.
+> What does this PR change?
 
 Closes #<!-- issue number -->
 
