@@ -329,14 +329,25 @@ async def health_check():
     "Requires x-internal-auth JWT with the audit-writer audience.",
 )
 async def create_audit_entry(
-    payload: AuditLogCreate,
     request: Request,
     db: Session = Depends(get_db),
     _: bool = Depends(require_audit_writer),
 ):
-    check_body_tenant(request, payload.tenant_id)
     try:
-        log = create_audit_log(db, payload.model_dump(), HASH_SALT)
+        raw = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    claims = getattr(request.state, "claims", None) or {}
+    check_body_tenant(request, raw.get("tenant_id"))
+    data = normalize_audit_payload(raw, claims)
+    try:
+        validated = AuditLogCreate(**data)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid audit entry")
+    try:
+        log = create_audit_log(db, validated.model_dump(), HASH_SALT)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return log
