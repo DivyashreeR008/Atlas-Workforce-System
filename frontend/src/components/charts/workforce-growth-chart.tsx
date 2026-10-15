@@ -64,6 +64,21 @@ export function WorkforceGrowthChart({ data, loading, error, onRetry }: Workforc
     );
   }
 
+  if (data.length < 2) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">Workforce Growth</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex h-[260px] flex-col items-center justify-center gap-2 text-muted-foreground">
+            <p className="text-sm">Not enough history to compute growth</p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   const startCount = data[0]?.count ?? 0;
   const endCount = data[data.length - 1]?.count ?? 0;
   const totalGrowth = startCount > 0 ? ((endCount - startCount) / startCount * 100).toFixed(1) : "0";
