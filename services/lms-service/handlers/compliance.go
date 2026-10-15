@@ -125,8 +125,14 @@ func (h *ComplianceHandler) Delete(c *fiber.Ctx) error {
 	tenantID := middleware.GetTenant(c)
 	id := c.Params("id")
 	var training models.ComplianceTraining
-	if err := h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).Delete(&training).Error; err != nil {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Training not found"})
+	if err := h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).First(&training).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Training not found"})
+		}
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch training"})
+	}
+	if err := h.DB.Delete(&training).Error; err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to delete training"})
 	}
 	return c.JSON(fiber.Map{"message": "Compliance training deleted"})
 }

@@ -102,8 +102,15 @@ func (h *MentorHandler) Update(c *fiber.Ctx) error {
 func (h *MentorHandler) Delete(c *fiber.Ctx) error {
 	tenantID := middleware.GetTenant(c)
 	id := c.Params("id")
-	if err := h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).Delete(&models.MentorProfile{}).Error; err != nil {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Mentor not found"})
+	var mentor models.MentorProfile
+	if err := h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).First(&mentor).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Mentor not found"})
+		}
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch mentor"})
+	}
+	if err := h.DB.Delete(&mentor).Error; err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to delete mentor"})
 	}
 	return c.JSON(fiber.Map{"message": "Mentor deleted"})
 }
