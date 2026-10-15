@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { getAccessToken } from "@/lib/auth";
+import { getReconnectDelay } from "@/lib/reconnect";
 
 const WS_BASE = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080/api/live/ws";
 
@@ -10,6 +11,7 @@ export function useWebSocket<T = Record<string, unknown>>(channel: string, enabl
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const retryRef = useRef(0);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const send = useCallback((data: unknown) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -31,6 +33,10 @@ export function useWebSocket<T = Record<string, unknown>>(channel: string, enabl
       ws.onopen = () => {
         setConnected(true);
         retryRef.current = 0;
+        if (timeoutRef.current) {
+          clearTimeout(timeoutRef.current);
+          timeoutRef.current = null;
+        }
       };
 
       ws.onmessage = (msg) => {
@@ -45,8 +51,8 @@ export function useWebSocket<T = Record<string, unknown>>(channel: string, enabl
         setConnected(false);
         if (!mounted) return;
         retryRef.current++;
-        const delay = Math.min(1000 * Math.pow(2, Math.min(retryRef.current, 5)), 30000);
-        setTimeout(connect, delay);
+        const delay = getReconnectDelay(retryRef.current);
+        timeoutRef.current = setTimeout(connect, delay);
       };
 
       ws.onerror = () => ws.close();
@@ -55,6 +61,7 @@ export function useWebSocket<T = Record<string, unknown>>(channel: string, enabl
     connect();
     return () => {
       mounted = false;
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
       wsRef.current?.close();
     };
   }, [channel, enabled]);

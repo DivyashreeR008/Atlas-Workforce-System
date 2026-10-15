@@ -5,6 +5,7 @@ import { Bell, BellRing, CheckCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatDate } from "@/lib/utils";
+import { getReconnectDelay } from "@/lib/reconnect";
 
 interface Notification {
   id: string;
@@ -20,14 +21,23 @@ export function NotificationBell() {
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<number>(0);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const connectRef = useRef<(() => void) | null>(null);
 
-  const scheduleReconnect = useCallback(() => {
-    const delay = Math.min(1000 * 2 ** reconnectRef.current, 30000);
-    reconnectRef.current++;
-    setTimeout(() => connectRef.current?.(), delay);
+  const clearPendingReconnect = useCallback(() => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
   }, []);
+
+  const scheduleReconnect = useCallback(() => {
+    clearPendingReconnect();
+    const delay = getReconnectDelay(reconnectRef.current);
+    reconnectRef.current++;
+    timeoutRef.current = setTimeout(() => connectRef.current?.(), delay);
+  }, [clearPendingReconnect]);
 
   const connect = useCallback(() => {
     try {
@@ -38,6 +48,7 @@ export function NotificationBell() {
       ws.onopen = () => {
         setConnected(true);
         reconnectRef.current = 0;
+        clearPendingReconnect();
       };
 
       ws.onmessage = (event) => {
@@ -72,12 +83,13 @@ export function NotificationBell() {
   useEffect(() => {
     connect();
     return () => {
+      clearPendingReconnect();
       if (wsRef.current) {
         wsRef.current.onclose = null;
         wsRef.current.close();
       }
     };
-  }, [connect]);
+  }, [connect, clearPendingReconnect]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
