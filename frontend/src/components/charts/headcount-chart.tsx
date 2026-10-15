@@ -66,6 +66,21 @@ export function HeadcountChart({ data, loading, error, onRetry }: HeadcountChart
     );
   }
 
+  if (data.length < 2) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">Headcount Trend</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex h-[280px] flex-col items-center justify-center gap-2 text-muted-foreground">
+            <p className="text-sm">No headcount history yet</p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   const current = data[data.length - 1]?.count ?? 0;
   const previous = data[data.length - 2]?.count ?? 0;
   const change = previous > 0 ? ((current - previous) / previous * 100).toFixed(1) : "0";
