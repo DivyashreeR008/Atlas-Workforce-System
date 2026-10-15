@@ -1450,6 +1450,8 @@ function SimulationsTab({ loading }: { loading: boolean }) {
   const [simRunOpen, setSimRunOpen] = useState(false);
   const [whatIfOpen, setWhatIfOpen] = useState(false);
   const [orgRedesignOpen, setOrgRedesignOpen] = useState(false);
+  const queryClient = useQueryClient();
+  const addToast = useToastStore((s) => s.toast);
 
   const { data: simsData } = useQuery({
     queryKey: ["wp", "simulations"],
@@ -1476,7 +1478,7 @@ function SimulationsTab({ loading }: { loading: boolean }) {
     <motion.div className="space-y-6" variants={containerVariants} initial="hidden" animate="show">
       <SimulationRunDialog open={simRunOpen} onOpenChange={setSimRunOpen} />
       <WhatIfDialog open={whatIfOpen} onOpenChange={setWhatIfOpen} />
-      <OrgRedesignDialog open={orgRedesignOpen} onOpenChange={setOrgRedesignOpen} onRunAnalysis={(data) => console.log("Org redesign created:", data)} />
+      <OrgRedesignDialog open={orgRedesignOpen} onOpenChange={setOrgRedesignOpen} onRunAnalysis={() => { void queryClient.invalidateQueries({ queryKey: ["wp", "orgRedesigns"] }); setActiveSimTab("orgRedesign"); addToast({ title: "Org redesign analysis ready" }); }} />
 
       <Tabs value={activeSimTab} onValueChange={setActiveSimTab}>
         <TabsList className="mb-4">
