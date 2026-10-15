@@ -209,12 +209,13 @@ export default function CoursesPage() {
             <p className="mt-1 text-sm text-muted-foreground">Create a new course</p>
             <form onSubmit={handleCreate} className="mt-4 space-y-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">Title</label>
-                <Input required value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
+                <label htmlFor="course-title" className="text-sm font-medium">Title</label>
+                <Input id="course-title" required value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Description</label>
+                <label htmlFor="course-description" className="text-sm font-medium">Description</label>
                 <textarea
+                  id="course-description"
                   className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   value={form.description}
                   onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
@@ -222,13 +223,13 @@ export default function CoursesPage() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Category</label>
-                  <Input required value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} />
+                  <label htmlFor="course-category" className="text-sm font-medium">Category</label>
+                  <Input id="course-category" required value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Level</label>
+                  <label htmlFor="course-level" className="text-sm font-medium">Level</label>
                   <Select value={form.level} onValueChange={(v) => setForm((f) => ({ ...f, level: v as CourseLevel }))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger id="course-level"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="beginner">Beginner</SelectItem>
                       <SelectItem value="intermediate">Intermediate</SelectItem>
@@ -239,12 +240,12 @@ export default function CoursesPage() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Duration</label>
-                  <Input required placeholder="e.g. 4 hours" value={form.duration} onChange={(e) => setForm((f) => ({ ...f, duration: e.target.value }))} />
+                  <label htmlFor="course-duration" className="text-sm font-medium">Duration</label>
+                  <Input id="course-duration" required placeholder="e.g. 4 hours" value={form.duration} onChange={(e) => setForm((f) => ({ ...f, duration: e.target.value }))} />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Instructor</label>
-                  <Input required value={form.instructor} onChange={(e) => setForm((f) => ({ ...f, instructor: e.target.value }))} />
+                  <label htmlFor="course-instructor" className="text-sm font-medium">Instructor</label>
+                  <Input id="course-instructor" required value={form.instructor} onChange={(e) => setForm((f) => ({ ...f, instructor: e.target.value }))} />
                 </div>
               </div>
               <div className="flex justify-end gap-2 pt-2">
