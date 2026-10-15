@@ -74,6 +74,22 @@ export function DepartmentChart({ data, loading, error, onRetry }: DepartmentCha
     );
   }
 
+  if (!data.length) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">Department Distribution</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex h-[280px] flex-col items-center justify-center gap-2 text-muted-foreground">
+            <p className="text-sm">No employees yet</p>
+            <p className="text-xs">Add staff or check the employee service</p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   const total = data.reduce((s, d) => s + d.value, 0);
 
   return (
