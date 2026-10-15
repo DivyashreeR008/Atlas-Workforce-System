@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Command, FileText, Users, LayoutDashboard, Sparkles, Loader2, ArrowRight } from "lucide-react";
+import { Search, FileText, Users, LayoutDashboard, Sparkles, Loader2, ArrowRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface SearchResult {
@@ -31,17 +31,16 @@ export function GlobalSearch() {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
+  // Ctrl+K is owned solely by CommandPalette to avoid double dialogs.
+  // GlobalSearch opens via its trigger button and closes on Escape.
   useEffect(() => {
+    if (!open) return;
     const down = (e: KeyboardEvent) => {
-      if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        setOpen((prev) => !prev);
-      }
       if (e.key === "Escape") setOpen(false);
     };
     document.addEventListener("keydown", down);
     return () => document.removeEventListener("keydown", down);
-  }, []);
+  }, [open]);
 
   useEffect(() => {
     if (open) {
@@ -124,9 +123,6 @@ export function GlobalSearch() {
       >
         <Search className="h-4 w-4 shrink-0" />
         <span className="flex-1 text-left text-xs">Search anything...</span>
-        <kbd className="hidden shrink-0 items-center gap-0.5 rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium sm:flex">
-          <Command className="h-2.5 w-2.5" />K
-        </kbd>
       </button>
 
       {open && (
