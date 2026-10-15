@@ -156,6 +156,16 @@ async def internal_auth_middleware(request: Request, call_next):
 # ------------------------------------------------
 # Input Validation
 # ------------------------------------------------
+EMAIL_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+EMAIL_MAX_LENGTH = 200
+
+
+def validate_email_param(email: str) -> str:
+    if len(email) > EMAIL_MAX_LENGTH or not EMAIL_PATTERN.match(email):
+        raise HTTPException(status_code=400, detail="Invalid email address")
+    return email
+
+
 def validate_search_param(search: Optional[str]) -> Optional[str]:
     if not search:
         return search
@@ -323,6 +333,7 @@ async def get_employees(
 @app.get("/employees/{email}", response_model=EmployeeSchema, tags=["employees"], summary="Get employee by email")
 async def get_employee(request: Request, email: str):
     """Fetch a single employee by their email address within a tenant scope."""
+    validate_email_param(email)
     tenant_id = getattr(request.state, "tenant_id", "default")
     employee = await employees_collection.find_one({"email": email, "tenant_id": tenant_id})
     if employee:
@@ -359,6 +370,7 @@ async def update_employee(
     employee: EmployeeUpdateSchema = Body(...),
 ):
     """Update an existing employee's details. Email change is validated for uniqueness."""
+    validate_email_param(email)
     tenant_id = getattr(request.state, "tenant_id", "default")
     existing = await employees_collection.find_one({"email": email, "tenant_id": tenant_id})
     if not existing:
@@ -390,6 +402,7 @@ async def delete_employee(
     email: str,
 ):
     """Permanently delete an employee record."""
+    validate_email_param(email)
     tenant_id = getattr(request.state, "tenant_id", "default")
     result = await employees_collection.delete_one({"email": email, "tenant_id": tenant_id})
     if result.deleted_count == 0:
