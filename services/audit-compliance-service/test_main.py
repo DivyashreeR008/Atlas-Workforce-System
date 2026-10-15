@@ -71,8 +71,18 @@ def client(override_get_db):
         if request.url.path == "/api/v1/audit/log" and request.method == "POST":
             return
         if "x-internal-auth" not in request.headers:
-            tenant = request.url.params.get("tenant_id", "default")
-            request.headers["x-internal-auth"] = _mint_audit_writer_token(tenant_id=tenant)
+            tenant = request.url.params.get("tenant_id")
+            if not tenant and request.content:
+                # Compliance/GDPR writes carry the tenant in the JSON body
+                # rather than the URL; match the token to it so the tenant
+                # binding checks see a consistent request.
+                try:
+                    body = json.loads(bytes(request.content).decode())
+                    if isinstance(body, dict) and body.get("tenant_id"):
+                        tenant = body["tenant_id"]
+                except (ValueError, UnicodeError, AttributeError):
+                    pass
+            request.headers["x-internal-auth"] = _mint_audit_writer_token(tenant_id=tenant or "default")
 
     client = AsyncClient(
         transport=transport, base_url="http://test", event_hooks={"request": [_auto_auth]}
@@ -152,7 +162,7 @@ async def test_create_audit_log(client: AsyncClient, db_session: Session):
     db_session.commit()
 
     payload = _create_audit_payload()
-    resp = await client.post("/api/v1/audit/log", json=payload, headers=INTERNAL_HEADERS)
+    resp = await client.post("/api/v1/audit/log", json=payload, headers=_auth_headers(TENANT_ID))
     assert resp.status_code == 201
     data = resp.json()
     assert data["event_type"] == "employee.created"
@@ -231,7 +241,7 @@ async def test_hash_chain_two_entries(client: AsyncClient, db_session: Session):
     db_session.commit()
 
     p1 = _create_audit_payload(tenant_id="test-hash-chain", event_type="first.entry")
-    r1 = await client.post("/api/v1/audit/log", json=p1, headers=INTERNAL_HEADERS)
+    r1 = await client.post("/api/v1/audit/log", json=p1, headers=_auth_headers("test-hash-chain"))
     assert r1.status_code == 201
     d1 = r1.json()
     assert d1["previous_hash"] is None
@@ -239,7 +249,7 @@ async def test_hash_chain_two_entries(client: AsyncClient, db_session: Session):
     p2 = _create_audit_payload(
         tenant_id="test-hash-chain", event_type="second.entry"
     )
-    r2 = await client.post("/api/v1/audit/log", json=p2, headers=INTERNAL_HEADERS)
+    r2 = await client.post("/api/v1/audit/log", json=p2, headers=_auth_headers("test-hash-chain"))
     assert r2.status_code == 201
     d2 = r2.json()
     assert d2["previous_hash"] == d1["hash"]
@@ -257,7 +267,7 @@ async def test_list_audit_logs(client: AsyncClient, db_session: Session):
             event_type=f"test.event.{i}",
             actor_id=f"user-{i:03d}",
         )
-        r = await client.post("/api/v1/audit/log", json=p, headers=INTERNAL_HEADERS)
+        r = await client.post("/api/v1/audit/log", json=p, headers=_auth_headers(tenant))
         assert r.status_code == 201
 
     resp = await client.get(f"/api/v1/audit/logs?tenant_id={tenant}&page_size=10")
@@ -278,12 +288,12 @@ async def test_list_audit_logs_filter_event_type(client: AsyncClient, db_session
     await client.post(
         "/api/v1/audit/log",
         json=_create_audit_payload(tenant_id=tenant, event_type="alpha.event"),
-        headers=INTERNAL_HEADERS,
+        headers=_auth_headers(tenant),
     )
     await client.post(
         "/api/v1/audit/log",
         json=_create_audit_payload(tenant_id=tenant, event_type="beta.event"),
-        headers=INTERNAL_HEADERS,
+        headers=_auth_headers(tenant),
     )
 
     resp = await client.get(
@@ -301,7 +311,7 @@ async def test_get_audit_log_by_id(client: AsyncClient, db_session: Session):
     db_session.commit()
 
     p = _create_audit_payload(tenant_id=tenant)
-    create_resp = await client.post("/api/v1/audit/log", json=p, headers=INTERNAL_HEADERS)
+    create_resp = await client.post("/api/v1/audit/log", json=p, headers=_auth_headers(tenant))
     log_id = create_resp.json()["id"]
 
     resp = await client.get(f"/api/v1/audit/logs/{log_id}")
@@ -324,7 +334,7 @@ async def test_export_audit_logs_json(client: AsyncClient, db_session: Session):
     await client.post(
         "/api/v1/audit/log",
         json=_create_audit_payload(tenant_id=tenant),
-        headers=INTERNAL_HEADERS,
+        headers=_auth_headers(tenant),
     )
 
     resp = await client.get(f"/api/v1/audit/logs/export?tenant_id={tenant}&format=json")
@@ -343,7 +353,7 @@ async def test_export_audit_logs_csv(client: AsyncClient, db_session: Session):
     await client.post(
         "/api/v1/audit/log",
         json=_create_audit_payload(tenant_id=tenant),
-        headers=INTERNAL_HEADERS,
+        headers=_auth_headers(tenant),
     )
 
     resp = await client.get(f"/api/v1/audit/logs/export?tenant_id={tenant}&format=csv")
@@ -783,7 +793,7 @@ async def test_verify_chain_integrity_intact(client: AsyncClient, db_session: Se
         await client.post(
             "/api/v1/audit/log",
             json=_create_audit_payload(tenant_id=tenant, event_type=f"chain.event.{i}"),
-            headers=INTERNAL_HEADERS,
+            headers=_auth_headers(tenant),
         )
 
     resp = await client.get(f"/api/v1/audit/verify-chain?tenant_id={tenant}")
@@ -803,7 +813,7 @@ async def test_verify_chain_integrity_tampered(client: AsyncClient, db_session: 
     await client.post(
         "/api/v1/audit/log",
         json=_create_audit_payload(tenant_id=tenant, event_type="original.event"),
-        headers=INTERNAL_HEADERS,
+        headers=_auth_headers(tenant),
     )
 
     db_session.query(AuditLog).filter(
