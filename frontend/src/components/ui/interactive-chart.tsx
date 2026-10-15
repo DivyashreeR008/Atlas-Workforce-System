@@ -62,8 +62,19 @@ export function InteractiveChart({
               <div
                 key={idx}
                 className="relative flex flex-col items-center justify-end flex-1 h-full"
+                tabIndex={0}
+                role="img"
+                aria-label={`${point.label}: ${point.value}${point.secondary !== undefined ? `, secondary ${point.secondary}` : ""}`}
                 onMouseEnter={() => setHoveredIndex(idx)}
                 onMouseLeave={() => setHoveredIndex(null)}
+                onFocus={() => setHoveredIndex(idx)}
+                onBlur={() => setHoveredIndex(null)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setHoveredIndex(idx);
+                  }
+                }}
               >
                 {isHovered && (
                   <div className="absolute -top-5 z-10 whitespace-nowrap rounded-md bg-popover px-2 py-1 text-xs shadow-md border">
@@ -145,8 +156,12 @@ export function InteractiveChart({
             stroke="hsl(var(--primary))"
             strokeWidth="1"
             className="transition-all duration-150 cursor-pointer"
+            tabIndex={0}
+            aria-label={`${p.point.label}: ${p.point.value}`}
             onMouseEnter={() => setHoveredIndex(p.idx)}
             onMouseLeave={() => setHoveredIndex(null)}
+            onFocus={() => setHoveredIndex(p.idx)}
+            onBlur={() => setHoveredIndex(null)}
           />
         ))}
       </svg>
@@ -154,12 +169,15 @@ export function InteractiveChart({
         {data.map((point, idx) => (
           <span
             key={idx}
+            tabIndex={0}
             className={cn(
               "text-[10px] text-muted-foreground transition-colors",
               hoveredIndex === idx && "text-foreground font-medium"
             )}
             onMouseEnter={() => setHoveredIndex(idx)}
             onMouseLeave={() => setHoveredIndex(null)}
+            onFocus={() => setHoveredIndex(idx)}
+            onBlur={() => setHoveredIndex(null)}
           >
             {point.label}
           </span>
