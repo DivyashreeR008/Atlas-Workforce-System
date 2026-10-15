@@ -120,7 +120,7 @@ func (s *NotificationStore) List(tenantID string) []Notification {
 		copy(result, s.items)
 		return result
 	}
-	var result []Notification
+	result := []Notification{}
 	for _, n := range s.items {
 		if n.TenantID == tenantID {
 			result = append(result, n)
