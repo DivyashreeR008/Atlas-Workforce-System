@@ -33,7 +33,7 @@ func (h *ComplianceHandler) List(c *fiber.Ctx) error {
 	offset := (page - 1) * pageSize
 
 	var total int64
-	h.DB.Model(&models.ComplianceTraining{}).Where("tenant_id = ?", tenantID).Count(&total)
+	query.Session(&gorm.Session{}).Model(&models.ComplianceTraining{}).Count(&total)
 
 	var trainings []models.ComplianceTraining
 	if err := query.Preload("Course").Order("due_date ASC").Offset(offset).Limit(pageSize).Find(&trainings).Error; err != nil {

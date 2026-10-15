@@ -51,7 +51,17 @@ func (h *CourseHandler) List(c *fiber.Ctx) error {
 	offset := (page - 1) * pageSize
 
 	var total int64
-	h.DB.Model(&models.Course{}).Where("tenant_id = ?", tenantID).Count(&total)
+	countQuery := h.DB.Model(&models.Course{}).Where("tenant_id = ?", tenantID)
+	if category := c.Query("category"); category != "" {
+		countQuery = countQuery.Where("category = ?", category)
+	}
+	if level := c.Query("level"); level != "" {
+		countQuery = countQuery.Where("level = ?", level)
+	}
+	if status := c.Query("status"); status != "" {
+		countQuery = countQuery.Where("status = ?", status)
+	}
+	countQuery.Count(&total)
 
 	if err := query.Group("courses.id").Order("courses.created_at DESC").
 		Offset(offset).Limit(pageSize).Find(&courses).Error; err != nil {
