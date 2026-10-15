@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -391,6 +392,30 @@ func listNotificationsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	notifications := store.List(tenantID)
+	page := 1
+	limit := 50
+	if v := r.URL.Query().Get("page"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			page = p
+		}
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if l, err := strconv.Atoi(v); err == nil && l > 0 {
+			limit = l
+		}
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	start := (page - 1) * limit
+	if start > len(notifications) {
+		start = len(notifications)
+	}
+	end := start + limit
+	if end > len(notifications) {
+		end = len(notifications)
+	}
+	notifications = notifications[start:end]
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(notifications); err != nil {
 		log.Printf("Failed to encode notifications response")
