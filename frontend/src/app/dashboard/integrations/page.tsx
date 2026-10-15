@@ -194,8 +194,15 @@ export default function IntegrationsPage() {
                     </td>
                     <td className="p-3">
                       <button
-                        onClick={() => deleteWebhook.mutate(wh.id)}
-                        className="rounded p-1 text-red-400 hover:bg-red-500/20"
+                        onClick={() => {
+                          if (window.confirm(`Delete webhook "${wh.name}"? This cannot be undone.`)) {
+                            deleteWebhook.mutate(wh.id);
+                          }
+                        }}
+                        disabled={deleteWebhook.isPending}
+                        aria-label={`Delete webhook ${wh.name}`}
+                        title={`Delete webhook ${wh.name}`}
+                        className="rounded p-1 text-red-400 hover:bg-red-500/20 disabled:opacity-50"
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -264,8 +271,15 @@ export default function IntegrationsPage() {
                     </td>
                     <td className="p-3">
                       <button
-                        onClick={() => deleteSubscription.mutate(sub.id)}
-                        className="rounded p-1 text-red-400 hover:bg-red-500/20"
+                        onClick={() => {
+                          if (window.confirm(`Delete subscription for "${sub.event_type}"? This cannot be undone.`)) {
+                            deleteSubscription.mutate(sub.id);
+                          }
+                        }}
+                        disabled={deleteSubscription.isPending}
+                        aria-label={`Delete subscription ${sub.event_type}`}
+                        title={`Delete subscription ${sub.event_type}`}
+                        className="rounded p-1 text-red-400 hover:bg-red-500/20 disabled:opacity-50"
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
