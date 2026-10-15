@@ -2712,6 +2712,9 @@ app.get('/sessions', requireRole(), async (req, res) => {
 app.delete('/sessions/:id', requireRole(), async (req, res) => {
   try {
     const userId = req.user.id;
+    if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(req.params.id)) {
+      return res.status(400).json({ message: 'Invalid session id' });
+    }
     const result = await pool.query(
       'UPDATE sessions SET is_active = false WHERE id = $1::uuid AND user_id = $2 RETURNING token_hash',
       [req.params.id, userId]
@@ -2758,6 +2761,9 @@ app.delete('/sessions', requireRole(), async (req, res) => {
 
     let revokedHashes = [];
     if (currentSessionId) {
+      if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(currentSessionId)) {
+        return res.status(400).json({ message: 'Invalid session id' });
+      }
       const resQ = await pool.query(
         'UPDATE sessions SET is_active = false WHERE user_id = $1 AND id != $2::uuid RETURNING token_hash',
         [userId, currentSessionId]
