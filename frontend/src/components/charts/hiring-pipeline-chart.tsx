@@ -73,6 +73,22 @@ export function HiringPipelineChart({ data, loading, error, onRetry }: HiringPip
     );
   }
 
+  if (!data.length) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">Hiring Pipeline</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex h-[260px] flex-col items-center justify-center gap-2 text-muted-foreground">
+            <p className="text-sm">No candidates yet</p>
+            <p className="text-xs">Create job postings to start the pipeline</p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card className="transition-all duration-200 hover:shadow-md">
       <CardHeader className="pb-2 flex-row items-start justify-between space-y-0">
