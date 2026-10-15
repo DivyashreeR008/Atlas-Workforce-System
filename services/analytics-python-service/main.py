@@ -171,7 +171,17 @@ def health_check():
 
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "")
 RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "rabbitmq")
-RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", "5672"))
+
+
+def _get_rabbitmq_port():
+    try:
+        return int(os.environ.get("RABBITMQ_PORT", "5672"))
+    except ValueError as e:
+        logger.warning("config.invalid_RABBITMQ_PORT", extra={"error": str(e), "fallback": 5672})
+        return 5672
+
+
+RABBITMQ_PORT = _get_rabbitmq_port()
 RABBITMQ_USER = os.environ.get("RABBITMQ_USER", "guest")
 RABBITMQ_PASSWORD = os.environ.get("RABBITMQ_PASSWORD", "guest")
 
