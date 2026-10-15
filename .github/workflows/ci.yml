@@ -635,6 +635,23 @@ jobs:
     defaults:
       run:
         working-directory: frontend
+    # Ephemeral integration credentials: strong, clearly test-scoped values
+    # (never real secrets). ADMIN_DEFAULT_PASSWORD seeds admin@atlas.io on
+    # first boot and doubles as the Playwright login password.
+    env:
+      POSTGRES_USER: ci_atlas
+      POSTGRES_PASSWORD: Atlas-Ci-Db-Pass-1
+      POSTGRES_DB: atlas_db
+      RABBITMQ_USER: ci_rabbit
+      RABBITMQ_PASS: Atlas-Ci-Rabbit-Pass-1
+      MONGO_USER: ci_mongo
+      MONGO_PASSWORD: Atlas-Ci-Mongo-Pass-1
+      REDIS_PASSWORD: Atlas-Ci-Redis-Pass-1
+      JWT_SECRET: ci-test-jwt-secret-atlas-workforce-0123456789abcdef
+      INTERNAL_JWT_SECRET: ci-test-internal-secret-atlas-workforce-0123456789abcdef
+      MFA_STEPUP_SECRET: ci-test-mfa-stepup-atlas-workforce-0123456789abcdef
+      ADMIN_DEFAULT_PASSWORD: Atlas-E2E-Test-Pass-1
+      SCIM_API_KEY: ci-test-scim-key
     steps:
       - uses: actions/checkout@v4
       - name: Setup Node.js
@@ -647,18 +664,40 @@ jobs:
         run: npm ci
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
+      - name: Start backend stack
+        # Playwright serves the frontend itself (webServer), so the compose
+        # frontend is stopped right after boot to free host port 3000.
+        run: docker compose up -d --build && docker compose stop frontend
+        working-directory: ${{ github.workspace }}
+      - name: Wait for backend health
+        run: bash scripts/wait-for-health.sh http://localhost:8080 http://localhost:8010 http://localhost:8012 http://localhost:8011 http://localhost:8013
+        working-directory: ${{ github.workspace }}
+        env:
+          HEALTH_TIMEOUT: 420
+      - name: Verify seeded admin login
+        # Bounded retries stay under the /api/auth/login rate limit.
+        run: |
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8080/api/auth/login -H 'Content-Type: application/json' -d '{"email":"admin@atlas.io","password":"Atlas-E2E-Test-Pass-1"}' || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "Seeded admin login works."
+              exit 0
+            fi
+            echo "login attempt $i -> $code, retrying..."
+            sleep 10
+          done
+          echo "FAIL: seeded admin login never returned 200"
+          exit 1
+        working-directory: ${{ github.workspace }}
       - name: Build frontend
         run: npm run build
         env:
           NEXT_PUBLIC_API_URL: http://localhost:8080/api
-      # For a full stack run, uncomment the docker compose step below and let webServer reuse the existing server:
-      # - name: Start full stack
-      #   run: docker compose up -d --build && ./scripts/wait-for-health.sh
       - name: Run Playwright tests
         run: npx playwright test --project=chromium
         env:
           E2E_USER: admin@atlas.io
-          E2E_PASS: ChangeMe123!
+          E2E_PASS: Atlas-E2E-Test-Pass-1
           CI: true
       - name: Upload Playwright report
         if: failure()
@@ -667,6 +706,10 @@ jobs:
           name: playwright-report
           path: frontend/playwright-report
           retention-days: 7
+      - name: Stop backend stack
+        if: always()
+        run: docker compose down -v
+        working-directory: ${{ github.workspace }}
       - name: Upload Playwright traces
         if: failure()
         uses: actions/upload-artifact@v4
@@ -678,12 +721,31 @@ jobs:
   k6-performance:
     name: K6 Performance (smoke)
     runs-on: ubuntu-latest
+    # Same ephemeral test credentials as e2e-tests (see comment there).
+    env:
+      POSTGRES_USER: ci_atlas
+      POSTGRES_PASSWORD: Atlas-Ci-Db-Pass-1
+      POSTGRES_DB: atlas_db
+      RABBITMQ_USER: ci_rabbit
+      RABBITMQ_PASS: Atlas-Ci-Rabbit-Pass-1
+      MONGO_USER: ci_mongo
+      MONGO_PASSWORD: Atlas-Ci-Mongo-Pass-1
+      REDIS_PASSWORD: Atlas-Ci-Redis-Pass-1
+      JWT_SECRET: ci-test-jwt-secret-atlas-workforce-0123456789abcdef
+      INTERNAL_JWT_SECRET: ci-test-internal-secret-atlas-workforce-0123456789abcdef
+      MFA_STEPUP_SECRET: ci-test-mfa-stepup-atlas-workforce-0123456789abcdef
+      ADMIN_DEFAULT_PASSWORD: Atlas-E2E-Test-Pass-1
+      SCIM_API_KEY: ci-test-scim-key
     steps:
       - uses: actions/checkout@v4
       - name: Setup k6
-        run: |
-          curl -s https://packagecloud.io/install/repositories/grafana/k6/script.deb.sh | sudo bash
-          sudo apt-get install -y k6
+        uses: grafana/setup-k6-action@v1
+      - name: Start backend stack
+        run: docker compose up -d --build
+      - name: Wait for backend health
+        run: bash scripts/wait-for-health.sh http://localhost:8080 http://localhost:8010 http://localhost:8001 http://localhost:8002 http://localhost:8003 http://localhost:8005 http://localhost:8006 http://localhost:8012 http://localhost:8013 http://localhost:8015 http://localhost:8011
+        env:
+          HEALTH_TIMEOUT: 420
       - name: Run k6 smoke test
         run: k6 run tests/performance/k6-smoke.js
         env:
@@ -698,6 +760,9 @@ jobs:
           LMS_URL: http://localhost:8013
           COPILOT_URL: http://localhost:8015
           AUDIT_URL: http://localhost:8011
+      - name: Stop backend stack
+        if: always()
+        run: docker compose down -v
 
   security-scan:
     name: Security Scan
