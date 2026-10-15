@@ -188,7 +188,17 @@ export default function LifecyclePage() {
                         </span>
                       </td>
                       <td className="p-3">
-                        <button onClick={() => deleteTemplate.mutate(t.id)} className="rounded p-1 text-red-400 hover:bg-red-500/20">
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`Delete onboarding template "${t.name}"? This cannot be undone.`)) {
+                              deleteTemplate.mutate(t.id);
+                            }
+                          }}
+                          disabled={deleteTemplate.isPending}
+                          aria-label={`Delete template ${t.name}`}
+                          title={`Delete template ${t.name}`}
+                          className="rounded p-1 text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+                        >
                           <Trash2 className="h-4 w-4" />
                         </button>
                       </td>
@@ -348,7 +358,17 @@ export default function LifecyclePage() {
                         }`}>{j.status}</span>
                       </td>
                       <td className="p-3">
-                        <button onClick={() => deleteJob.mutate(j.id)} className="rounded p-1 text-red-400 hover:bg-red-500/20">
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`Delete internal job "${j.title}"? This cannot be undone.`)) {
+                              deleteJob.mutate(j.id);
+                            }
+                          }}
+                          disabled={deleteJob.isPending}
+                          aria-label={`Delete job ${j.title}`}
+                          title={`Delete job ${j.title}`}
+                          className="rounded p-1 text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+                        >
                           <Trash2 className="h-4 w-4" />
                         </button>
                       </td>
