@@ -64,7 +64,22 @@ export function AttendanceChart({ data, loading, error, onRetry }: AttendanceCha
     );
   }
 
-  const avg = data.length > 0 ? (data.reduce((s, d) => s + d.rate, 0) / data.length).toFixed(1) : "0";
+  if (!data.length) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">Attendance Trend</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex h-[260px] flex-col items-center justify-center gap-2 text-muted-foreground">
+            <p className="text-sm">No attendance data yet</p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const avg = (data.reduce((s, d) => s + d.rate, 0) / data.length).toFixed(1);
 
   return (
     <Card className="transition-all duration-200 hover:shadow-md">
