@@ -1263,7 +1263,7 @@ app.get('/metrics', async (req, res) => {
 function globalErrorHandler(err, req, res, _next) {
   console.error('Unhandled error:', err.message, err.stack);
   const status = err.status || err.statusCode || 500;
-  res.status(status).json({ error: 'Internal server error' });
+  res.status(status).json({ message: 'Internal server error' });
 }
 app.use(globalErrorHandler);
 
