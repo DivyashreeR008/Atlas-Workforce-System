@@ -877,17 +877,18 @@ function PredictionsAITab() {
       <Card>
         <CardHeader>
           <div className="flex justify-between items-center">
-            <div><CardTitle className="text-base flex items-center gap-2"><BrainCircuit className="h-4 w-4" /> Attendance AI Assistant</CardTitle><CardDescription>Ask questions about attendance features</CardDescription></div>
+            <div><CardTitle className="text-base flex items-center gap-2"><BrainCircuit className="h-4 w-4" /> Attendance Helper (Rule-Based)</CardTitle><CardDescription>Quick answers about attendance topics: records, shifts, geo-fence, QR/NFC, WFH, heatmaps, anomalies</CardDescription></div>
             <Button variant="outline" size="sm" onClick={() => { if (chatOpen) { setChatHistory([]); } setChatOpen(!chatOpen); }}>
               {chatOpen ? "Close" : "Open"} Chat
             </Button>
           </div>
+          <p className="mt-2 text-xs text-muted-foreground">Rule-based helper only. It matches keywords and does not call an AI model, so it cannot answer payroll, leave, or general HR questions. For deeper help use AI Copilot.</p>
         </CardHeader>
         {chatOpen && (
           <CardContent>
             <div className="h-64 overflow-y-auto space-y-3 mb-3 p-2 border rounded-lg">
               {chatHistory.length === 0 && (
-                <p className="text-sm text-muted-foreground text-center p-4">Ask me anything about attendance features!</p>
+                <p className="text-sm text-muted-foreground text-center p-4">Ask about attendance topics like late arrivals, overtime, geo-fence, QR/NFC, shifts, or WFH.</p>
               )}
               {chatHistory.map((msg) => (
                 <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
