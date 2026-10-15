@@ -36,8 +36,8 @@ def validate_mime_type(file_bytes: bytes) -> bool:
         if file_bytes.startswith(magic_bytes):
             return mime in ALLOWED_MIME_TYPES
     try:
-        text = file_bytes.decode('utf-8', errors='ignore')
-        if text.isprintable() or '\n' in text or '\r' in text:
+        text = file_bytes.decode('utf-8', errors='strict')
+        if text.strip() and (text.isprintable() or '\n' in text or '\r' in text):
             return 'text/plain' in ALLOWED_MIME_TYPES
     except (UnicodeError, ValueError) as e:
         logger.warning("file.mime_text_check_failed", extra={"error": str(e)})
@@ -51,7 +51,7 @@ def validate_file_size(file_bytes: bytes) -> bool:
 
 def scan_for_executable_content(file_bytes: bytes) -> bool:
     for prefix in EXECUTABLE_MAGIC_PREFIXES:
-        if file_bytes.startswith(prefix):
+        if prefix in file_bytes:
             return False
     return True
 
