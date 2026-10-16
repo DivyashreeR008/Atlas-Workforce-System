@@ -116,11 +116,17 @@ func clockIn(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
+	if req.EmployeeID == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "employeeId is required"})
+	}
+	if req.LocalDate == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "localDate is required"})
+	}
+	if _, err := time.Parse("2006-01-02", req.LocalDate); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "localDate must be YYYY-MM-DD"})
+	}
 
 	today := req.LocalDate
-	if today == "" {
-		today = time.Now().UTC().Format("2006-01-02")
-	}
 	tenantId := getTenant(c)
 
 	if db == nil {
@@ -161,9 +167,9 @@ func clockIn(c *fiber.Ctx) error {
 				geoFenceID = &fence.ID
 			}
 		}
-		// Check late arrival
-		status = checkLateArrival(tenantId, req.EmployeeID, today, status)
 	}
+	// Always judge lateness, with or without GPS.
+	status = checkLateArrival(tenantId, req.EmployeeID, today, status)
 
 	record := AttendanceRecord{
 		TenantID:    tenantId,
