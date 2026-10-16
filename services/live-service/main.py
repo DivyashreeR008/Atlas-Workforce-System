@@ -6,7 +6,7 @@ import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 import base64
 import hashlib
 import hmac
@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 from atlas_observability import (
     AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
@@ -154,164 +154,164 @@ manager = ChannelManager()
 # ── Message Schemas ─────────────────────────────────────────────────────────
 
 class PresenceUpdate(BaseModel):
-    user_id: str
-    name: str
-    status: str
-    department: Optional[str] = None
-    role: Optional[str] = None
+    user_id: str = Field(..., min_length=1, max_length=200)
+    name: str = Field(..., min_length=1, max_length=200)
+    status: Literal["online", "offline", "away", "busy"]
+    department: Optional[str] = Field(default=None, max_length=100)
+    role: Optional[str] = Field(default=None, max_length=100)
 
 class AttendanceEvent(BaseModel):
-    employee_id: str
-    employee_name: str
-    event: str
-    timestamp: str
-    method: Optional[str] = None
+    employee_id: str = Field(..., min_length=1, max_length=100)
+    employee_name: str = Field(..., min_length=1, max_length=200)
+    event: Literal["check_in", "check_out", "break_start", "break_end"]
+    timestamp: str = Field(..., min_length=1, max_length=64)
+    method: Optional[str] = Field(default=None, max_length=50)
 
 class PayrollProgress(BaseModel):
-    batch_id: str
-    period: str
-    status: str
-    progress: int
-    total: int
-    processed: int
+    batch_id: str = Field(..., min_length=1, max_length=100)
+    period: str = Field(..., min_length=1, max_length=20)
+    status: Literal["pending", "processing", "completed", "failed"]
+    progress: int = Field(..., ge=0, le=100)
+    total: int = Field(..., ge=0, le=1000000)
+    processed: int = Field(..., ge=0, le=1000000)
 
 class LeaveApproval(BaseModel):
-    request_id: str
-    employee_name: str
-    type: str
-    status: str
-    start_date: str
-    end_date: str
-    approved_by: Optional[str] = None
+    request_id: str = Field(..., min_length=1, max_length=100)
+    employee_name: str = Field(..., min_length=1, max_length=200)
+    type: str = Field(..., min_length=1, max_length=50)
+    status: Literal["pending", "approved", "rejected", "cancelled"]
+    start_date: str = Field(..., min_length=1, max_length=20)
+    end_date: str = Field(..., min_length=1, max_length=20)
+    approved_by: Optional[str] = Field(default=None, max_length=200)
 
 class KPIUpdate(BaseModel):
-    metric_id: str
-    name: str
+    metric_id: str = Field(..., min_length=1, max_length=100)
+    name: str = Field(..., min_length=1, max_length=200)
     value: float
     target: float
-    unit: str
-    department: Optional[str] = None
+    unit: str = Field(..., min_length=1, max_length=20)
+    department: Optional[str] = Field(default=None, max_length=100)
 
 class ActivityEvent(BaseModel):
-    actor: str
-    action: str
-    resource: str
-    details: Optional[str] = None
-    department: Optional[str] = None
+    actor: str = Field(..., min_length=1, max_length=200)
+    action: str = Field(..., min_length=1, max_length=200)
+    resource: str = Field(..., min_length=1, max_length=200)
+    details: Optional[str] = Field(default=None, max_length=1000)
+    department: Optional[str] = Field(default=None, max_length=100)
 
 class Alert(BaseModel):
-    title: str
-    message: str
-    severity: str
-    category: str
-    source: Optional[str] = None
+    title: str = Field(..., min_length=1, max_length=200)
+    message: str = Field(..., min_length=1, max_length=1000)
+    severity: Literal["low", "medium", "high", "critical"]
+    category: Literal["security", "performance", "attendance", "payroll", "system", "compliance"]
+    source: Optional[str] = Field(default=None, max_length=200)
 
 class Announcement(BaseModel):
-    title: str
-    message: str
-    author: str
-    priority: str
+    title: str = Field(..., min_length=1, max_length=200)
+    message: str = Field(..., min_length=1, max_length=2000)
+    author: str = Field(..., min_length=1, max_length=200)
+    priority: Literal["low", "normal", "high", "urgent"]
 
 class WorkforceHeatmap(BaseModel):
-    department: str
-    metric: str
+    department: str = Field(..., min_length=1, max_length=100)
+    metric: str = Field(..., min_length=1, max_length=100)
     value: float
     change: float
 
 class TaskAssignment(BaseModel):
-    task_id: str
-    title: str
-    assigned_to: str
-    assigned_by: str
-    priority: str
-    due_date: Optional[str] = None
+    task_id: str = Field(..., min_length=1, max_length=100)
+    title: str = Field(..., min_length=1, max_length=200)
+    assigned_to: str = Field(..., min_length=1, max_length=200)
+    assigned_by: str = Field(..., min_length=1, max_length=200)
+    priority: Literal["low", "medium", "high", "urgent"]
+    due_date: Optional[str] = Field(default=None, max_length=20)
 
 class Escalation(BaseModel):
-    escalation_id: str
-    incident: str
-    severity: str
-    escalated_by: str
-    assigned_to: Optional[str] = None
+    escalation_id: str = Field(..., min_length=1, max_length=100)
+    incident: str = Field(..., min_length=1, max_length=500)
+    severity: Literal["low", "medium", "high", "critical"]
+    escalated_by: str = Field(..., min_length=1, max_length=200)
+    assigned_to: Optional[str] = Field(default=None, max_length=200)
 
 class ComplianceViolation(BaseModel):
-    violation_id: str
-    policy: str
-    severity: str
-    description: str
-    affected_entity: str
+    violation_id: str = Field(..., min_length=1, max_length=100)
+    policy: str = Field(..., min_length=1, max_length=200)
+    severity: Literal["low", "medium", "high", "critical"]
+    description: str = Field(..., min_length=1, max_length=2000)
+    affected_entity: str = Field(..., min_length=1, max_length=200)
 
 class OnboardingProgress(BaseModel):
-    employee_id: str
-    employee_name: str
-    stage: str
-    progress: int
-    status: str
+    employee_id: str = Field(..., min_length=1, max_length=100)
+    employee_name: str = Field(..., min_length=1, max_length=200)
+    stage: str = Field(..., min_length=1, max_length=100)
+    progress: int = Field(..., ge=0, le=100)
+    status: Literal["not_started", "in_progress", "completed", "blocked"]
 
 class RecruitmentUpdate(BaseModel):
-    candidate_name: str
-    position: str
-    stage: str
-    status: str
+    candidate_name: str = Field(..., min_length=1, max_length=200)
+    position: str = Field(..., min_length=1, max_length=200)
+    stage: Literal["applied", "screening", "interview", "final", "offer", "hired", "rejected"]
+    status: Literal["active", "inactive", "pending", "completed"]
 
 class ForecastUpdate(BaseModel):
-    department: str
-    metric: str
+    department: str = Field(..., min_length=1, max_length=100)
+    metric: str = Field(..., min_length=1, max_length=100)
     current_value: float
     forecast_value: float
-    confidence: float
+    confidence: float = Field(..., ge=0, le=1)
 
 class SLAUpdate(BaseModel):
-    service: str
-    status: str
-    response_time_ms: int
-    threshold_ms: int
+    service: str = Field(..., min_length=1, max_length=200)
+    status: Literal["healthy", "degraded", "down"]
+    response_time_ms: int = Field(..., ge=0, le=3600000)
+    threshold_ms: int = Field(..., ge=0, le=3600000)
 
 class StaffingUpdate(BaseModel):
-    employee_name: str
-    department: str
-    change_type: str
-    previous_role: Optional[str] = None
-    new_role: Optional[str] = None
+    employee_name: str = Field(..., min_length=1, max_length=200)
+    department: str = Field(..., min_length=1, max_length=100)
+    change_type: Literal["hire", "departure", "transfer", "promotion"]
+    previous_role: Optional[str] = Field(default=None, max_length=200)
+    new_role: Optional[str] = Field(default=None, max_length=200)
 
 class ChatMessage(BaseModel):
-    room: str
-    sender: str
-    message: str
-    message_type: str = "text"
+    room: str = Field(..., min_length=1, max_length=100)
+    sender: str = Field(..., min_length=1, max_length=200)
+    message: str = Field(..., min_length=1, max_length=2000)
+    message_type: Literal["text", "image", "system"] = "text"
 
 class Poll(BaseModel):
-    poll_id: str
-    question: str
-    options: list[str]
-    votes: Optional[dict[str, int]] = None
-    created_by: str
+    poll_id: str = Field(..., min_length=1, max_length=100)
+    question: str = Field(..., min_length=1, max_length=500)
+    options: list[str] = Field(..., min_length=2, max_length=20)
+    votes: Optional[dict[str, int]] = Field(default=None, max_length=20)
+    created_by: str = Field(..., min_length=1, max_length=200)
 
 class PollVote(BaseModel):
-    poll_id: str
-    option: str
-    voter: str
+    poll_id: str = Field(..., min_length=1, max_length=100)
+    option: str = Field(..., min_length=1, max_length=200)
+    voter: str = Field(..., min_length=1, max_length=200)
 
 class EmergencyBroadcast(BaseModel):
-    title: str
-    message: str
-    severity: str
-    author: str
-    targets: Optional[list[str]] = None
+    title: str = Field(..., min_length=1, max_length=200)
+    message: str = Field(..., min_length=1, max_length=2000)
+    severity: Literal["low", "medium", "high", "critical"]
+    author: str = Field(..., min_length=1, max_length=200)
+    targets: Optional[list[str]] = Field(default=None, max_length=50)
 
 class IncidentManagement(BaseModel):
-    incident_id: str
-    title: str
-    severity: str
-    status: str
-    reported_by: str
-    description: Optional[str] = None
+    incident_id: str = Field(..., min_length=1, max_length=100)
+    title: str = Field(..., min_length=1, max_length=200)
+    severity: Literal["low", "medium", "high", "critical"]
+    status: Literal["open", "investigating", "resolved", "closed"]
+    reported_by: str = Field(..., min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=2000)
 
 class ExecutiveUpdate(BaseModel):
-    metric: str
+    metric: str = Field(..., min_length=1, max_length=200)
     value: float
     change: float
-    trend: str
-    category: str
+    trend: Literal["up", "down", "stable"]
+    category: str = Field(..., min_length=1, max_length=100)
 
 # ── Internal Auth ────────────────────────────────────────────────────────────
 
