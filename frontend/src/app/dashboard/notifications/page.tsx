@@ -1,7 +1,6 @@
 "use client";
 
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,86 +11,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useNotificationSocket } from "@/hooks/use-notification-socket";
 import { formatDate } from "@/lib/utils";
 
-interface Notification {
-  id: string;
-  title: string;
-  message: string;
-  read: boolean;
-  createdAt: string;
-}
-
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080/api/notification/ws";
-
 export default function NotificationsPage() {
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [connected, setConnected] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectRef = useRef<number>(0);
-  const connectRef = useRef<(() => void) | null>(null);
-
-  const scheduleReconnect = useCallback(() => {
-    const delay = Math.min(1000 * 2 ** reconnectRef.current, 30000);
-    reconnectRef.current++;
-    setTimeout(() => connectRef.current?.(), delay);
-  }, []);
-
-  const connect = useCallback(() => {
-    try {
-      const ws = new WebSocket(WS_URL);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        setConnected(true);
-        reconnectRef.current = 0;
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data) as Notification;
-          setNotifications((prev) => {
-            const exists = prev.some((n) => n.id === data.id);
-            if (exists) return prev;
-            return [{ ...data, read: false }, ...prev];
-          });
-        } catch {
-          const text = event.data as string;
-          if (text.startsWith("{") || text.startsWith("[")) return;
-        }
-      };
-
-      ws.onclose = () => {
-        setConnected(false);
-        wsRef.current = null;
-        scheduleReconnect();
-      };
-
-      ws.onerror = () => {
-        ws.close();
-      };
-    } catch {
-      scheduleReconnect();
-    }
-  }, [scheduleReconnect]);
-
-  useEffect(() => {
-    connectRef.current = connect;
-  }, [connect]);
-
-  useEffect(() => {
-    connect();
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.onclose = null;
-        wsRef.current.close();
-      }
-    };
-  }, [connect]);
-
-  const markAllRead = () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-  };
+  const { notifications, connected, markAllRead } = useNotificationSocket();
 
   const unread = notifications.filter((n) => !n.read).length;
 
