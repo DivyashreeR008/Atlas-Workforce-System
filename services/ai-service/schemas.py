@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Any
 from datetime import datetime
 
@@ -68,8 +68,8 @@ class SalaryRecommendationResponse(BaseModel):
     factors: list[dict]
 
 class WorkforceForecastRequest(BaseModel):
-    department: Optional[str] = None
-    horizon_months: int = 12
+    department: Optional[str] = Field(default=None, max_length=100)
+    horizon_months: int = Field(default=12, ge=1, le=60)
     include_attrition: bool = True
     include_hiring: bool = True
 
@@ -148,9 +148,16 @@ class ComplianceCheckResponse(BaseModel):
     policy_references: list[str] = []
 
 class KnowledgeSearchRequest(BaseModel):
-    query: str
-    filters: Optional[dict] = None
-    max_results: Optional[int] = 10
+    query: str = Field(..., min_length=1, max_length=2000)
+    filters: Optional[dict] = Field(default=None)
+    max_results: Optional[int] = Field(default=10, ge=1, le=50)
+
+    @field_validator("filters")
+    @classmethod
+    def _bound_filters(cls, v):
+        if v is not None and len(v) > 20:
+            raise ValueError("filters must have at most 20 entries")
+        return v
 
 class KnowledgeSearchResponse(BaseModel):
     results: list[dict] = []
@@ -189,10 +196,25 @@ class AnomalyDetectionResponse(BaseModel):
     alert_level: str
 
 class ShiftOptimizationRequest(BaseModel):
-    department: str
-    date_range: list[str]
-    current_schedule: Optional[list[dict]] = None
-    constraints: Optional[dict] = None
+    department: str = Field(..., min_length=1, max_length=100)
+    date_range: list[str] = Field(..., min_length=1, max_length=32)
+    current_schedule: Optional[list[dict]] = Field(default=None, max_length=500)
+    constraints: Optional[dict] = Field(default=None)
+
+    @field_validator("date_range")
+    @classmethod
+    def _bound_dates(cls, v):
+        for item in v:
+            if len(item) > 20:
+                raise ValueError("date entries must be at most 20 chars")
+        return v
+
+    @field_validator("constraints")
+    @classmethod
+    def _bound_constraints(cls, v):
+        if v is not None and len(v) > 20:
+            raise ValueError("constraints must have at most 20 entries")
+        return v
 
 class ShiftOptimizationResponse(BaseModel):
     optimized_schedule: list[dict] = []
@@ -201,10 +223,10 @@ class ShiftOptimizationResponse(BaseModel):
     efficiency_gain: float
 
 class SuccessionPlanRequest(BaseModel):
-    position: str
-    department: str
-    required_skills: list[str]
-    timeline_months: int = 12
+    position: str = Field(..., min_length=1, max_length=200)
+    department: str = Field(..., min_length=1, max_length=100)
+    required_skills: list[str] = Field(..., min_length=1, max_length=100)
+    timeline_months: int = Field(default=12, ge=1, le=60)
 
 class SuccessionPlanResponse(BaseModel):
     internal_candidates: list[dict] = []
@@ -213,10 +235,10 @@ class SuccessionPlanResponse(BaseModel):
     risk_of_vacancy: str
 
 class BudgetForecastRequest(BaseModel):
-    department: str
-    current_budget: float
-    historical_data: Optional[list[dict]] = None
-    forecast_months: int = 12
+    department: str = Field(..., min_length=1, max_length=100)
+    current_budget: float = Field(..., ge=0, le=1000000000000.0)
+    historical_data: Optional[list[dict]] = Field(default=None, max_length=500)
+    forecast_months: int = Field(default=12, ge=1, le=60)
 
 class BudgetForecastResponse(BaseModel):
     monthly_projections: list[dict] = []
