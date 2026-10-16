@@ -947,7 +947,8 @@ async function sendScimError(res, status, detail) {
   return res.status(status).json({
     schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
     detail,
-    status: String(status)
+    status: String(status),
+    message: detail,
   });
 }
 
@@ -2487,8 +2488,10 @@ app.post('/auth/passwordless/request', createUserRateLimiter('passwordless_reque
     }
 
     const userResult = await pool.query('SELECT id, email FROM users WHERE email = $1 AND active = true', [email]);
+    const neutralMessage = 'Check your email for the login link';
     if (!userResult.rows[0]) {
-      return res.status(404).json({ message: 'User not found or inactive' });
+      await sendAuditEvent('auth.passwordless_requested', null, email, { found: false });
+      return res.json({ message: neutralMessage });
     }
 
     const user = userResult.rows[0];
@@ -2501,10 +2504,10 @@ app.post('/auth/passwordless/request', createUserRateLimiter('passwordless_reque
       [tokenHash, user.id, email, expiresAt]
     );
 
-    await sendAuditEvent('auth.passwordless_requested', user.id, email);
+    await sendAuditEvent('auth.passwordless_requested', user.id, email, { found: true });
 
     res.json({
-      message: 'Check your email for the login link'
+      message: neutralMessage
     });
   } catch (err) {
     console.error(err);
