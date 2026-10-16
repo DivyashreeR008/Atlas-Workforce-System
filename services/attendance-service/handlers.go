@@ -255,14 +255,20 @@ func clockOut(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Already clocked out"})
 	}
 
-	now := time.Now().UTC()
-	record.ClockOut = &now
+	loc := record.ClockIn.Location()
+	if loc == nil {
+		loc = time.UTC
+	}
+	clockOutAt := time.Now().In(loc)
+	record.ClockOut = &clockOutAt
 
 	// Overtime is capped at the shift policy maximum. Anything beyond the
 	// cap is not payable and is recorded as an anomaly for manager review,
 	// so a forgotten clock-out cannot turn into unlimited paid overtime.
-	duration := now.Sub(record.ClockIn.UTC()).Hours()
-	policy := getShiftPolicy(tenantId, req.EmployeeID, today)
+	// Duration uses Sub on the clock-in timezone so DST jumps measure
+	// elapsed time, and the date bucket comes from the stored record.
+	duration := clockOutAt.Sub(record.ClockIn).Hours()
+	policy := getShiftPolicy(tenantId, req.EmployeeID, record.Date)
 	payable, excess := computeCappedOvertime(duration, policy.standardHours, policy.maxOvertime)
 	record.Overtime = payable
 	record.OvertimeMultiplier = policy.multiplier
