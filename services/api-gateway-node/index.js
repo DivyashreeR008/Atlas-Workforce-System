@@ -339,6 +339,37 @@ app.use('/api/billing', sensitiveLimiter);
 app.use('/api/ats/career', careerLimiter);
 app.use('/api/ats/career/apply', careerApplyLimiter);
 
+// SCIM provisioning and SAML handshake sit alongside the auth tier above:
+// unauthenticated, high-value, and already rate-limited downstream in
+// auth-service. Mirror the neighbor limiters at the edge so bulk
+// provisioning or login loops cannot saturate the proxy.
+const scimLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many SCIM requests, please try again later' },
+  store: new RedisStore({
+    sendCommand: (...args) => redisClient.sendCommand(args),
+    prefix: 'rl:scim:',
+  }),
+});
+
+const samlLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many SAML requests, please try again later' },
+  store: new RedisStore({
+    sendCommand: (...args) => redisClient.sendCommand(args),
+    prefix: 'rl:saml:',
+  }),
+});
+
+app.use('/scim', scimLimiter);
+app.use('/saml', samlLimiter);
+
 // General API surface guard; specific tiers above keep their own counters
 // (skip in apiLimiter avoids double-counting, login 5/15 stays tightest).
 app.use('/api', apiLimiter);
