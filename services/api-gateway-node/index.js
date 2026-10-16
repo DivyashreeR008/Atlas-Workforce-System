@@ -1331,6 +1331,14 @@ module.exports = {
   services,
   authMiddleware,
   isPublicOrAuthPath,
+  mfaStepUpMiddleware,
+  auditProxyMiddleware,
+  deviceTrustHeaderMiddleware,
+  checkCache,
+  cacheInvalidationMiddleware,
+  verifySlackRequest,
+  isWsPath,
+  globalErrorHandler,
 };
 
 if (require.main === module) {
