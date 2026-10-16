@@ -85,3 +85,44 @@ async def test_ai_insights_mock(client):
     assert response.status_code == 200
     data = response.json()
     assert "insight" in data
+
+
+@pytest.mark.asyncio
+async def test_command_center_overview(client):
+    response = await client.get(
+        "/api/v1/command-center/overview",
+        headers={"X-Tenant-Id": "test-tenant"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "totalHeadcount" in data
+    assert "payrollMtd" in data
+
+
+@pytest.mark.asyncio
+async def test_command_center_org_health(client):
+    response = await client.get(
+        "/api/v1/command-center/org-health",
+        headers={"X-Tenant-Id": "test-tenant"},
+    )
+    assert response.status_code == 200
+    assert "overall" in response.json()
+
+
+@pytest.mark.asyncio
+async def test_command_center_activity_feed(client):
+    response = await client.get(
+        "/api/v1/command-center/activity-feed",
+        headers={"X-Tenant-Id": "test-tenant"},
+    )
+    assert response.status_code == 200
+    assert "activities" in response.json()
+
+
+@pytest.mark.asyncio
+async def test_payroll_verify_rejects_garbage_period(client):
+    response = await client.get(
+        "/api/v1/payroll/verify/not-a-period",
+        headers={"X-Tenant-Id": "test-tenant"},
+    )
+    assert response.status_code in (400, 500)
