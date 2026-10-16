@@ -7,11 +7,32 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
+
+func parsePaging(c *fiber.Ctx) (page, pageSize, offset int) {
+	page = 1
+	pageSize = 20
+	if v := c.Query("page"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			page = p
+		}
+	}
+	if v := c.Query("page_size"); v != "" {
+		if ps, err := strconv.Atoi(v); err == nil && ps > 0 {
+			pageSize = ps
+		}
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	offset = (page - 1) * pageSize
+	return page, pageSize, offset
+}
 
 // ============================================================
 // CORE ATTENDANCE HANDLERS
@@ -53,7 +74,8 @@ func listAttendance(c *fiber.Ctx) error {
 	if endDate := c.Query("endDate"); endDate != "" {
 		q = q.Where("date <= ?", endDate)
 	}
-	q.Find(&records)
+	_, pageSize, offset := parsePaging(c)
+	q.Offset(offset).Limit(pageSize).Find(&records)
 	if records == nil {
 		records = []AttendanceRecord{}
 	}
@@ -336,7 +358,8 @@ func listGeoFences(c *fiber.Ctx) error {
 		return c.JSON([]GeoFence{})
 	}
 	var fences []GeoFence
-	db.Where("tenant_id = ?", tenantId).Find(&fences)
+	_, pageSize, offset := parsePaging(c)
+	db.Where("tenant_id = ?", tenantId).Offset(offset).Limit(pageSize).Find(&fences)
 	if fences == nil {
 		fences = []GeoFence{}
 	}
@@ -423,7 +446,8 @@ func listShifts(c *fiber.Ctx) error {
 		return c.JSON([]Shift{})
 	}
 	var shifts []Shift
-	db.Where("tenant_id = ?", tenantId).Find(&shifts)
+	_, pageSize, offset := parsePaging(c)
+	db.Where("tenant_id = ?", tenantId).Offset(offset).Limit(pageSize).Find(&shifts)
 	if shifts == nil {
 		shifts = []Shift{}
 	}
@@ -588,7 +612,8 @@ func listRosters(c *fiber.Ctx) error {
 	if empID := c.Query("employeeId"); empID != "" {
 		q = q.Where("employee_id = ?", empID)
 	}
-	q.Preload("Shift").Find(&rosters)
+	_, pageSize, offset := parsePaging(c)
+	q.Preload("Shift").Offset(offset).Limit(pageSize).Find(&rosters)
 	if rosters == nil {
 		rosters = []Roster{}
 	}
@@ -737,7 +762,8 @@ func listNFCRegistrations(c *fiber.Ctx) error {
 		return c.JSON([]NFCRegistration{})
 	}
 	var nfcs []NFCRegistration
-	db.Where("tenant_id = ?", tenantId).Find(&nfcs)
+	_, pageSize, offset := parsePaging(c)
+	db.Where("tenant_id = ?", tenantId).Offset(offset).Limit(pageSize).Find(&nfcs)
 	if nfcs == nil {
 		nfcs = []NFCRegistration{}
 	}
@@ -848,7 +874,8 @@ func listBiometricDevices(c *fiber.Ctx) error {
 		return c.JSON([]BiometricDevice{})
 	}
 	var devices []BiometricDevice
-	db.Where("tenant_id = ?", tenantId).Find(&devices)
+	_, pageSize, offset := parsePaging(c)
+	db.Where("tenant_id = ?", tenantId).Offset(offset).Limit(pageSize).Find(&devices)
 	if devices == nil {
 		devices = []BiometricDevice{}
 	}
@@ -896,7 +923,8 @@ func listAnomalies(c *fiber.Ctx) error {
 	if resolved := c.Query("resolved"); resolved != "" {
 		q = q.Where("is_resolved = ?", resolved == "true")
 	}
-	q.Order("detected_at DESC").Find(&anomalies)
+	_, pageSize, offset := parsePaging(c)
+	q.Order("detected_at DESC").Offset(offset).Limit(pageSize).Find(&anomalies)
 	if anomalies == nil {
 		anomalies = []AnomalyLog{}
 	}
@@ -943,7 +971,8 @@ func listWFHEntries(c *fiber.Ctx) error {
 	if date := c.Query("date"); date != "" {
 		q = q.Where("date = ?", date)
 	}
-	q.Order("date DESC").Find(&entries)
+	_, pageSize, offset := parsePaging(c)
+	q.Order("date DESC").Offset(offset).Limit(pageSize).Find(&entries)
 	if entries == nil {
 		entries = []WFHTracking{}
 	}
