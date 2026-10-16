@@ -3,6 +3,9 @@ package com.atlas.leave;
 import com.atlas.common.security.RequiresRole;
 import com.atlas.common.security.TenantId;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.context.request.RequestContextHolder;
@@ -10,7 +13,6 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
-import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -26,17 +28,23 @@ public class LeaveController {
 
     @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping
-    public ResponseEntity<List<LeaveRecord>> getAllLeaveRequests(
-            @TenantId String tenantId) {
-        return ResponseEntity.ok(service.getAllLeaveRequests(tenantId));
+    public ResponseEntity<Page<LeaveRecord>> getAllLeaveRequests(
+            @TenantId String tenantId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 100));
+        return ResponseEntity.ok(service.getAllLeaveRequests(tenantId, pageable));
     }
 
     @RequiresRole({"admin", "hr", "manager", "employee"})
     @GetMapping("/employee/{employeeId}")
-    public ResponseEntity<List<LeaveRecord>> getLeaveByEmployee(
+    public ResponseEntity<Page<LeaveRecord>> getLeaveByEmployee(
             @TenantId String tenantId,
-            @PathVariable String employeeId) {
-        return ResponseEntity.ok(service.getLeaveByEmployeeId(tenantId, employeeId));
+            @PathVariable String employeeId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 100));
+        return ResponseEntity.ok(service.getLeaveByEmployeeId(tenantId, employeeId, pageable));
     }
 
     @RequiresRole({"admin", "hr", "manager", "employee"})
