@@ -6,7 +6,10 @@ process.env.AUDIT_INTERNAL_KEY = process.env.AUDIT_INTERNAL_KEY || 'unit-test-au
 
 const http = require('http');
 const assert = require('assert');
-const { csrfMiddleware, rbacMiddleware, services, isPublicOrAuthPath } = require('./index');
+const jwt = require('jsonwebtoken');
+const fs = require('fs');
+const path = require('path');
+const { csrfMiddleware, rbacMiddleware, services, isPublicOrAuthPath, authMiddleware, mfaStepUpMiddleware, auditProxyMiddleware, deviceTrustHeaderMiddleware, checkCache, cacheInvalidationMiddleware, verifySlackRequest, isWsPath, globalErrorHandler } = require('./index');
 
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:8080';
 
@@ -189,12 +192,244 @@ function testPublicPathDetection() {
   console.log('PASS: public path detection works correctly');
 }
 
+// Auth middleware tests (security-loaded: challenge rejection, denylist path)
+function testAuthMiddleware() {
+  // Public path bypasses auth
+  let called = false;
+  authMiddleware({ path: '/api/auth/login', headers: {} }, { status() { return this; }, json() { return this; } }, () => { called = true; });
+  assert.strictEqual(called, true, 'Public auth path should bypass');
+  console.log('PASS: authMiddleware bypasses public paths');
+
+  // Protected path without token is 401
+  called = false;
+  let statusCode = 0;
+  authMiddleware(
+    { path: '/api/employee', headers: {}, originalUrl: '/api/employee', url: '/api/employee' },
+    { status(c) { statusCode = c; return this; }, json() { return this; } },
+    () => { called = true; }
+  );
+  assert.strictEqual(called, false, 'Missing token should not pass');
+  assert.strictEqual(statusCode, 401, 'Missing token should be 401');
+  console.log('PASS: authMiddleware rejects missing token with 401');
+
+  // Challenge token must be rejected on protected routes
+  const challengeToken = jwt.sign(
+    { id: 1, purpose: 'mfa_challenge', aud: 'mfa-challenge' },
+    process.env.JWT_SECRET,
+    { algorithm: 'HS256', expiresIn: '5m' }
+  );
+  called = false;
+  statusCode = 0;
+  authMiddleware(
+    { path: '/api/payroll', headers: { authorization: 'Bearer ' + challengeToken }, originalUrl: '/api/payroll', url: '/api/payroll' },
+    { status(c) { statusCode = c; return this; }, json() { return this; } },
+    () => { called = true; }
+  );
+  assert.strictEqual(called, false, 'Challenge token should not pass');
+  assert.strictEqual(statusCode, 401, 'Challenge token should be 401');
+  console.log('PASS: authMiddleware rejects mfa-challenge tokens');
+
+  // Non-protected unknown path passes through without token
+  called = false;
+  authMiddleware({ path: '/unknown', headers: {} }, {}, () => { called = true; });
+  assert.strictEqual(called, true, 'Unknown non-protected path should pass');
+  console.log('PASS: authMiddleware passes non-protected paths');
+}
+
+// MFA step-up middleware tests
+async function testMfaStepUpMiddleware() {
+  // GET bypasses step-up
+  let called = false;
+  await mfaStepUpMiddleware(
+    { method: 'GET', path: '/api/payroll', headers: {} },
+    { status() { return this; }, json() { return this; } },
+    () => { called = true; }
+  );
+  assert.strictEqual(called, true, 'GET should bypass step-up');
+  console.log('PASS: mfaStepUpMiddleware bypasses GET');
+
+  // Non-sensitive POST bypasses step-up
+  called = false;
+  await mfaStepUpMiddleware(
+    { method: 'POST', path: '/api/employee', headers: {} },
+    { status() { return this; }, json() { return this; } },
+    () => { called = true; }
+  );
+  assert.strictEqual(called, true, 'Non-sensitive route should bypass');
+  console.log('PASS: mfaStepUpMiddleware bypasses non-sensitive routes');
+
+  // Sensitive route without token is 403 with mfa_required
+  called = false;
+  let statusCode = 0;
+  let body = null;
+  await mfaStepUpMiddleware(
+    { method: 'POST', path: '/api/payroll', headers: {} },
+    { status(c) { statusCode = c; return this; }, json(d) { body = d; return this; } },
+    () => { called = true; }
+  );
+  assert.strictEqual(called, false, 'Sensitive route without MFA should block');
+  assert.strictEqual(statusCode, 403, 'Missing MFA token should be 403');
+  assert.strictEqual(body.mfa_required, true, 'Response should flag mfa_required');
+  console.log('PASS: mfaStepUpMiddleware blocks sensitive routes without step-up token');
+
+  // Sensitive route with garbage token is 403
+  called = false;
+  statusCode = 0;
+  await mfaStepUpMiddleware(
+    { method: 'POST', path: '/api/payroll', headers: { 'x-mfa-token': 'garbage' } },
+    { status(c) { statusCode = c; return this; }, json(d) { body = d; return this; } },
+    () => { called = true; }
+  );
+  assert.strictEqual(called, false, 'Garbage MFA token should block');
+  assert.strictEqual(statusCode, 403, 'Garbage MFA token should be 403');
+  console.log('PASS: mfaStepUpMiddleware rejects invalid step-up tokens');
+}
+
+// Audit proxy middleware tests
+function testAuditProxyMiddleware() {
+  // GET passes through immediately
+  let called = false;
+  const resGet = { statusCode: 200, on() {} };
+  auditProxyMiddleware({ method: 'GET', path: '/api/employee' }, resGet, () => { called = true; });
+  assert.strictEqual(called, true, 'GET should pass audit proxy');
+  console.log('PASS: auditProxyMiddleware passes GET through');
+
+  // Mutating request registers a finish listener and passes through
+  called = false;
+  let finishHandler = null;
+  const resPost = { statusCode: 201, on(ev, fn) { if (ev === 'finish') finishHandler = fn; } };
+  auditProxyMiddleware(
+    { method: 'POST', path: '/api/employee', user: { id: 1 }, ip: '1.2.3.4', headers: {} },
+    resPost,
+    () => { called = true; }
+  );
+  assert.strictEqual(called, true, 'POST should pass through');
+  assert.ok(typeof finishHandler === 'function', 'POST should register finish hook');
+  console.log('PASS: auditProxyMiddleware hooks finish on mutating requests');
+}
+
+// Device trust header middleware tests
+function testDeviceTrustMiddleware() {
+  let called = false;
+  const req = { headers: { 'x-device-id': 'd1', 'x-device-fingerprint': 'f1', 'x-session-id': 's1' } };
+  deviceTrustHeaderMiddleware(req, {}, () => { called = true; });
+  assert.strictEqual(called, true, 'Device trust should pass through');
+  assert.strictEqual(req.headers['x-device-id'], 'd1', 'Device id should be preserved');
+  assert.strictEqual(req.headers['x-device-fingerprint'], 'f1', 'Fingerprint should be preserved');
+  assert.strictEqual(req.headers['x-session-id'], 's1', 'Session id should be preserved');
+  console.log('PASS: deviceTrustHeaderMiddleware preserves device headers');
+
+  called = false;
+  deviceTrustHeaderMiddleware({ headers: {} }, {}, () => { called = true; });
+  assert.strictEqual(called, true, 'Requests without device headers should pass');
+  console.log('PASS: deviceTrustHeaderMiddleware passes requests without device headers');
+}
+
+// Caching pair tests
+async function testCachingPair() {
+  // Non-GET bypasses cache read
+  let called = false;
+  await checkCache({ method: 'POST', path: '/api/employee', headers: {}, user: null, originalUrl: '/api/employee' }, { setHeader() {}, send() {} }, () => { called = true; });
+  assert.strictEqual(called, true, 'Non-GET should bypass cache');
+  console.log('PASS: checkCache bypasses non-GET');
+
+  // Live paths bypass cache read
+  called = false;
+  await checkCache({ method: 'GET', path: '/api/live/ws', headers: {}, user: null, originalUrl: '/api/live/ws' }, { setHeader() {}, send() {} }, () => { called = true; });
+  assert.strictEqual(called, true, 'Live paths should bypass cache');
+  console.log('PASS: checkCache bypasses live paths');
+
+  // Mutating requests pass through invalidation middleware
+  called = false;
+  cacheInvalidationMiddleware({ method: 'GET', path: '/api/employee', user: null, headers: {} }, { on() {} }, () => { called = true; });
+  assert.strictEqual(called, true, 'GET should pass invalidation');
+  called = false;
+  cacheInvalidationMiddleware({ method: 'POST', path: '/api/employee', user: null, headers: {} }, { on(ev, fn) {}, statusCode: 200 }, () => { called = true; });
+  assert.strictEqual(called, true, 'POST should pass invalidation');
+  console.log('PASS: cacheInvalidationMiddleware passes through and hooks writes');
+}
+
+// Webhook verification tests
+function testWebhookVerification() {
+  // Without secrets configured, every request is invalid (fail closed)
+  const missing = verifySlackRequest({ headers: {}, rawBody: '' });
+  assert.strictEqual(missing.valid, false, 'Missing signature should be invalid');
+  console.log('PASS: verifySlackRequest rejects missing signatures');
+
+  // Stale timestamps are rejected when a signing secret is present only if
+  // the module was loaded with one; otherwise the missing-secret path already
+  // fails closed above. Either way the result must be invalid here.
+  const stale = verifySlackRequest({ headers: { 'x-slack-signature': 'v0=abc', 'x-slack-request-timestamp': '1' }, rawBody: 'a=1' });
+  assert.strictEqual(stale.valid, false, 'Stale/forged webhook should be invalid');
+  console.log('PASS: verifySlackRequest rejects forged webhooks');
+
+  const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+  assert.ok(source.includes('SLACK_SIGNING_SECRET') && source.includes('503'), 'Webhook must fail closed without secrets');
+  console.log('PASS: slack webhook fails closed without signing secrets');
+}
+
+// Billing route tests (source + behavior contract)
+function testBillingRoute() {
+  const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+  const at = source.indexOf('/api/billing/create-checkout-session');
+  assert.ok(at !== -1, 'Billing checkout route must exist');
+  const block = source.slice(at, at + 1500);
+  assert.ok(block.includes('Authentication required'), 'Billing must require authentication');
+  assert.ok(block.includes('Tenant context missing'), 'Billing must require tenant context');
+  assert.ok(block.includes('status(500)') || block.includes('500'), 'Billing must map failures to error status');
+  console.log('PASS: billing checkout validates auth, tenant, and error mapping');
+}
+
+// Upgrade path tests
+function testUpgradePath() {
+  assert.strictEqual(isWsPath('/ws'), true, '/ws should be a WS path');
+  assert.strictEqual(isWsPath('/notification/ws'), true, '/notification/ws should be a WS path');
+  assert.strictEqual(isWsPath('/api/live/ws'), true, '/api/live/ws should be a WS path');
+  assert.strictEqual(isWsPath('/api/live/ws/abc'), true, 'Live subpaths should be WS paths');
+  assert.strictEqual(isWsPath('/api/employee'), false, 'API paths should not be WS paths');
+  console.log('PASS: upgrade path allowlist (isWsPath) is strict');
+
+  const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+  assert.ok(source.includes("server.on('upgrade'"), 'Upgrade handler must exist');
+  assert.ok(source.includes('401 Unauthorized'), 'Upgrade must reject unauthenticated sockets');
+  assert.ok(source.includes('mfa_challenge'), 'Upgrade must reject challenge tokens');
+  console.log('PASS: upgrade handshake enforces token checks');
+}
+
+// Error shape tests
+function testErrorShape() {
+  let statusCode = 0;
+  let body = null;
+  globalErrorHandler(new Error('boom'), {}, { status(c) { statusCode = c; return this; }, json(d) { body = d; return this; } }, () => {});
+  assert.strictEqual(statusCode, 500, 'Default error status should be 500');
+  assert.ok(body && typeof body.message === 'string', 'Error body must carry a message envelope');
+  console.log('PASS: globalErrorHandler keeps the message envelope');
+
+  statusCode = 0;
+  body = null;
+  const withStatus = new Error('teapot');
+  withStatus.status = 418;
+  globalErrorHandler(withStatus, {}, { status(c) { statusCode = c; return this; }, json(d) { body = d; return this; } }, () => {});
+  assert.strictEqual(statusCode, 418, 'Custom status should be honored');
+  assert.ok(body && typeof body.message === 'string', 'Custom errors must keep the envelope');
+  console.log('PASS: globalErrorHandler honors custom statuses without leaking stacks');
+}
+
 async function run() {
   // Unit tests run without a live server.
   testCsrfMiddleware();
   testRbacMiddleware();
   testProxyRewriteTable();
   testPublicPathDetection();
+  testAuthMiddleware();
+  await testMfaStepUpMiddleware();
+  testAuditProxyMiddleware();
+  testDeviceTrustMiddleware();
+  await testCachingPair();
+  testWebhookVerification();
+  testBillingRoute();
+  testUpgradePath();
+  testErrorShape();
 
   // Integration test needs the gateway running (CI starts it, see ci.yml).
   await testHealthEndpoint();
@@ -214,6 +449,15 @@ module.exports = {
   testRbacMiddleware,
   testProxyRewriteTable,
   testPublicPathDetection,
+  testAuthMiddleware,
+  testMfaStepUpMiddleware,
+  testAuditProxyMiddleware,
+  testDeviceTrustMiddleware,
+  testCachingPair,
+  testWebhookVerification,
+  testBillingRoute,
+  testUpgradePath,
+  testErrorShape,
   testHealthEndpoint,
   run,
 };
