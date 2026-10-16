@@ -46,6 +46,30 @@ def _strip_internal(data: dict) -> dict:
 def _strip_internal_from_list(items: list[dict]) -> list[dict]:
     return [_strip_internal(item) for item in items]
 
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _utc_now_ts() -> float:
+    return datetime.now(timezone.utc).timestamp()
+
+
+def _parse_timestamp(value: object) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    text = value.strip().replace("Z", "+00:00") if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    try:
+        return parsed.timestamp()
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+
 # ── In-Memory Channel State ─────────────────────────────────────────────────
 
 class ChannelManager:
@@ -64,8 +88,9 @@ class ChannelManager:
         self.staffing: dict[str, dict] = {}
 
     def evict(self) -> dict[str, int]:
-        now = datetime.now(timezone.utc).timestamp()
+        now = _utc_now_ts()
         removed = {"polls": 0, "chat_rooms": 0, "presence": 0, "incidents": 0}
+        skipped = 0
 
         stale_polls = [
             pid for pid, poll in self.polls.items()
@@ -83,13 +108,15 @@ class ChannelManager:
             else:
                 last_ts = messages[-1].get("timestamp", "")
                 if last_ts:
-                    try:
-                        last_time = datetime.fromisoformat(last_ts).timestamp()
-                        if now - last_time > CHAT_ROOM_TTL_SECONDS:
-                            del self.chat_rooms[room]
-                            removed["chat_rooms"] += 1
-                    except (ValueError, TypeError):
-                        pass
+                    last_time = _parse_timestamp(last_ts)
+                    if last_time is None:
+                        skipped += 1
+                    elif now - last_time > CHAT_ROOM_TTL_SECONDS:
+                        del self.chat_rooms[room]
+                        removed["chat_rooms"] += 1
+        if skipped:
+            logger.warning("eviction.chat_timestamp_skipped", extra={"skipped": skipped})
+            removed["skipped"] = skipped
 
         stale_presence = [
             uid for uid, p in self.presence.items()
@@ -119,13 +146,14 @@ class ChannelManager:
         while True:
             await asyncio.sleep(EVICTION_INTERVAL_SECONDS)
             removed = self.evict()
+            skipped = removed.pop("skipped", 0)
             total = sum(removed.values())
-            if total:
-                logger.info("eviction.cleanup", extra={"removed": removed, "total": total})
+            if total or skipped:
+                logger.info("eviction.cleanup", extra={"removed": removed, "total": total, "skipped": skipped})
 
     async def broadcast_sse(self, channel: str, event: str, data: dict):
         self.event_sequences[channel] += 1
-        message = {"channel": channel, "event": event, "data": data, "timestamp": datetime.now(timezone.utc).isoformat(), "event_id": self.event_sequences[channel]}
+        message = {"channel": channel, "event": event, "data": data, "timestamp": _utc_now_iso(), "event_id": self.event_sequences[channel]}
         self.channel_history[channel].append(message)
         if len(self.channel_history[channel]) > self.max_history:
             self.channel_history[channel] = self.channel_history[channel][-self.max_history:]
@@ -627,7 +655,7 @@ async def websocket_chat(websocket: WebSocket, token: Optional[str] = Query(None
         while True:
             data = await websocket.receive_json()
             msg = ChatMessage(**data)
-            entry = {"id": str(uuid.uuid4()), "sender": msg.sender, "message": msg.message, "message_type": msg.message_type, "room": msg.room, "timestamp": datetime.now(timezone.utc).isoformat()}
+            entry = {"id": str(uuid.uuid4()), "sender": msg.sender, "message": msg.message, "message_type": msg.message_type, "room": msg.room, "timestamp": _utc_now_iso()}
             manager.chat_rooms[msg.room].append(entry)
             if len(manager.chat_rooms[msg.room]) > 200:
                 manager.chat_rooms[msg.room] = manager.chat_rooms[msg.room][-200:]
@@ -648,7 +676,7 @@ async def websocket_presence(websocket: WebSocket, token: Optional[str] = Query(
             data = await websocket.receive_json()
             update = PresenceUpdate(**data)
             entry = update.model_dump()
-            entry["_last_seen"] = datetime.now(timezone.utc).timestamp()
+            entry["_last_seen"] = _utc_now_ts()
             manager.presence[update.user_id] = entry
             public = _strip_internal(entry)
             await manager.broadcast_ws("presence", {"event": "presence.update", "data": public})
@@ -670,7 +698,7 @@ async def publish_event(channel: str, request: Request, event: str = Query(...))
 @app.post("/api/v1/live/presence")
 async def update_presence(update: PresenceUpdate):
     entry = update.model_dump()
-    entry["_last_seen"] = datetime.now(timezone.utc).timestamp()
+    entry["_last_seen"] = _utc_now_ts()
     manager.presence[update.user_id] = entry
     public = _strip_internal(entry)
     await manager.broadcast_sse("presence", "presence.update", public)
@@ -773,7 +801,7 @@ async def create_poll(poll: Poll):
     if not poll.votes:
         poll.votes = {opt: 0 for opt in poll.options}
     entry = poll.model_dump()
-    entry["_created_at"] = datetime.now(timezone.utc).timestamp()
+    entry["_created_at"] = _utc_now_ts()
     manager.polls[poll.poll_id] = entry
     public = _strip_internal(entry)
     await manager.broadcast_ws("poll", {"event": "poll.created", "data": public})
@@ -808,7 +836,7 @@ async def report_incident(incident: IncidentManagement):
     if not incident.incident_id:
         incident.incident_id = str(uuid.uuid4())
     entry = incident.model_dump()
-    entry["_created_at"] = datetime.now(timezone.utc).timestamp()
+    entry["_created_at"] = _utc_now_ts()
     inc_id = incident.incident_id
     manager.incidents[inc_id].append(entry)
     if len(manager.incidents[inc_id]) > MAX_INCIDENTS_PER_ID:
