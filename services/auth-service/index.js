@@ -1797,7 +1797,7 @@ app.post('/mfa/validate', createUserRateLimiter('mfa_validate', 10), async (req,
   }
 });
 
-app.post('/mfa/disable', requireRole(), async (req, res) => {
+app.post('/mfa/disable', requireRole(), createUserRateLimiter('mfa_disable', 5), async (req, res) => {
   try {
     const { password } = req.body;
     if (!password) {
@@ -1825,7 +1825,7 @@ app.post('/mfa/disable', requireRole(), async (req, res) => {
   }
 });
 
-app.get('/mfa/status', requireRole(), async (req, res) => {
+app.get('/mfa/status', requireRole(), createUserRateLimiter('mfa_status', 60), async (req, res) => {
   try {
     const userId = req.user.id;
     const result = await pool.query('SELECT mfa_enabled FROM user_mfa WHERE user_id = $1', [userId]);
@@ -1884,7 +1884,7 @@ app.post('/devices/register', requireRole(), createUserRateLimiter('device_regis
   }
 });
 
-app.get('/devices', requireRole(), async (req, res) => {
+app.get('/devices', requireRole(), createUserRateLimiter('device_list', 60), async (req, res) => {
   try {
     const userId = req.user.id;
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 100);
@@ -1900,7 +1900,7 @@ app.get('/devices', requireRole(), async (req, res) => {
   }
 });
 
-app.put('/devices/:id/trust', requireRole(), async (req, res) => {
+app.put('/devices/:id/trust', requireRole(), createUserRateLimiter('device_trust', 20), async (req, res) => {
   try {
     const deviceId = parseInt(req.params.id);
     if (isNaN(deviceId)) {
@@ -1924,7 +1924,7 @@ app.put('/devices/:id/trust', requireRole(), async (req, res) => {
   }
 });
 
-app.delete('/devices/:id', requireRole(), async (req, res) => {
+app.delete('/devices/:id', requireRole(), createUserRateLimiter('device_delete', 20), async (req, res) => {
   try {
     const deviceId = parseInt(req.params.id);
     if (isNaN(deviceId)) {
@@ -2785,7 +2785,7 @@ app.post('/auth/admin/password-reset', requireRole('admin'), createUserRateLimit
   }
 });
 
-app.get('/sessions', requireRole(), async (req, res) => {
+app.get('/sessions', requireRole(), createUserRateLimiter('sessions_list', 60), async (req, res) => {
   try {
     const userId = req.user.id;
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 100);
@@ -2801,7 +2801,7 @@ app.get('/sessions', requireRole(), async (req, res) => {
   }
 });
 
-app.delete('/sessions/:id', requireRole(), async (req, res) => {
+app.delete('/sessions/:id', requireRole(), createUserRateLimiter('session_revoke', 20), async (req, res) => {
   try {
     const userId = req.user.id;
     if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(req.params.id)) {
@@ -2846,7 +2846,7 @@ app.delete('/sessions/:id', requireRole(), async (req, res) => {
   }
 });
 
-app.delete('/sessions', requireRole(), async (req, res) => {
+app.delete('/sessions', requireRole(), createUserRateLimiter('sessions_revoke_all', 20), async (req, res) => {
   try {
     const userId = req.user.id;
     const currentSessionId = req.headers['x-session-id'];
@@ -2970,7 +2970,7 @@ async function consumeChallenge(userId, challenge) {
   return legacy.rowCount > 0;
 }
 
-app.post('/webauthn/register/begin', requireRole(), async (req, res) => {
+app.post('/webauthn/register/begin', requireRole(), createUserRateLimiter('webauthn_register', 10), async (req, res) => {
   try {
     const userId = req.user.id;
     const { device_name, device_type } = req.body;
@@ -3006,7 +3006,7 @@ app.post('/webauthn/register/begin', requireRole(), async (req, res) => {
   }
 });
 
-app.post('/webauthn/register/complete', requireRole(), async (req, res) => {
+app.post('/webauthn/register/complete', requireRole(), createUserRateLimiter('webauthn_register_complete', 10), async (req, res) => {
   try {
     const userId = req.user.id;
     const { device_name, device_type } = req.body;
