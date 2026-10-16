@@ -971,38 +971,86 @@ app.post('/api/webhooks/slack', express.urlencoded({
   }
 
   try {
-    const { text, user_name } = req.body;
+    const { text, user_id, user_name, team_id } = req.body;
 
-    const employeeId = user_name || 'slack_user';
-    const tenantId = 'default';
+    // Tenant comes from the verified Slack workspace (team_id), never a
+    // client-supplied default. The signature above already authenticated the
+    // request, so team_id is the verified workspace identity.
+    const tenantId = typeof team_id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(team_id) ? team_id : null;
+    if (!tenantId) {
+      return res.status(400).json({
+        response_type: 'ephemeral',
+        text: 'Missing Slack workspace context (team_id).'
+      });
+    }
+    const employeeId = (typeof user_id === 'string' && user_id.trim()) || (typeof user_name === 'string' && user_name.trim()) || null;
+    if (!employeeId) {
+      return res.status(400).json({
+        response_type: 'ephemeral',
+        text: 'Missing Slack user identity.'
+      });
+    }
 
-    const parts = text ? text.split(' ') : [];
-    if (parts.length < 3) {
-      return res.json({
-        response_type: "ephemeral",
-        text: "Please use format: `/atlas-leave YYYY-MM-DD to YYYY-MM-DD Reason`"
+    const parts = text ? String(text).trim().split(/\s+/) : [];
+    if (parts.length < 3 || parts[1].toLowerCase() !== 'to') {
+      return res.status(400).json({
+        response_type: 'ephemeral',
+        text: 'Please use format: `/atlas-leave YYYY-MM-DD to YYYY-MM-DD Reason`'
       });
     }
 
     const startDate = parts[0];
     const endDate = parts[2];
-    const leaveType = 'VACATION';
-    const reason = parts.slice(3).join(' ') || 'Slack request';
+    const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRe.test(startDate) || !dateRe.test(endDate)) {
+      return res.status(400).json({
+        response_type: 'ephemeral',
+        text: 'Dates must be YYYY-MM-DD.'
+      });
+    }
+    const start = new Date(`${startDate}T00:00:00Z`);
+    const end = new Date(`${endDate}T00:00:00Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
+      return res.status(400).json({
+        response_type: 'ephemeral',
+        text: 'Invalid date range: end date must be on or after start date.'
+      });
+    }
+    const rawType = (parts[3] || 'VACATION').toUpperCase();
+    const ALLOWED_LEAVE_TYPES = new Set(['VACATION', 'SICK', 'PERSONAL', 'UNPAID', 'MATERNITY', 'PATERNITY', 'BEREAVEMENT']);
+    // Optional leave type in position 3: when it matches the allowlist it is
+    // consumed as the type, otherwise the whole tail is the reason and the
+    // type stays VACATION (back-compat with `/atlas-leave ... Reason`).
+    let leaveType = 'VACATION';
+    let reasonParts = parts.slice(3);
+    if (ALLOWED_LEAVE_TYPES.has(rawType)) {
+      leaveType = rawType;
+      reasonParts = parts.slice(4);
+    }
+    const reason = reasonParts.join(' ').slice(0, 500) || 'Slack request';
 
     const leaveServiceUrl = `${services.leave}/request`;
     const response = await axios.post(leaveServiceUrl, {
       employeeId, startDate, endDate, leaveType, reason
     }, {
-      headers: { 'X-Tenant-Id': tenantId }
+      headers: { 'X-Tenant-Id': tenantId },
+      timeout: 5000
     });
 
     return res.json({
-      response_type: "in_channel",
+      response_type: 'in_channel',
       text: `Leave request submitted for ${startDate} to ${endDate}`
     });
   } catch (err) {
     console.error('Slack Webhook Error:', err.message);
-    res.json({ response_type: "ephemeral", text: 'Failed to submit leave request. Please try again.' });
+    if (err.code === 'ECONNABORTED') {
+      return res.status(504).json({ response_type: 'ephemeral', text: 'Leave service timed out. Please try again.' });
+    }
+    const downstreamStatus = err.response?.status;
+    if (typeof downstreamStatus === 'number' && downstreamStatus >= 400 && downstreamStatus < 500) {
+      return res.status(502).json({ response_type: 'ephemeral', text: 'Leave request rejected by leave service.' });
+    }
+    return res.status(502).json({ response_type: 'ephemeral', text: 'Failed to submit leave request. Please try again.' });
   }
 });
 
