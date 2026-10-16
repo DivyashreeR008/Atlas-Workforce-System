@@ -149,7 +149,7 @@ const maxConnsPerIP = 10
 var (
 	store         = &NotificationStore{}
 	clients       = make(map[*Client]bool)
-	broadcast     = make(chan BroadcastMessage)
+	broadcast     = make(chan BroadcastMessage, 256)
 	mutex         = &sync.Mutex{}
 	ipConnections = make(map[string]int)
 	ipMutex       = &sync.Mutex{}
@@ -356,6 +356,14 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	client := &Client{conn: ws, send: make(chan []byte, 256), tenantID: tenantID, clientIP: clientIP}
 
 	mutex.Lock()
+	if len(clients) >= maxClients {
+		mutex.Unlock()
+		_ = ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "server at capacity"))
+		_ = ws.Close()
+		releaseConnection(clientIP)
+		log.Printf("Rejected websocket for tenant %s: at capacity after upgrade", tenantID)
+		return
+	}
 	clients[client] = true
 	mutex.Unlock()
 
@@ -370,15 +378,24 @@ func handleMessages(ctx context.Context) {
 			return
 		case msg := <-broadcast:
 			mutex.Lock()
+			targets := make([]*Client, 0, len(clients))
 			for client := range clients {
 				if client.tenantID == msg.TenantID {
-					select {
-					case client.send <- msg.Payload:
-					default:
-					}
+					targets = append(targets, client)
 				}
 			}
 			mutex.Unlock()
+			skipped := 0
+			for _, client := range targets {
+				select {
+				case client.send <- msg.Payload:
+				default:
+					skipped++
+				}
+			}
+			if skipped > 0 {
+				log.Printf("Broadcast to tenant %s skipped %d slow clients", msg.TenantID, skipped)
+			}
 		}
 	}
 }
