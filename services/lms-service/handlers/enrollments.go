@@ -135,6 +135,16 @@ func (h *EnrollmentHandler) UpdateProgress(c *fiber.Ctx) error {
 			"error": "Failed to fetch enrollment",
 		})
 	}
+	if enrollment.Status == "COMPLETED" {
+		return c.Status(http.StatusConflict).JSON(fiber.Map{
+			"error": "Completed enrollments cannot be updated",
+		})
+	}
+	if enrollment.Status == "DROPPED" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "Dropped enrollments cannot be updated",
+		})
+	}
 
 	var req struct {
 		ProgressPct float64 `json:"progress_pct"`
@@ -147,6 +157,11 @@ func (h *EnrollmentHandler) UpdateProgress(c *fiber.Ctx) error {
 	if req.ProgressPct < 0 || req.ProgressPct > 100 {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
 			"error": "Progress must be between 0 and 100",
+		})
+	}
+	if req.ProgressPct < enrollment.ProgressPct {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "Progress cannot decrease",
 		})
 	}
 
@@ -167,7 +182,7 @@ func (h *EnrollmentHandler) UpdateProgress(c *fiber.Ctx) error {
 		})
 	}
 
-	h.DB.First(&enrollment, "id = ?", id)
+	h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).First(&enrollment)
 	return c.JSON(fiber.Map{
 		"data": enrollment,
 	})
@@ -217,7 +232,7 @@ func (h *EnrollmentHandler) Complete(c *fiber.Ctx) error {
 		})
 	}
 
-	h.DB.First(&enrollment, "id = ?", id)
+	h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).First(&enrollment)
 	return c.JSON(fiber.Map{
 		"data": enrollment,
 	})
