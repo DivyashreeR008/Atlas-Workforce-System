@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -1348,6 +1349,20 @@ func flagStaleOpenRecords(tenantId string) {
 	}
 }
 
+func siteLocation() *time.Location {
+	if tz := os.Getenv("SITE_TIMEZONE"); tz != "" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			return loc
+		}
+	}
+	if tz := os.Getenv("TIMEZONE"); tz != "" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			return loc
+		}
+	}
+	return time.Local
+}
+
 func checkLateArrival(tenantID, employeeID, date, currentStatus string) string {
 	if currentStatus == "REMOTE" || currentStatus == "WFH" {
 		return currentStatus
@@ -1355,19 +1370,31 @@ func checkLateArrival(tenantID, employeeID, date, currentStatus string) string {
 	if db == nil {
 		return currentStatus
 	}
-	var es EmployeeShift
-	err := db.Where("tenant_id = ? AND employee_id = ? AND is_active = ?", tenantID, employeeID, true).
-		Preload("Shift").First(&es).Error
-	if err != nil || es.Shift.ID == 0 {
+	loc := siteLocation()
+	var shift Shift
+	found := false
+	var roster Roster
+	if err := db.Where("tenant_id = ? AND employee_id = ? AND date = ?", tenantID, employeeID, date).
+		Preload("Shift").First(&roster).Error; err == nil && roster.Shift.ID != 0 {
+		shift = roster.Shift
+		found = true
+	} else {
+		var es EmployeeShift
+		if err := db.Where("tenant_id = ? AND employee_id = ? AND is_active = ?", tenantID, employeeID, true).
+			Preload("Shift").First(&es).Error; err == nil && es.Shift.ID != 0 {
+			shift = es.Shift
+			found = true
+		}
+	}
+	if !found {
 		return currentStatus
 	}
-	shift := es.Shift
 	startH, startM, err := parseShiftTime(shift.StartTime)
 	if err != nil {
 		return currentStatus
 	}
-	now := time.Now().UTC()
-	shiftStart := time.Date(now.Year(), now.Month(), now.Day(), startH, startM+shift.GraceMinutes, 0, 0, time.UTC)
+	now := time.Now().In(loc)
+	shiftStart := time.Date(now.Year(), now.Month(), now.Day(), startH, startM+shift.GraceMinutes, 0, 0, loc)
 	if now.After(shiftStart) {
 		return "LATE"
 	}
