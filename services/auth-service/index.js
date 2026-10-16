@@ -66,10 +66,19 @@ app.use(helmet());
 app.use(cookieParser());
 app.use(express.json({ limit: '1mb' }));
 
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
+const allowedOriginsEnv = process.env.ALLOWED_ORIGINS;
+if (!allowedOriginsEnv || !allowedOriginsEnv.trim()) {
+  console.error('FATAL: ALLOWED_ORIGINS environment variable is required (comma-separated, no localhost fallback)');
+  process.exit(1);
+}
+const allowedOrigins = allowedOriginsEnv
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
+if (NODE_ENV === 'production' && allowedOrigins.some((o) => o.includes('localhost') || o.startsWith('http://'))) {
+  console.error('FATAL: refusing to start with insecure ALLOWED_ORIGINS in production (localhost/HTTP); use explicit HTTPS origins');
+  process.exit(1);
+}
 
 app.use(
   cors({
@@ -124,11 +133,15 @@ const ACCESS_EXPIRY = '15m';
 const REFRESH_EXPIRY_DAYS = 7;
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
-const AUDIT_SERVICE_URL = process.env.AUDIT_SERVICE_URL || 'http://audit-compliance-service:8011';
+const AUDIT_SERVICE_URL = process.env.AUDIT_SERVICE_URL;
+if (!AUDIT_SERVICE_URL) {
+  console.error('FATAL: AUDIT_SERVICE_URL environment variable is required');
+  process.exit(1);
+}
 const INTERNAL_JWT_SECRET = process.env.INTERNAL_JWT_SECRET;
 const AUDIT_WRITER_AUDIENCE = 'audit-writer';
-const SAML_IDP_SSO_URL = process.env.SAML_IDP_SSO_URL || 'https://idp.example.com/sso';
-const SAML_IDP_ENTITY_ID = process.env.SAML_IDP_ENTITY_ID || 'https://idp.example.com/metadata';
+const SAML_IDP_SSO_URL = process.env.SAML_IDP_SSO_URL || '';
+const SAML_IDP_ENTITY_ID = process.env.SAML_IDP_ENTITY_ID || '';
 const SAML_IDP_CERT = (process.env.SAML_IDP_CERT || '').replace(/\\n/g, '\n');
 const SCIM_API_KEY = process.env.SCIM_API_KEY;
 const SCIM_ALLOWED_ROLES = ['employee'];
@@ -240,6 +253,36 @@ if (!SCIM_API_KEY) {
 // The guard must not be conditional on NODE_ENV; otherwise docker-compose
 // defaults make it inert and every `docker compose up` would run with
 // forgeable secrets with zero warnings.
+const KNOWN_DEFAULT_SECRETS = new Set([
+  'change-me-to-a-long-random-string',
+  'ChangeMe123!',
+  'atlas-internal-jwt-secret-change-me',
+  'atlas-mfa-stepup-secret-change-me',
+  'change-me-to-a-long-random-string-for-mfa-stepup',
+  'change-me-to-a-long-random-string-for-oauth-encryption',
+  'change-scim-api-key-in-production',
+  'change-me-to-slack-signing-secret',
+  'change-me-to-long-random-secret',
+]);
+const KNOWN_DEFAULT_URLS = new Set([
+  'https://idp.example.com/sso',
+  'https://idp.example.com/metadata',
+  'https://dev-000000.okta.com',
+]);
+if (
+  KNOWN_DEFAULT_SECRETS.has(JWT_SECRET) ||
+  KNOWN_DEFAULT_SECRETS.has(ADMIN_DEFAULT_PASSWORD) ||
+  (INTERNAL_JWT_SECRET && KNOWN_DEFAULT_SECRETS.has(INTERNAL_JWT_SECRET)) ||
+  (SCIM_API_KEY && KNOWN_DEFAULT_SECRETS.has(SCIM_API_KEY)) ||
+  (process.env.MFA_STEPUP_SECRET && KNOWN_DEFAULT_SECRETS.has(process.env.MFA_STEPUP_SECRET)) ||
+  (process.env.MFA_JWT_SECRET && KNOWN_DEFAULT_SECRETS.has(process.env.MFA_JWT_SECRET)) ||
+  (process.env.OAUTH_ENCRYPTION_KEY && KNOWN_DEFAULT_SECRETS.has(process.env.OAUTH_ENCRYPTION_KEY)) ||
+  KNOWN_DEFAULT_URLS.has(process.env.SAML_IDP_SSO_URL || '') ||
+  KNOWN_DEFAULT_URLS.has(process.env.SAML_IDP_ENTITY_ID || '')
+) {
+  console.error('FATAL: refusing to start with known default secrets/URLs (JWT_SECRET / ADMIN_DEFAULT_PASSWORD / INTERNAL_JWT_SECRET / SCIM_API_KEY / MFA_STEPUP_SECRET / OAUTH_ENCRYPTION_KEY / SAML_IDP_*); set strong values via .env');
+  process.exit(1);
+}
 if (JWT_SECRET === 'change-me-to-a-long-random-string' || ADMIN_DEFAULT_PASSWORD === 'ChangeMe123!') {
   console.error('FATAL: refusing to start with known default secrets (JWT_SECRET / ADMIN_DEFAULT_PASSWORD); set strong values via .env');
   process.exit(1);
@@ -247,9 +290,14 @@ if (JWT_SECRET === 'change-me-to-a-long-random-string' || ADMIN_DEFAULT_PASSWORD
 
 const jwtSecret = JWT_SECRET;
 
-const MFA_STEPUP_SECRET = process.env.MFA_STEPUP_SECRET || process.env.MFA_JWT_SECRET || JWT_SECRET;
+const MFA_STEPUP_SECRET = process.env.MFA_STEPUP_SECRET || process.env.MFA_JWT_SECRET;
+if (!MFA_STEPUP_SECRET) {
+  console.error('FATAL: MFA_STEPUP_SECRET environment variable is required (no fallback to JWT_SECRET)');
+  process.exit(1);
+}
 if (MFA_STEPUP_SECRET === JWT_SECRET) {
-  console.warn('WARNING: MFA_STEPUP_SECRET is not set or equals JWT_SECRET; step-up tokens share session secret - set a dedicated secret for production');
+  console.error('FATAL: MFA_STEPUP_SECRET must be distinct from JWT_SECRET');
+  process.exit(1);
 }
 const MFA_STEPUP_AUD = 'mfa-step-up';
 const MFA_STEPUP_ISS = 'atlas-auth';
@@ -258,10 +306,18 @@ const MFA_CHALLENGE_AUD = 'mfa-challenge';
 const MFA_CHALLENGE_ISS = 'atlas-auth';
 
 // OAuth at-rest encryption for sensitive provider secrets and tokens.
-// Uses OAUTH_ENCRYPTION_KEY when set, otherwise derives a 32-byte key
-// from JWT_SECRET so existing deployments still get encryption at rest
-// without leaving plaintext in the DB.
-const OAUTH_ENCRYPTION_KEY_RAW = process.env.OAUTH_ENCRYPTION_KEY || JWT_SECRET;
+// OAUTH_ENCRYPTION_KEY is required and must be distinct from JWT_SECRET;
+// falling back to the session secret would couple token encryption to
+// session signing and defeat key separation.
+const OAUTH_ENCRYPTION_KEY_RAW = process.env.OAUTH_ENCRYPTION_KEY;
+if (!OAUTH_ENCRYPTION_KEY_RAW) {
+  console.error('FATAL: OAUTH_ENCRYPTION_KEY environment variable is required (no fallback to JWT_SECRET)');
+  process.exit(1);
+}
+if (OAUTH_ENCRYPTION_KEY_RAW === JWT_SECRET) {
+  console.error('FATAL: OAUTH_ENCRYPTION_KEY must be distinct from JWT_SECRET');
+  process.exit(1);
+}
 
 function getOAuthEncryptionKey() {
   return crypto.createHash('sha256').update(OAUTH_ENCRYPTION_KEY_RAW).digest();
@@ -307,18 +363,18 @@ function isEncryptedOAuthSecret(value) {
   }
 }
 
-const OKTA_FALLBACK_BASE = 'https://dev-000000.okta.com';
-
 // Build an Okta base URL from tenant-configured provider data. The subdomain
 // is strictly validated so attacker-controlled provider config cannot smuggle
 // an arbitrary host into authorize/token/userinfo URLs (e.g. a client_id of
 // "evil.com/.okta.com" must not produce "https://evil.okta.com...").
+// Fail closed: unknown shapes return null and callers must reject instead of
+// falling back to a placeholder IdP.
 function resolveOktaBaseUrl(clientId) {
   const match = String(clientId || '').match(/^([a-zA-Z0-9-]{1,63})\.okta\.com$/);
   if (match) {
     return `https://${match[1]}.okta.com`;
   }
-  return OKTA_FALLBACK_BASE;
+  return null;
 }
 
 function validateOAuthIdToken(idToken, provider, expectedClientId, expectedEmail) {
@@ -380,16 +436,20 @@ if (!process.env.POSTGRES_URL) {
   process.exit(1);
 }
 
-const sslConfig = process.env.POSTGRES_SSL === 'true' || NODE_ENV === 'production'
-  ? { rejectUnauthorized: true }
-  : false;
+const sslConfig = process.env.POSTGRES_SSL === 'false'
+  ? false
+  : { rejectUnauthorized: true };
 
 const pool = new Pool({
   connectionString: process.env.POSTGRES_URL,
   ssl: sslConfig,
 });
 
-const REDIS_URL = process.env.REDIS_URL || 'redis://redis:6379';
+const REDIS_URL = process.env.REDIS_URL;
+if (!REDIS_URL) {
+  console.error('FATAL: REDIS_URL environment variable is required');
+  process.exit(1);
+}
 const redisClient = redis.createClient({ url: REDIS_URL });
 redisClient.on('error', (err) => console.log('Auth Redis Client Error', err));
 (async () => {
@@ -890,7 +950,7 @@ async function sendAuditEvent(eventType, userId, email, details = {}) {
 }
 
 function getFrontendUrl() {
-  return (process.env.FRONTEND_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+  return (process.env.FRONTEND_URL || process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '');
 }
 
 // Email sender abstraction. No SMTP is configured in this repo, so the
@@ -2478,6 +2538,9 @@ app.get('/saml/metadata', (req, res) => {
 
 app.post('/saml/login', createUserRateLimiter('saml_login', 20), async (req, res) => {
   try {
+    if (!SAML_IDP_SSO_URL) {
+      return res.status(503).json({ message: 'SAML is not configured on this server. Set SAML_IDP_SSO_URL to enable SAML authentication.' });
+    }
     const entityId = `${req.protocol}://${req.get('host')}/saml/metadata`;
     const acsUrl = `${req.protocol}://${req.get('host')}/saml/acs`;
 
@@ -2590,6 +2653,10 @@ app.post('/auth/password/reset-request', createUserRateLimiter('password_reset_r
 
     const normalizedEmail = email.trim();
     const genericMessage = 'If an account exists for this email, a reset link has been sent.';
+    const frontendUrl = getFrontendUrl();
+    if (!frontendUrl) {
+      return res.status(503).json({ message: 'Password reset is not configured (FRONTEND_URL missing)' });
+    }
 
     const userResult = await pool.query('SELECT id, email, active FROM users WHERE email = $1', [normalizedEmail]);
     const user = userResult.rows[0];
@@ -2609,7 +2676,7 @@ app.post('/auth/password/reset-request', createUserRateLimiter('password_reset_r
       [user.id, tokenHash, expiresAt]
     );
 
-    const resetUrl = `${getFrontendUrl()}/reset-password?token=${rawToken}`;
+    const resetUrl = `${frontendUrl}/reset-password?token=${rawToken}`;
     await sendPasswordResetEmail(user.email, rawToken, resetUrl);
     await sendAuditEvent('auth.password_reset_requested', user.id, user.email, { found: true });
 
@@ -3200,6 +3267,9 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
   try {
     const { provider } = req.params;
     const { tenant_id } = req.body;
+    if (!['google', 'microsoft', 'github', 'okta'].includes(provider)) {
+      return res.status(400).json({ message: `Unsupported OAuth provider "${provider}"` });
+    }
     const tenantId = tenant_id || 'default';
     const redirectTo = req.body.redirect_to || '/dashboard';
 
@@ -3220,6 +3290,10 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
       [state, provider, tenantId, redirectTo, expiresAt]
     );
 
+    const oktaBase = provider === 'okta' ? resolveOktaBaseUrl(prov.client_id) : null;
+    if (provider === 'okta' && !oktaBase) {
+      return res.status(400).json({ message: 'Invalid Okta client_id; expected <subdomain>.okta.com' });
+    }
     const providerConfigs = {
       google: {
         authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -3253,7 +3327,7 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
         },
       },
       okta: {
-        authUrl: `${resolveOktaBaseUrl(prov.client_id)}/oauth2/v1/authorize`,
+        authUrl: `${oktaBase}/oauth2/v1/authorize`,
         params: {
           client_id: prov.client_id,
           redirect_uri: prov.redirect_uri || `${req.protocol}://${req.get('host')}/oauth/callback/${provider}`,
@@ -3264,7 +3338,10 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
       },
     };
 
-    const config = providerConfigs[provider] || providerConfigs.google;
+    const config = providerConfigs[provider];
+    if (!config) {
+      return res.status(400).json({ message: `Unsupported OAuth provider "${provider}"` });
+    }
     const params = new URLSearchParams(config.params);
     const redirectUrl = `${config.authUrl}?${params.toString()}`;
 
@@ -3283,6 +3360,9 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
   try {
     const { provider } = req.params;
     const { code, state } = req.body;
+    if (!['google', 'microsoft', 'github', 'okta'].includes(provider)) {
+      return res.status(400).json({ message: `Unsupported OAuth provider "${provider}"` });
+    }
 
     if (!code || !state) {
       return res.status(400).json({ message: 'code and state are required' });
@@ -3309,6 +3389,10 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
 
     const prov = provResult.rows[0];
 
+    const oktaBaseForCallback = provider === 'okta' ? resolveOktaBaseUrl(prov.client_id) : null;
+    if (provider === 'okta' && !oktaBaseForCallback) {
+      return res.status(400).json({ message: 'Invalid Okta client_id; expected <subdomain>.okta.com' });
+    }
     let tokenUrl, userInfoUrl, userInfoHeaders;
     const tokenConfigs = {
       google: {
@@ -3325,12 +3409,15 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
         userInfoHeaders: { Accept: 'application/json' },
       },
       okta: {
-        tokenUrl: `${resolveOktaBaseUrl(prov.client_id)}/oauth2/v1/token`,
-        userInfoUrl: `${resolveOktaBaseUrl(prov.client_id)}/oauth2/v1/userinfo`,
+        tokenUrl: `${oktaBaseForCallback}/oauth2/v1/token`,
+        userInfoUrl: `${oktaBaseForCallback}/oauth2/v1/userinfo`,
       },
     };
 
-    const tokenConfig = tokenConfigs[provider] || tokenConfigs.google;
+    const tokenConfig = tokenConfigs[provider];
+    if (!tokenConfig) {
+      return res.status(400).json({ message: `Unsupported OAuth provider "${provider}"` });
+    }
 
     try {
       const clientSecret = isEncryptedOAuthSecret(prov.client_secret) ? decryptOAuthSecret(prov.client_secret) : prov.client_secret;
