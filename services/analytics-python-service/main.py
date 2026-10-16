@@ -33,15 +33,21 @@ logger = get_logger("analytics-service")
 payroll_cache = {}
 payroll_cache_timestamp = {}
 PAYROLL_CACHE_TTL = 300
+payroll_cache_lock = threading.Lock()
 
 
 def invalidate_payroll_cache(tenant_id=None):
-    if tenant_id:
-        payroll_cache.pop(f"payroll_{tenant_id}", None)
-        payroll_cache_timestamp.pop(f"payroll_{tenant_id}", None)
-    else:
-        payroll_cache.clear()
-        payroll_cache_timestamp.clear()
+    with payroll_cache_lock:
+        if tenant_id:
+            payroll_cache.pop(f"payroll_{tenant_id}", None)
+            payroll_cache_timestamp.pop(f"payroll_{tenant_id}", None)
+        else:
+            payroll_cache.clear()
+            payroll_cache_timestamp.clear()
+
+
+def record_payroll_write(tenant_id=None):
+    invalidate_payroll_cache(tenant_id)
 
 
 def safe_divide(numerator, denominator, default=0):
@@ -244,8 +250,9 @@ def get_payroll_analytics(x_tenant_id: str = Header("default", alias="X-Tenant-I
 
     cache_key = f"payroll_{x_tenant_id}"
     now = time.time()
-    if cache_key in payroll_cache and (now - payroll_cache_timestamp.get(cache_key, 0)) < PAYROLL_CACHE_TTL:
-        return payroll_cache[cache_key]
+    with payroll_cache_lock:
+        if cache_key in payroll_cache and (now - payroll_cache_timestamp.get(cache_key, 0)) < PAYROLL_CACHE_TTL:
+            return payroll_cache[cache_key]
 
     try:
         query = """
@@ -257,8 +264,9 @@ def get_payroll_analytics(x_tenant_id: str = Header("default", alias="X-Tenant-I
         """
         df = pd.read_sql_query(text(query).bindparams(tenant_id=x_tenant_id), engine)
         result = df.to_dict(orient="records")
-        payroll_cache[cache_key] = result
-        payroll_cache_timestamp[cache_key] = now
+        with payroll_cache_lock:
+            payroll_cache[cache_key] = result
+            payroll_cache_timestamp[cache_key] = now
         return result
     except Exception:
         logger.exception("analytics.payroll_failed", extra={"tenant_id": x_tenant_id})
@@ -861,6 +869,12 @@ def get_activity_feed(x_tenant_id: str = Header("default", alias="X-Tenant-Id"))
              "timestamp": "2026-05-21T09:00:00Z"},
         ],
     }
+
+
+@app.post("/analytics/payroll/invalidate", tags=["analytics"], summary="Invalidate payroll cache")
+def invalidate_payroll_cache_endpoint(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
+    record_payroll_write(x_tenant_id)
+    return {"status": "invalidated", "tenant_id": x_tenant_id}
 
 
 def payroll_processed_consumer():
