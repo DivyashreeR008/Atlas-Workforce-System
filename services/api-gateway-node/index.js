@@ -152,7 +152,17 @@ async function checkCache(req, res, next) {
 const app = express();
 // Trust proxy is required so express-rate-limit sees the real client IP behind k8s ingress / docker proxy.
 // Number of trusted hops is configurable via TRUST_PROXY_HOPS (defaults to 1 for single ingress).
-const TRUST_PROXY_HOPS = parseInt(process.env.TRUST_PROXY_HOPS || '1', 10);
+function resolveTrustProxyHops() {
+  const raw = process.env.TRUST_PROXY_HOPS;
+  if (raw === undefined || raw === '') return 1;
+  const parsed = parseInt(String(raw), 10);
+  if (!Number.isInteger(parsed) || Number.isNaN(parsed) || parsed < 0 || parsed > 5) {
+    console.warn(`WARNING: invalid TRUST_PROXY_HOPS=${JSON.stringify(raw)}; falling back to 1 (expected integer 0-5)`);
+    return 1;
+  }
+  return parsed;
+}
+const TRUST_PROXY_HOPS = resolveTrustProxyHops();
 app.set('trust proxy', TRUST_PROXY_HOPS);
 const PORT = process.env.PORT || 8080;
 const NODE_ENV = process.env.NODE_ENV || 'production';
