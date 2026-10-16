@@ -210,6 +210,12 @@ function isAllowedScimRole(role) {
   return typeof role === 'string' && SCIM_ALLOWED_ROLES.includes(role);
 }
 
+function isValidScimUserId(id) {
+  const s = String(id || '');
+  if (/^[0-9]+$/.test(s)) return true;
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(s);
+}
+
 if (!JWT_SECRET) {
   console.error('FATAL: JWT_SECRET environment variable is required');
   process.exit(1);
@@ -1937,24 +1943,28 @@ app.get('/scim/v2/Users', requireScimAuth, createUserRateLimiter('scim_list', 30
     if (!tenant) {
       return sendScimError(res, 401, 'Authentication required');
     }
-    const count = Math.min(parseInt(req.query.count) || 10, 100);
-    const startIndex = Math.max(parseInt(req.query.startIndex) || 1, 1);
+    const rawCount = parseInt(req.query.count, 10);
+    const count = Number.isNaN(rawCount) ? 10 : Math.min(Math.max(rawCount, 1), 100);
+    const rawStartIndex = parseInt(req.query.startIndex, 10);
+    const startIndex = Number.isNaN(rawStartIndex) ? 1 : Math.max(rawStartIndex, 1);
     const offset = startIndex - 1;
 
     let whereClause = 'WHERE tenant_id = $1';
     let queryParams = [tenant];
 
     if (req.query.filter) {
-      const userNameMatch = req.query.filter.match(/userName\s+eq\s+"([^"]{1,254})"/i);
+      const rawFilter = String(req.query.filter);
+      const userNameMatch = rawFilter.match(/userName\s+eq\s+"([^"]{1,254})"/i);
       // Linear match on purpose: the value pattern must not reach back over
       // arbitrary filter text (that backtracking is a ReDoS vector).
-      const emailMatch = req.query.filter.match(/value\s+eq\s+"([^"]{1,254})"/i);
+      const emailMatch = rawFilter.match(/value\s+eq\s+"([^"]{1,254})"/i);
       const filterValue = userNameMatch?.[1] || emailMatch?.[1];
 
-      if (filterValue) {
-        whereClause += ` AND email = $${queryParams.length + 1}`;
-        queryParams.push(filterValue);
+      if (!filterValue) {
+        return sendScimError(res, 400, 'Unsupported SCIM filter. Supported: userName eq "email@example.com"');
       }
+      whereClause += ` AND email = $${queryParams.length + 1}`;
+      queryParams.push(filterValue);
     }
 
     const countResult = await pool.query(
@@ -2058,6 +2068,9 @@ app.get('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_get',
     if (!tenant) {
       return sendScimError(res, 401, 'Authentication required');
     }
+    if (!isValidScimUserId(req.params.id)) {
+      return sendScimError(res, 400, 'Invalid user id');
+    }
     const result = await pool.query('SELECT * FROM users WHERE id = $1 AND tenant_id = $2', [req.params.id, tenant]);
     if (!result.rows[0]) {
       return sendScimError(res, 404, 'User not found');
@@ -2076,6 +2089,9 @@ app.put('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_updat
     const tenant = req.scimTenant;
     if (!tenant) {
       return sendScimError(res, 401, 'Authentication required');
+    }
+    if (!isValidScimUserId(req.params.id)) {
+      return sendScimError(res, 400, 'Invalid user id');
     }
     const { userName, name, emails, roles, active } = req.body;
 
@@ -2133,6 +2149,9 @@ app.patch('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_pat
     const tenant = req.scimTenant;
     if (!tenant) {
       return sendScimError(res, 401, 'Authentication required');
+    }
+    if (!isValidScimUserId(req.params.id)) {
+      return sendScimError(res, 400, 'Invalid user id');
     }
     const { Operations } = req.body;
     if (!Operations || !Array.isArray(Operations)) {
@@ -2232,6 +2251,9 @@ app.delete('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_de
     const tenant = req.scimTenant;
     if (!tenant) {
       return sendScimError(res, 401, 'Authentication required');
+    }
+    if (!isValidScimUserId(req.params.id)) {
+      return sendScimError(res, 400, 'Invalid user id');
     }
     const result = await pool.query(
       'UPDATE users SET active = false, updated_at = NOW() WHERE id = $1 AND tenant_id = $2 RETURNING id',
@@ -3499,6 +3521,7 @@ module.exports = {
   parseScimApiKeys,
   resolveScimTenant,
   isAllowedScimRole,
+  isValidScimUserId,
   SCIM_TENANT_KEYS,
   storeWebauthnChallenge,
   getLatestWebauthnChallenge,
