@@ -279,16 +279,46 @@ func (h *EnrollmentHandler) BulkEnroll(c *fiber.Ctx) error {
 			"error": "Failed to fetch course",
 		})
 	}
+	if course.Status != "PUBLISHED" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "Course must be published before enrollment",
+		})
+	}
+
+	tx := h.DB.Begin()
+	if tx.Error != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to start enrollment transaction",
+		})
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			tx.Rollback()
+		}
+	}()
+
+	type bulkDetail struct {
+		EmployeeID string `json:"employee_id"`
+		Status     string `json:"status"`
+		Reason     string `json:"reason,omitempty"`
+	}
 
 	var created []models.Enrollment
+	var details []bulkDetail
 	var skipped int
 
 	for _, empID := range req.EmployeeIDs {
+		if empID == "" {
+			details = append(details, bulkDetail{EmployeeID: empID, Status: "failed", Reason: "employee_id is required"})
+			continue
+		}
 		var existing models.Enrollment
-		result := h.DB.Where("course_id = ? AND employee_id = ? AND tenant_id = ?",
+		result := tx.Set("gorm:query_option", "FOR UPDATE").Where("course_id = ? AND employee_id = ? AND tenant_id = ?",
 			req.CourseID, empID, tenantID).First(&existing)
 		if result.Error == nil {
 			skipped++
+			details = append(details, bulkDetail{EmployeeID: empID, Status: "skipped", Reason: "already enrolled"})
 			continue
 		}
 
@@ -299,15 +329,28 @@ func (h *EnrollmentHandler) BulkEnroll(c *fiber.Ctx) error {
 			EmployeeID: empID,
 			Status:     "ENROLLED",
 		}
-		if err := h.DB.Create(&enrollment).Error; err != nil {
+		if err := tx.Create(&enrollment).Error; err != nil {
+			details = append(details, bulkDetail{EmployeeID: empID, Status: "failed", Reason: "failed to enroll employee"})
 			continue
 		}
 		created = append(created, enrollment)
+		details = append(details, bulkDetail{EmployeeID: empID, Status: "enrolled"})
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to complete bulk enrollment",
+		})
+	}
+	committed = true
+	if details == nil {
+		details = []bulkDetail{}
 	}
 
 	return c.Status(http.StatusCreated).JSON(fiber.Map{
-		"data":    created,
+		"data":     created,
 		"enrolled": len(created),
-		"skipped": skipped,
+		"skipped":  skipped,
+		"details":  details,
 	})
 }
