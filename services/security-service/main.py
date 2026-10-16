@@ -75,10 +75,9 @@ def get_db() -> Session:
 
 INTERNAL_JWT_SECRET = os.environ.get("INTERNAL_JWT_SECRET", "")
 
-async def verify_internal_key(x_internal_key: str = Header(...)):
-    if x_internal_key != INTERNAL_API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid internal API key")
-    return True
+# verify_internal_key removed - all endpoints now require x-internal-auth JWT
+# via internal_auth_middleware below (see live middleware pattern at 145-154);
+# tenant is bound from verified claims.
 
 async def clamp_page_size(page_size: int = Query(50, ge=1, le=MAX_PAGE_SIZE)) -> int:
     return min(page_size, MAX_PAGE_SIZE)
