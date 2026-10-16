@@ -52,3 +52,39 @@ Async-first per README footer: GitHub > meetings.
 - Remove or keep `osn-sprint-26` label as archived; keep `CONTRIBUTING.md`/`CODE_OF_CONDUCT.md`/`SECURITY.md` permanently.
 
 Good luck — clear that backlog!
+
+
+
+## 7. Definition of Done rollout (Issue #495)
+
+The Definition of Done (DoD) is documented in
+`CONTRIBUTING.md`, Section 11.
+
+### Maintainer and mentor responsibilities
+
+- Confirm each PR links to an assigned issue.
+- Review the Definition of Done checklist in the PR template.
+- Check relevant tests, documentation, and CI results.
+- Confirm security implications have been considered.
+- Review changelog fragments and migration notes when applicable.
+- Require explanations for items marked N/A.
+- For incomplete work, require a linked follow-up issue and mentor or maintainer approval.
+
+### Gentle enforcement during the first sprint
+
+For the first sprint following adoption:
+
+1. Announce the new DoD checklist to contributors and mentors.
+2. Remind contributors to complete the checklist before review.
+3. Explain missing requirements through constructive review comments.
+4. Collect feedback on unclear or unnecessary checklist items.
+5. Adjust checklist guidance based on recurring feedback.
+
+After the calibration sprint, use the DoD consistently during reviews.
+
+Do not merge pull requests with unresolved security concerns,
+failing required checks, or missing approval.
+
+The DoD is intended to improve contribution quality without
+creating unnecessary work for small documentation fixes.
+  
