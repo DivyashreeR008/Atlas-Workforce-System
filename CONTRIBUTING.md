@@ -208,6 +208,7 @@ Use the issue templates (`.github/ISSUE_TEMPLATE/`). Include: service + port, re
 
 ---
 
+
 ## 10. Maintainers
 
 - Async-first: GitHub issues/PRs beat DMs. Author: Senthil Raja R — see `README.md` for contact.
@@ -215,6 +216,7 @@ Use the issue templates (`.github/ISSUE_TEMPLATE/`). Include: service + port, re
 
 Thank you for contributing to Atlas. Happy sprint!
 
+---
 
 ## 11. Definition of Done (DoD)
 
@@ -234,4 +236,45 @@ For non-applicable items, mark N/A with a brief explanation in the pull request.
 For blocked items, explain why, link a follow-up issue, and obtain mentor or maintainer approval before merging.
 
 The DoD applies to bug fixes, features, documentation updates, tests, and maintenance changes. Reviewers should apply it proportionately to the scope of each change.
+
+---
+
+## 12. Changelog and Release Notes
+
+We use GitHub Release Drafter to automatically prepare draft release notes from merged pull requests.
+
+### Pull Request Titles
+
+Use clear Conventional Commit-style titles:
+
+- `feat: add new functionality`
+- `fix: correct existing behavior`
+- `docs: update documentation`
+- `chore(deps): update dependencies`
+- `fix(security): address a security issue`
+
+### Release Labels
+
+Maintainers should apply the appropriate label:
+
+- `breaking` or `breaking-change`: Breaking Changes
+- `security` or `vulnerability`: Security
+- `feature` or `enhancement`: Features
+- `bug`, `fix`, or `bugfix`: Bug Fixes
+- `dependencies` or `dependency`: Dependencies
+- `documentation`, `chore`, or `maintenance`: Documentation and Maintenance
+
+### Release Process
+
+1. Contributors submit PRs with descriptive titles.
+2. Maintainers review and apply appropriate labels.
+3. Approved PRs are merged into `main`.
+4. Release Drafter automatically updates draft release notes.
+5. Maintainers review the draft for accuracy and security.
+6. Maintainers publish releases manually.
+
+Never publish security-sensitive details before an appropriate disclosure or remediation process.
+
+See `CHANGELOG.md` for release history.
+
   
