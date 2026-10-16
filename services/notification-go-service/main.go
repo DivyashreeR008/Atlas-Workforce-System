@@ -63,7 +63,7 @@ var upgrader = websocket.Upgrader{
 		}
 		allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
 		if allowedOrigins == "" {
-			allowedOrigins = "http://localhost:3000"
+			return false
 		}
 		for _, o := range strings.Split(allowedOrigins, ",") {
 			if strings.TrimSpace(o) == origin {
@@ -568,7 +568,7 @@ func processMessage(body []byte) {
 		}
 	}()
 
-	log.Printf("Received a message: %s", body)
+	log.Printf("Received message of %d bytes", len(body))
 
 	var rawData map[string]interface{}
 	if err := json.Unmarshal(body, &rawData); err != nil {
@@ -604,9 +604,10 @@ func processMessage(body []byte) {
 	msgWrapper := map[string]interface{}{
 		"type":      "notification",
 		"data":      notif,
-		"timestamp": time.Now().Format(time.RFC3339),
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	}
 	jsonMsg, _ := json.Marshal(msgWrapper)
+	log.Printf("Stored notification %s for tenant %s (%d bytes payload, %d bytes wire)", notif.ID, tenantID, len(body), len(jsonMsg))
 	broadcast <- BroadcastMessage{TenantID: tenantID, Payload: jsonMsg}
 }
 
@@ -641,10 +642,13 @@ func (sw *statusWriter) WriteHeader(code int) {
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8004"
+		log.Fatal("FATAL: PORT environment variable is required")
 	}
 	if !validPort(port) {
 		log.Fatal("FATAL: invalid PORT environment variable")
+	}
+	if os.Getenv("ALLOWED_ORIGINS") == "" {
+		log.Fatal("FATAL: ALLOWED_ORIGINS environment variable is required")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
