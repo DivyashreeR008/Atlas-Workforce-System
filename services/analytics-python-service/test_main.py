@@ -85,3 +85,101 @@ async def test_ai_insights_mock(client):
     assert response.status_code == 200
     data = response.json()
     assert "insight" in data
+
+
+@pytest.mark.asyncio
+async def test_command_center_overview_shape(client):
+    resp = await client.get("/api/v1/command-center/overview", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    data = resp.json()
+    for key in ("totalHeadcount", "payrollMtd", "openPositions", "orgHealthScore"):
+        assert key in data
+
+
+@pytest.mark.asyncio
+async def test_command_center_org_health_shape(client):
+    resp = await client.get("/api/v1/command-center/org-health", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "overall" in data
+    assert "dimensions" in data
+    assert len(data["dimensions"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_command_center_heatmap_shape(client):
+    resp = await client.get("/api/v1/command-center/department-heatmap", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    assert "departments" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_command_center_workforce_cost_shape(client):
+    resp = await client.get("/api/v1/command-center/workforce-cost", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "totalCost" in data
+    assert "byDepartment" in data
+
+
+@pytest.mark.asyncio
+async def test_command_center_attrition_map_shape(client):
+    resp = await client.get("/api/v1/command-center/attrition-risk-map", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    assert "overallRiskScore" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_command_center_hiring_pipeline_shape(client):
+    resp = await client.get("/api/v1/command-center/hiring-pipeline", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    assert "pipelineStages" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_command_center_budget_forecast_shape(client):
+    resp = await client.get("/api/v1/command-center/budget-forecast", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    assert "totalBudget" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_command_center_utilization_shape(client):
+    resp = await client.get("/api/v1/command-center/utilization", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    assert "overallUtilization" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_command_center_benchmarking_shape(client):
+    resp = await client.get("/api/v1/command-center/benchmarking", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    assert "companyAvg" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_command_center_ai_briefing_shape(client):
+    resp = await client.get("/api/v1/command-center/ai-briefing", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    assert "executiveSummary" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_command_center_risk_dashboard_shape(client):
+    resp = await client.get("/api/v1/command-center/risk-dashboard", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    assert "overallRiskScore" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_command_center_activity_feed_shape(client):
+    resp = await client.get("/api/v1/command-center/activity-feed", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    assert "activities" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_payroll_verify_rejects_garbage_period(client):
+    for bad in ("not-a-period", "2026-13", "2026", "2026/05"):
+        resp = await client.get(f"/api/v1/payroll/verify/{bad}", headers={"X-Tenant-Id": "test-tenant"})
+        assert resp.status_code == 400

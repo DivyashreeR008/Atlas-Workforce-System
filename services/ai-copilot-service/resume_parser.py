@@ -1,6 +1,6 @@
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -149,7 +149,7 @@ def extract_experience(text: str) -> list[dict]:
                     start_year = int(parts[0].strip())
                     end_str = parts[1].strip()
                     end_year = (
-                        datetime.utcnow().year
+                        datetime.now(timezone.utc).year
                         if end_str.lower() in ("present", "current", "now", "ongoing")
                         else int(end_str)
                     )
