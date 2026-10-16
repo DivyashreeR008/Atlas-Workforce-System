@@ -5,6 +5,7 @@ import { Bell, BellRing, CheckCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatDate } from "@/lib/utils";
+import { requiredEnv } from "@/lib/env";
 import { getReconnectDelay } from "@/lib/reconnect";
 
 interface Notification {
@@ -40,8 +41,11 @@ export function NotificationBell() {
   }, [clearPendingReconnect]);
 
   const connect = useCallback(() => {
+    const wsUrl = requiredEnv(
+      "NEXT_PUBLIC_WS_URL",
+      `ws://localhost:8080/api/notification/ws`
+    );
     try {
-      const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `ws://localhost:8080/api/notification/ws`;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 

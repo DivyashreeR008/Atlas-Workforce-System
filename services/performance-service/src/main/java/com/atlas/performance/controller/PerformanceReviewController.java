@@ -52,6 +52,9 @@ public class PerformanceReviewController {
         try {
             return ResponseEntity.ok(service.getReview(tenantId, id));
         } catch (IllegalArgumentException e) {
+            if (e.getMessage() != null && e.getMessage().toLowerCase().contains("not found")) {
+                return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
+            }
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
@@ -65,6 +68,9 @@ public class PerformanceReviewController {
         try {
             return ResponseEntity.ok(service.updateReview(tenantId, id, review));
         } catch (IllegalArgumentException e) {
+            if (e.getMessage() != null && e.getMessage().toLowerCase().contains("not found")) {
+                return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
+            }
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
@@ -77,6 +83,9 @@ public class PerformanceReviewController {
         try {
             return ResponseEntity.ok(service.submitReview(tenantId, id));
         } catch (IllegalArgumentException e) {
+            if (e.getMessage() != null && e.getMessage().toLowerCase().contains("not found")) {
+                return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
+            }
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
@@ -89,6 +98,9 @@ public class PerformanceReviewController {
         try {
             return ResponseEntity.ok(service.acknowledgeReview(tenantId, id));
         } catch (IllegalArgumentException e) {
+            if (e.getMessage() != null && e.getMessage().toLowerCase().contains("not found")) {
+                return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
+            }
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }

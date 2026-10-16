@@ -2,13 +2,18 @@ package com.atlas.performance.service;
 
 import com.atlas.performance.model.*;
 import com.atlas.performance.repository.*;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.*;
 
 @Service
@@ -95,10 +100,17 @@ public class PerformanceService {
     @Transactional
     public Goal updateGoalStatus(String tenantId, String id, String status) {
         Goal goal = getGoal(tenantId, id);
+        if (status == null || status.isBlank()) {
+            throw new IllegalArgumentException("Status is required");
+        }
         String upper = status.toUpperCase();
         Set<String> valid = Set.of("DRAFT", "ACTIVE", "COMPLETED", "CANCELLED");
         if (!valid.contains(upper)) {
             throw new IllegalArgumentException("Invalid status. Must be DRAFT, ACTIVE, COMPLETED, or CANCELLED");
+        }
+        String current = goal.getStatus();
+        if (("COMPLETED".equals(current) || "CANCELLED".equals(current)) && !current.equals(upper)) {
+            throw new IllegalArgumentException("Cannot transition out of " + current + " status");
         }
         goal.setStatus(upper);
         if ("COMPLETED".equals(upper)) goal.setProgressPct(BigDecimal.valueOf(100));
@@ -143,8 +155,11 @@ public class PerformanceService {
     @Transactional
     public PerformanceReview submitReview(String tenantId, String id) {
         PerformanceReview review = getReview(tenantId, id);
+        if ("COMPLETED".equals(review.getStatus()) || "ACKNOWLEDGED".equals(review.getStatus())) {
+            throw new IllegalArgumentException("Review has already been submitted");
+        }
         review.setStatus("COMPLETED");
-        review.setCompletedDate(LocalDateTime.now());
+        review.setCompletedDate(LocalDateTime.ofInstant(Instant.now(), ZoneOffset.UTC));
         return reviewRepository.save(review);
     }
 
@@ -195,7 +210,6 @@ public class PerformanceService {
 
         if (feedbacks.isEmpty()) {
             summary.put("averageRating", null);
-            summary.put("categoryAverages", Collections.emptyMap());
             summary.put("relationshipBreakdown", Collections.emptyMap());
             return summary;
         }
@@ -221,12 +235,16 @@ public class PerformanceService {
         summary.put("averageRating", ratingCount > 0 ? totalRating.divide(BigDecimal.valueOf(ratingCount), 2, RoundingMode.HALF_UP) : null);
         summary.put("relationshipBreakdown", relationshipCount);
 
+        // categories is a free-form JSON string with no structured parser here,
+        // so only report per-category averages when actually populated.
         Map<String, BigDecimal> avgCategories = new LinkedHashMap<>();
         for (Map.Entry<String, List<BigDecimal>> entry : categoryRatings.entrySet()) {
             BigDecimal sum = entry.getValue().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
             avgCategories.put(entry.getKey(), sum.divide(BigDecimal.valueOf(entry.getValue().size()), 2, RoundingMode.HALF_UP));
         }
-        summary.put("categoryAverages", avgCategories);
+        if (!avgCategories.isEmpty()) {
+            summary.put("categoryAverages", avgCategories);
+        }
 
         return summary;
     }
@@ -335,46 +353,78 @@ public class PerformanceService {
     public Map<String, Object> getAnalyticsOverview(String tenantId) {
         Map<String, Object> overview = new LinkedHashMap<>();
 
-        List<PerformanceReview> allReviews = reviewRepository.findByTenantId(tenantId);
-        List<Goal> allGoals = goalRepository.findByTenantId(tenantId);
-        List<Feedback360> allFeedback = feedbackRepository.findByTenantId(tenantId);
-
-        BigDecimal avgRating = null;
-        if (!allReviews.isEmpty()) {
-            BigDecimal sum = BigDecimal.ZERO;
-            int count = 0;
-            for (PerformanceReview r : allReviews) {
+        BigDecimal ratingSum = BigDecimal.ZERO;
+        int ratingCount = 0;
+        long totalReviews = 0;
+        Pageable reviewPageable = PageRequest.of(0, 500);
+        Page<PerformanceReview> reviewPage;
+        do {
+            reviewPage = reviewRepository.findByTenantId(tenantId, reviewPageable);
+            for (PerformanceReview r : reviewPage.getContent()) {
                 if (r.getOverallRating() != null) {
-                    sum = sum.add(r.getOverallRating());
-                    count++;
+                    ratingSum = ratingSum.add(r.getOverallRating());
+                    ratingCount++;
                 }
             }
-            if (count > 0) avgRating = sum.divide(BigDecimal.valueOf(count), 2, RoundingMode.HALF_UP);
-        }
+            totalReviews += reviewPage.getNumberOfElements();
+            reviewPageable = reviewPageable.next();
+        } while (reviewPage.hasNext());
+        BigDecimal avgRating = ratingCount > 0
+                ? ratingSum.divide(BigDecimal.valueOf(ratingCount), 2, RoundingMode.HALF_UP)
+                : null;
 
-        long goalsCompleted = allGoals.stream().filter(g -> "COMPLETED".equals(g.getStatus())).count();
-        long goalsActive = allGoals.stream().filter(g -> "ACTIVE".equals(g.getStatus())).count();
+        long totalGoals = 0;
+        long goalsCompleted = 0;
+        long goalsActive = 0;
+        Pageable goalPageable = PageRequest.of(0, 500);
+        Page<Goal> goalPage;
+        do {
+            goalPage = goalRepository.findByTenantId(tenantId, goalPageable);
+            for (Goal g : goalPage.getContent()) {
+                if ("COMPLETED".equals(g.getStatus())) goalsCompleted++;
+                if ("ACTIVE".equals(g.getStatus())) goalsActive++;
+            }
+            totalGoals += goalPage.getNumberOfElements();
+            goalPageable = goalPageable.next();
+        } while (goalPage.hasNext());
+
+        long totalFeedback = 0;
+        Pageable feedbackPageable = PageRequest.of(0, 500);
+        Page<Feedback360> feedbackPage;
+        do {
+            feedbackPage = feedbackRepository.findByTenantId(tenantId, feedbackPageable);
+            totalFeedback += feedbackPage.getNumberOfElements();
+            feedbackPageable = feedbackPageable.next();
+        } while (feedbackPage.hasNext());
 
         overview.put("averageRating", avgRating);
-        overview.put("totalReviews", allReviews.size());
-        overview.put("totalGoals", allGoals.size());
+        overview.put("totalReviews", totalReviews);
+        overview.put("totalGoals", totalGoals);
         overview.put("goalsCompleted", goalsCompleted);
         overview.put("goalsActive", goalsActive);
-        overview.put("totalFeedbackSubmissions", allFeedback.size());
+        overview.put("totalFeedbackSubmissions", totalFeedback);
 
         return overview;
     }
 
     public Map<String, Object> getDepartmentRatings(String tenantId) {
-        List<PerformanceReview> allReviews = reviewRepository.findByTenantId(tenantId);
         Map<String, List<BigDecimal>> deptRatings = new LinkedHashMap<>();
 
-        for (PerformanceReview r : allReviews) {
-            if (r.getOverallRating() != null) {
-                String dept = "Unknown";
-                deptRatings.computeIfAbsent(dept, k -> new ArrayList<>()).add(r.getOverallRating());
+        Pageable pageable = PageRequest.of(0, 500);
+        Page<PerformanceReview> page;
+        do {
+            page = reviewRepository.findByTenantId(tenantId, pageable);
+            for (PerformanceReview r : page.getContent()) {
+                if (r.getOverallRating() != null) {
+                    // PerformanceReview carries no department field, so bucket
+                    // department-less rows under an explicit unmapped label
+                    // instead of implying a real department named Unknown.
+                    String dept = "UNMAPPED";
+                    deptRatings.computeIfAbsent(dept, k -> new ArrayList<>()).add(r.getOverallRating());
+                }
             }
-        }
+            pageable = pageable.next();
+        } while (page.hasNext());
 
         Map<String, Object> result = new LinkedHashMap<>();
         for (Map.Entry<String, List<BigDecimal>> entry : deptRatings.entrySet()) {
@@ -386,12 +436,24 @@ public class PerformanceService {
     }
 
     public Map<String, Object> getGoalCompletionRates(String tenantId) {
-        List<Goal> allGoals = goalRepository.findByTenantId(tenantId);
-        long total = allGoals.size();
-        long completed = allGoals.stream().filter(g -> "COMPLETED".equals(g.getStatus())).count();
-        long active = allGoals.stream().filter(g -> "ACTIVE".equals(g.getStatus())).count();
-        long draft = allGoals.stream().filter(g -> "DRAFT".equals(g.getStatus())).count();
-        long cancelled = allGoals.stream().filter(g -> "CANCELLED".equals(g.getStatus())).count();
+        long total = 0;
+        long completed = 0;
+        long active = 0;
+        long draft = 0;
+        long cancelled = 0;
+        Pageable pageable = PageRequest.of(0, 500);
+        Page<Goal> page;
+        do {
+            page = goalRepository.findByTenantId(tenantId, pageable);
+            for (Goal g : page.getContent()) {
+                if ("COMPLETED".equals(g.getStatus())) completed++;
+                if ("ACTIVE".equals(g.getStatus())) active++;
+                if ("DRAFT".equals(g.getStatus())) draft++;
+                if ("CANCELLED".equals(g.getStatus())) cancelled++;
+            }
+            total += page.getNumberOfElements();
+            pageable = pageable.next();
+        } while (page.hasNext());
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("totalGoals", total);
@@ -405,17 +467,38 @@ public class PerformanceService {
     }
 
     public Map<String, Object> getSuccessionReadiness(String tenantId) {
-        List<SuccessionPlan> plans = successionPlanRepository.findByTenantId(tenantId);
-        List<SuccessionCandidate> candidates = successionCandidateRepository.findByTenantId(tenantId);
+        long totalPlans = 0;
+        long totalCandidates = 0;
+        long immediate = 0;
+        long sixMonths = 0;
+        long oneYear = 0;
+        long notReady = 0;
 
-        long immediate = candidates.stream().filter(c -> c.getReadinessScore() != null && c.getReadinessScore().compareTo(BigDecimal.valueOf(80)) >= 0).count();
-        long sixMonths = candidates.stream().filter(c -> c.getReadinessScore() != null && c.getReadinessScore().compareTo(BigDecimal.valueOf(60)) >= 0 && c.getReadinessScore().compareTo(BigDecimal.valueOf(80)) < 0).count();
-        long oneYear = candidates.stream().filter(c -> c.getReadinessScore() != null && c.getReadinessScore().compareTo(BigDecimal.valueOf(40)) >= 0 && c.getReadinessScore().compareTo(BigDecimal.valueOf(60)) < 0).count();
-        long notReady = candidates.stream().filter(c -> c.getReadinessScore() == null || c.getReadinessScore().compareTo(BigDecimal.valueOf(40)) < 0).count();
+        Pageable planPageable = PageRequest.of(0, 500);
+        Page<SuccessionPlan> planPage;
+        do {
+            planPage = successionPlanRepository.findByTenantId(tenantId, planPageable);
+            totalPlans += planPage.getNumberOfElements();
+            planPageable = planPageable.next();
+        } while (planPage.hasNext());
+
+        Pageable candidatePageable = PageRequest.of(0, 500);
+        Page<SuccessionCandidate> candidatePage;
+        do {
+            candidatePage = successionCandidateRepository.findByTenantId(tenantId, candidatePageable);
+            for (SuccessionCandidate c : candidatePage.getContent()) {
+                if (c.getReadinessScore() != null && c.getReadinessScore().compareTo(BigDecimal.valueOf(80)) >= 0) immediate++;
+                else if (c.getReadinessScore() != null && c.getReadinessScore().compareTo(BigDecimal.valueOf(60)) >= 0) sixMonths++;
+                else if (c.getReadinessScore() != null && c.getReadinessScore().compareTo(BigDecimal.valueOf(40)) >= 0) oneYear++;
+                else notReady++;
+            }
+            totalCandidates += candidatePage.getNumberOfElements();
+            candidatePageable = candidatePageable.next();
+        } while (candidatePage.hasNext());
 
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("totalPlans", plans.size());
-        result.put("totalCandidates", candidates.size());
+        result.put("totalPlans", totalPlans);
+        result.put("totalCandidates", totalCandidates);
         result.put("immediate", immediate);
         result.put("sixMonths", sixMonths);
         result.put("oneYear", oneYear);
