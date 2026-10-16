@@ -11,5 +11,4 @@ pandas==2.2.3
 textblob==0.18.0
 aio-pika==9.5.3
 sse-starlette==2.2.1
-redis==5.2.1
 -e ../atlas_observability
