@@ -1047,6 +1047,8 @@ function proxyService(target, prefix, pathRewrite) {
     target,
     changeOrigin: true,
     pathRewrite,
+    timeout: 10000,
+    proxyTimeout: 10000,
     on: {
       proxyReq(proxyReq, req) {
         const correlationId = req.headers['x-correlation-id'] || crypto.randomUUID();
@@ -1059,6 +1061,12 @@ function proxyService(target, prefix, pathRewrite) {
         if (tenantId) {
           proxyReq.setHeader('x-tenant-id', tenantId);
           proxyReq.setHeader('X-Tenant-Id', tenantId);
+        }
+      },
+      error(err, req, res) {
+        console.error('Proxy error for', prefix, '->', target, ':', err.message);
+        if (!res.headersSent) {
+          res.status(502).json({ message: 'Bad gateway: upstream service unavailable' });
         }
       }
     }
