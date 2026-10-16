@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,6 +23,28 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/streadway/amqp"
 )
+
+func getDurationEnv(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+		log.Printf("Warning: invalid %s %q, using %s", key, v, fallback)
+	}
+	return fallback
+}
+
+func wsPingInterval() time.Duration {
+	return getDurationEnv("WS_PING_INTERVAL_SEC", 20*time.Second)
+}
+
+func wsWriteTimeout() time.Duration {
+	return getDurationEnv("WS_WRITE_TIMEOUT_SEC", 10*time.Second)
+}
+
+func wsReadTimeout() time.Duration {
+	return getDurationEnv("WS_READ_TIMEOUT_SEC", 30*time.Second)
+}
 
 var (
 	httpRequestCount = prometheus.NewCounterVec(
@@ -235,23 +258,27 @@ func internalAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (c *Client) writePump() {
-	ticker := time.NewTicker(20 * time.Second)
+	pingInterval := wsPingInterval()
+	writeTimeout := wsWriteTimeout()
+	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case message, ok := <-c.send:
-			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if !ok {
 				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				log.Printf("WebSocket write error for tenant %s: %v", c.tenantID, err)
 				return
 			}
 		case <-ticker.C:
-			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Printf("WebSocket ping error for tenant %s: %v", c.tenantID, err)
 				return
 			}
 		}
@@ -268,15 +295,23 @@ func (c *Client) readPump() {
 		_ = c.conn.Close()
 	}()
 
-	_ = c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	readTimeout := wsReadTimeout()
+	_ = c.conn.SetReadDeadline(time.Now().Add(readTimeout))
 	c.conn.SetPongHandler(func(string) error {
-		_ = c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		_ = c.conn.SetReadDeadline(time.Now().Add(readTimeout))
 		return nil
 	})
 
 	for {
 		_, _, err := c.conn.ReadMessage()
 		if err != nil {
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
+				log.Printf("WebSocket closed for tenant %s: %v", c.tenantID, err)
+			} else if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("WebSocket unexpected close for tenant %s: %v", c.tenantID, err)
+			} else {
+				log.Printf("WebSocket read error for tenant %s: %v", c.tenantID, err)
+			}
 			break
 		}
 	}
@@ -328,8 +363,11 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clientIP := r.RemoteAddr
-	if idx := strings.LastIndex(clientIP, ":"); idx != -1 {
-		clientIP = clientIP[:idx]
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		clientIP = host
+	} else {
+		log.Printf("Warning: could not split host/port from %q: %v", r.RemoteAddr, err)
+		clientIP = r.RemoteAddr
 	}
 
 	if !canAcceptConnection(clientIP) {
