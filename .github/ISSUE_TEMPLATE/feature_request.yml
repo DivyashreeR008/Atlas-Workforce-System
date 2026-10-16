@@ -37,3 +37,35 @@ body:
       options:
         - label: I understand only issues labeled `osn-sprint-26` by maintainers are in sprint scope
         - label: I will wait to be assigned before opening a PR
+
+  
+  - type: input
+    id: software_versions
+    attributes:
+      label: Software versions
+      description: Specify relevant service, framework, or dependency versions.
+      placeholder: "Node 20, Python 3.11, API v1"
+
+  - type: textarea
+    id: tenant_configuration
+    attributes:
+      label: Tenant setup and permissions
+      description: Describe the tenant configuration, roles, and feature flags relevant to this feature. Do not include secrets.
+      placeholder: "Tenant type, user roles, relevant feature flags"
+
+  - type: textarea
+    id: reproduction_environment
+    attributes:
+      label: Environment and reproduction scenario
+      description: Describe the current workflow, environment, and steps demonstrating why the feature is needed.
+      placeholder: |
+        Environment:
+        Current workflow:
+        Steps or example scenario:
+
+  - type: textarea
+    id: supporting_logs
+    attributes:
+      label: Supporting logs or evidence
+      description: Add sanitized logs or screenshots if useful. Remove personal information and credentials.
+      placeholder: "Relevant logs, screenshots, or examples (optional)"

@@ -214,3 +214,24 @@ Use the issue templates (`.github/ISSUE_TEMPLATE/`). Include: service + port, re
 - Maintainer Sprint checklist: [`docs/osn-sprint-26-maintainer-guide.md`](docs/osn-sprint-26-maintainer-guide.md).
 
 Thank you for contributing to Atlas. Happy sprint!
+
+
+## 11. Definition of Done (DoD)
+
+Before requesting review, contributors should ensure:
+
+- [ ] The change addresses the linked, assigned issue.
+- [ ] Relevant tests have been added or updated and pass.
+- [ ] Documentation has been updated where behavior or usage changes.
+- [ ] A changelog fragment or release note is included when the change affects users.
+- [ ] Security implications have been considered, including access control, sensitive data, and secrets.
+- [ ] Database, configuration, API, or deployment migration steps are documented where applicable.
+- [ ] Existing functionality remains working, with relevant CI checks passing.
+- [ ] Any unfinished requirement has a linked follow-up issue explaining the remaining work.
+
+For non-applicable items, mark N/A with a brief explanation in the pull request.
+
+For blocked items, explain why, link a follow-up issue, and obtain mentor or maintainer approval before merging.
+
+The DoD applies to bug fixes, features, documentation updates, tests, and maintenance changes. Reviewers should apply it proportionately to the scope of each change.
+  
