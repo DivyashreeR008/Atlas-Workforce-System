@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -27,7 +28,12 @@ func listAttendance(c *fiber.Ctx) error {
 	}
 	// Best-effort flag for records left open past the threshold (forgotten
 	// clock-out). Runs async so reads stay fast; skips already-flagged rows.
-	go flagStaleOpenRecords(tenantId)
+	// Bounded so a slow DB cannot pile up goroutines after the response.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		flagStaleOpenRecords(ctx, tenantId)
+	}()
 	var records []AttendanceRecord
 	q := db.Where("tenant_id = ?", tenantId).Order("date DESC, clock_in DESC")
 
@@ -209,8 +215,13 @@ func clockIn(c *fiber.Ctx) error {
 	// Publish clock-in event to live dashboard
 	publishEvent("attendance.clockin", tenantId, record)
 
-	// Detect anomalies after clock-in
-	go detectAnomaliesAfterClockIn(record)
+	// Detect anomalies after clock-in. Bounded so shutdown or a slow DB
+	// cannot leak this goroutine.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		detectAnomaliesAfterClockIn(ctx, record)
+	}()
 
 	return c.JSON(record)
 }
@@ -1320,14 +1331,24 @@ func logAnomaly(tenantID, employeeID string, recordID *uint, anomalyType, severi
 // flagStaleOpenRecords marks still-open records past the threshold so a
 // forgotten clock-out shows up in the anomaly list instead of silently
 // growing. Already-flagged rows are skipped.
-func flagStaleOpenRecords(tenantId string) {
+func flagStaleOpenRecords(ctx context.Context, tenantId string) {
 	if db == nil {
 		return
+	}
+	select {
+	case <-ctx.Done():
+		return
+	default:
 	}
 	cutoff := time.Now().UTC().Add(-MaxOpenRecordHours * time.Hour)
 	var stale []AttendanceRecord
 	db.Where("tenant_id = ? AND clock_out IS NULL AND clock_in < ?", tenantId, cutoff).Find(&stale)
 	for i := range stale {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		r := stale[i]
 		var existing int64
 		db.Model(&AnomalyLog{}).Where("tenant_id = ? AND record_id = ? AND anomaly_type = ? AND is_resolved = ?",
@@ -1390,9 +1411,14 @@ func verifyFace(tenantID, employeeID, faceImage string) bool {
 	return false
 }
 
-func detectAnomaliesAfterClockIn(record AttendanceRecord) {
+func detectAnomaliesAfterClockIn(ctx context.Context, record AttendanceRecord) {
 	if db == nil {
 		return
+	}
+	select {
+	case <-ctx.Done():
+		return
+	default:
 	}
 
 	tenantId := record.TenantID
@@ -1409,7 +1435,7 @@ func detectAnomaliesAfterClockIn(record AttendanceRecord) {
 			AnomalyType: "duplicate_clockin",
 			Severity:    "medium",
 			Description: fmt.Sprintf("Employee %s has %d clock-in records on %s", employeeId, count, record.Date),
-			DetectedAt:  time.Now(),
+			DetectedAt:  time.Now().UTC(),
 		})
 	}
 
@@ -1437,7 +1463,7 @@ func detectAnomaliesAfterClockIn(record AttendanceRecord) {
 					AnomalyType: "location_anomaly",
 					Severity:    "high",
 					Description: fmt.Sprintf("Employee %s clocked in %.0fm from usual location", employeeId, dist),
-					DetectedAt:  time.Now(),
+					DetectedAt:  time.Now().UTC(),
 				})
 			}
 		}
@@ -1455,7 +1481,7 @@ func detectAnomaliesAfterClockIn(record AttendanceRecord) {
 			AnomalyType: "frequent_overtime",
 			Severity:    "low",
 			Description: fmt.Sprintf("Employee %s has worked overtime on %d of last 10 days", employeeId, len(recentOTRecords)),
-			DetectedAt:  time.Now(),
+			DetectedAt:  time.Now().UTC(),
 		})
 	}
 }
