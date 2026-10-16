@@ -196,8 +196,66 @@ func (h *EnrollmentHandler) Complete(c *fiber.Ctx) error {
 		req.Score = nil
 	}
 
+	if enrollment.Status == "COMPLETED" {
+		return c.Status(http.StatusConflict).JSON(fiber.Map{
+			"error": "Enrollment is already completed",
+		})
+	}
+	if enrollment.Status == "DROPPED" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "Dropped enrollments cannot be completed",
+		})
+	}
+
+	var course models.Course
+	if err := h.DB.Where("id = ? AND tenant_id = ?", enrollment.CourseID, tenantID).First(&course).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{
+				"error": "Course not found",
+			})
+		}
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to fetch course",
+		})
+	}
+	if enrollment.ProgressPct < course.CompletionThresholdPct {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": fmt.Sprintf("Progress %.2f is below completion threshold %.2f", enrollment.ProgressPct, course.CompletionThresholdPct),
+		})
+	}
+
+	var assessments []models.Assessment
+	if err := h.DB.Where("course_id = ? AND tenant_id = ?", enrollment.CourseID, tenantID).Find(&assessments).Error; err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to fetch assessments",
+		})
+	}
+	effectiveScore := enrollment.Score
+	if req.Score != nil {
+		effectiveScore = req.Score
+	}
+	if len(assessments) > 0 {
+		if effectiveScore == nil {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+				"error": "Score is required to complete an assessed course",
+			})
+		}
+		for _, a := range assessments {
+			if *effectiveScore < a.PassingScore {
+				return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+					"error": fmt.Sprintf("Score %.2f is below passing score %.2f", *effectiveScore, a.PassingScore),
+				})
+			}
+		}
+	}
+
 	now := time.Now()
-	certID := fmt.Sprintf("CERT-%s-%s", enrollment.EmployeeID, uuid.New().String()[:8])
+	certID := ""
+	if enrollment.CertificateID != nil && *enrollment.CertificateID != "" {
+		certID = *enrollment.CertificateID
+	} else {
+		certID = fmt.Sprintf("CERT-%s-%s", enrollment.EmployeeID, uuid.New().String()[:8])
+	}
 	updates := map[string]interface{}{
 		"status":         "COMPLETED",
 		"progress_pct":   100.00,
