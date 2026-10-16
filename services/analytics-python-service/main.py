@@ -283,6 +283,9 @@ def get_performance_prediction():
         "predictions_ready": True,
         "top_performer_id": int(top_performer["employee_id"]),
         "score": float(top_performer["performance_score"]),
+        "provisional": True,
+        "source": "mock-heuristic",
+        "disclaimer": "Provisional mock output for UI development; not a production prediction.",
     }
 
 
