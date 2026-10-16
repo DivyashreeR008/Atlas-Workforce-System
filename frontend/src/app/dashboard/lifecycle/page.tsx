@@ -34,6 +34,9 @@ import type {
   InternalJobPosting,
   PromotionRequest,
   TransferRequest,
+  CareerFramework,
+  CareerPath,
+  CareerRoadmap,
 } from "@/types";
 
 const tabs = [
@@ -88,6 +91,21 @@ export default function LifecyclePage() {
   const { data: transfers } = useQuery({
     queryKey: ["lifecycle-transfers"],
     queryFn: () => lifecycleApi.mobility.transfers.list({ page_size: 50 }).then((r) => r.data),
+  });
+
+  const { data: careerFrameworks, isLoading: frameworksLoading } = useQuery({
+    queryKey: ["lifecycle-career-frameworks"],
+    queryFn: () => lifecycleApi.career.frameworks.list().then((r) => r.data),
+  });
+
+  const { data: careerPaths, isLoading: pathsLoading } = useQuery({
+    queryKey: ["lifecycle-career-paths"],
+    queryFn: () => lifecycleApi.career.paths.list().then((r) => r.data),
+  });
+
+  const { data: careerRoadmaps, isLoading: roadmapsLoading } = useQuery({
+    queryKey: ["lifecycle-career-roadmaps"],
+    queryFn: () => lifecycleApi.career.roadmaps.list().then((r) => r.data),
   });
 
   const deleteTemplate = useMutation({
@@ -456,13 +474,118 @@ export default function LifecyclePage() {
       {activeTab === "promotions" && <MobilityPromotionsView />}
 
       {activeTab === "career" && (
-        <div className="space-y-4">
-          <p className="text-sm text-gray-500">
-            Career frameworks, job families, career paths, and roadmaps are available via the service API.
-            Navigate to <strong className="text-white">Employees → Profile</strong> for individual career roadmaps.
-          </p>
-        </div>
+        <CareerProgressionPanel
+          frameworks={careerFrameworks}
+          paths={careerPaths}
+          roadmaps={careerRoadmaps}
+          loading={frameworksLoading || pathsLoading || roadmapsLoading}
+        />
       )}
+    </div>
+  );
+}
+
+function toCareerList<T>(payload: { items?: T[] } | T[] | undefined | null): T[] {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  return payload.items ?? [];
+}
+
+function CareerProgressionPanel({
+  frameworks,
+  paths,
+  roadmaps,
+  loading,
+}: {
+  frameworks: { items?: CareerFramework[] } | CareerFramework[] | undefined;
+  paths: { items?: CareerPath[] } | CareerPath[] | undefined;
+  roadmaps: { items?: CareerRoadmap[] } | CareerRoadmap[] | undefined;
+  loading: boolean;
+}) {
+  if (loading) {
+    return (
+      <div className="space-y-3" aria-label="Loading career progression">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="rounded-xl border border-white/10 bg-black/40 p-4 backdrop-blur-md">
+            <div className="h-4 w-1/3 animate-pulse rounded bg-white/10" />
+            <div className="mt-2 h-2 w-full animate-pulse rounded bg-white/10" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  const frameworkList = toCareerList<CareerFramework>(frameworks);
+  const pathList = toCareerList<CareerPath>(paths);
+  const roadmapList = toCareerList<CareerRoadmap>(roadmaps);
+  const activeRoadmaps = roadmapList.filter((r) => r.is_active !== false);
+
+  if (frameworkList.length === 0 && pathList.length === 0 && roadmapList.length === 0) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-black/40 p-8 text-center backdrop-blur-md">
+        <Map className="mx-auto h-6 w-6 text-gray-500" />
+        <p className="mt-2 text-sm font-medium text-white">No career progression data yet</p>
+        <p className="mt-1 text-sm text-gray-500">
+          Frameworks, paths, and roadmaps will appear here once they are created.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 sm:grid-cols-3">
+        <div className="rounded-xl border border-white/10 bg-black/40 p-4 backdrop-blur-md">
+          <p className="text-xs text-gray-400">Frameworks</p>
+          <p className="text-2xl font-bold text-white">{frameworkList.length}</p>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-black/40 p-4 backdrop-blur-md">
+          <p className="text-xs text-gray-400">Career paths</p>
+          <p className="text-2xl font-bold text-white">{pathList.length}</p>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-black/40 p-4 backdrop-blur-md">
+          <p className="text-xs text-gray-400">Active roadmaps</p>
+          <p className="text-2xl font-bold text-white">{activeRoadmaps.length}</p>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-white/10 bg-black/40 backdrop-blur-md">
+        <h3 className="border-b border-white/10 p-3 text-sm font-medium text-gray-300">
+          Progression
+        </h3>
+        {activeRoadmaps.length === 0 ? (
+          <p className="p-6 text-center text-sm text-gray-500">No active roadmaps.</p>
+        ) : (
+          <ul className="divide-y divide-white/5">
+            {activeRoadmaps.slice(0, 6).map((r) => {
+              const progress = Math.max(0, Math.min(100, r.progress_percentage ?? 0));
+              return (
+                <li key={r.id} className="p-3">
+                  <div className="flex items-center justify-between gap-2 text-sm">
+                    <span className="font-medium text-white">{r.employee_id}</span>
+                    <span className="text-xs text-gray-400">
+                      {r.target_role || r.target_level || `Step ${r.current_step ?? 0}`}
+                    </span>
+                  </div>
+                  <div
+                    className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"
+                    role="progressbar"
+                    aria-valuenow={progress}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-label={`Progress for ${r.employee_id}`}
+                  >
+                    <div className="h-full rounded-full bg-emerald-500" style={{ width: `${progress}%` }} />
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500">
+                    {progress}% &middot; {(r.milestones ?? []).length} milestones
+                  </p>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
