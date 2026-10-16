@@ -105,13 +105,13 @@ api.interceptors.response.use(
   }
 );
 
-function validateResponse<T>(schema: z.ZodType<T>, data: unknown): T {
+function validateResponse<T>(schema: z.ZodType<T>, data: unknown, resource = "API"): T {
   const result = schema.safeParse(data);
   if (!result.success) {
-    console.error("API response validation failed:", result.error.issues);
-    throw new Error("Invalid API response format");
+    console.error(`${resource} response validation failed:`, result.error.issues);
+    throw new Error(`Invalid ${resource} response format`);
   }
-  return result.data;
+  return data as T;
 }
 
 const loginResponseSchema = z.object({
@@ -176,22 +176,79 @@ export const authApi = {
     api.post("/auth/password/reset", { token, password }),
 };
 
+const employeeSchema = z.looseObject({
+  _id: z.string().optional(),
+  id: z.union([z.string(), z.number()]).optional(),
+  name: z.string().min(1),
+  email: z.string().email(),
+  department: z.string().min(1),
+  position: z.string().min(1),
+  tenant_id: z.string().optional(),
+});
+
+const paginatedEmployeesSchema = z.looseObject({
+  items: z.array(employeeSchema),
+  total: z.number(),
+  page: z.number().optional(),
+  page_size: z.number().optional(),
+  pageSize: z.number().optional(),
+  total_pages: z.number().optional(),
+  totalPages: z.number().optional(),
+});
+
+const employeeListSchema = z.union([
+  paginatedEmployeesSchema,
+  z.array(employeeSchema),
+]);
+
 export const employeeApi = {
-  list: (params?: { page?: number; pageSize?: number; search?: string }) =>
-    api.get("/employee/employees", {
+  list: async (params?: { page?: number; pageSize?: number; search?: string }) => {
+    const res = await api.get("/employee/employees", {
       params: {
         page: params?.page,
         page_size: params?.pageSize,
         search: params?.search,
       },
-    }),
-  get: (email: string) => api.get(`/employee/employees/${email}`),
-  create: (employee: object) => api.post("/employee/employees", employee),
-  update: (email: string, employee: object) =>
-    api.put(`/employee/employees/${email}`, employee),
+    });
+    res.data = validateResponse(employeeListSchema, res.data, "employees");
+    return res;
+  },
+  get: async (email: string) => {
+    const res = await api.get(`/employee/employees/${email}`);
+    res.data = validateResponse(employeeSchema, res.data, "employee");
+    return res;
+  },
+  create: async (employee: object) => {
+    const res = await api.post("/employee/employees", employee);
+    res.data = validateResponse(employeeSchema, res.data, "employee");
+    return res;
+  },
+  update: async (email: string, employee: object) => {
+    const res = await api.put(`/employee/employees/${email}`, employee);
+    res.data = validateResponse(employeeSchema, res.data, "employee");
+    return res;
+  },
   delete: (email: string) =>
     api.delete(`/employee/employees/${email}`),
 };
+
+const moneyField = z.union([z.number(), z.string()]).optional();
+
+const payrollRecordSchema = z.looseObject({
+  id: z.union([z.number(), z.string()]).optional(),
+  employeeId: z.string().optional(),
+  tenantId: z.string().optional(),
+  period: z.string().optional(),
+  baseSalary: moneyField,
+  allowances: moneyField,
+  deductions: moneyField,
+  tax: moneyField,
+  netSalary: moneyField,
+  status: z.string().optional(),
+  processedDate: z.string().optional(),
+});
+
+const payrollListSchema = z.array(payrollRecordSchema);
 
 export const analyticsApi = {
   department: () => api.get("/analytics/department"),
@@ -216,16 +273,27 @@ export const leaveApi = {
 };
 
 export const payrollApi = {
-  list: () => api.get("/payroll"),
-  getByEmployee: (employeeId: string) =>
-    api.get(`/payroll/employee/${employeeId}`),
-  run: (data: {
+  list: async () => {
+    const res = await api.get("/payroll");
+    res.data = validateResponse(payrollListSchema, res.data, "payroll");
+    return res;
+  },
+  getByEmployee: async (employeeId: string) => {
+    const res = await api.get(`/payroll/employee/${employeeId}`);
+    res.data = validateResponse(payrollListSchema, res.data, "payroll");
+    return res;
+  },
+  run: async (data: {
     employeeId: string;
     period: string;
     baseSalary: number;
     allowances?: number;
     deductions?: number;
-  }) => api.post("/payroll/run", data),
+  }) => {
+    const res = await api.post("/payroll/run", data);
+    res.data = validateResponse(payrollRecordSchema, res.data, "payroll");
+    return res;
+  },
 
   // Module 5 - Payroll Enterprise
   enterprise: {
