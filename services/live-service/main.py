@@ -25,9 +25,34 @@ from atlas_observability import (
 
 load_dotenv()
 
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://atlas_rabbit:changeme_rabbit_pass@rabbitmq:5672/")
 INTERNAL_JWT_SECRET = os.environ.get("INTERNAL_JWT_SECRET")
+
+if not INTERNAL_JWT_SECRET:
+    logging.getLogger("live-service").error(
+        "live.auth_secret_missing: INTERNAL_JWT_SECRET is not set; "
+        "internal auth will fail closed with 500/401"
+    )
+
+
+def _cors_config():
+    raw = (CORS_ORIGINS or "").strip()
+    if not raw:
+        raise SystemExit("Missing CORS_ORIGINS: set explicit origins (e.g. http://localhost:3000)")
+    if raw == "*" or "*" in [o.strip() for o in raw.split(",")]:
+        logging.getLogger("live-service").warning(
+            "live.cors_wildcard: wildcard origin requested; "
+            "credentials disabled and failing closed to explicit list"
+        )
+        return ["*"], False
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    if not origins:
+        raise SystemExit("Missing CORS_ORIGINS: set explicit origins (e.g. http://localhost:3000)")
+    return origins, True
+
+
+_CORS_ORIGINS, _CORS_ALLOW_CREDENTIALS = _cors_config()
 
 # ── Eviction Configuration ──────────────────────────────────────────────────
 
@@ -394,7 +419,7 @@ async def internal_auth_middleware(request: Request, call_next):
 
     return await call_next(request)
 
-app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS.split(",") if CORS_ORIGINS != "*" else ["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_credentials=_CORS_ALLOW_CREDENTIALS, allow_methods=["*"], allow_headers=["*"])
 
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(AtlasLoggingMiddleware)
