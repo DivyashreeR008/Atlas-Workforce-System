@@ -216,7 +216,7 @@ func (h *CertificationHandler) Expiring(c *fiber.Ctx) error {
 		days = 30
 	}
 
-	cutoff := time.Now().AddDate(0, 0, days)
+	cutoff := time.Now().UTC().AddDate(0, 0, days)
 
 	var certifications []models.Certification
 	if err := h.DB.Where("tenant_id = ? AND status = ? AND expiry_date IS NOT NULL AND expiry_date <= ?",
