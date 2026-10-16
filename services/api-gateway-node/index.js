@@ -1335,14 +1335,41 @@ if (require.main === module) {
       }
       const proxyReq = http.request(target.toString(), { method: 'GET', headers: req.headers });
       proxyReq.on('upgrade', (proxyRes, proxySocket) => {
+        const acceptKey = proxyRes.headers['sec-websocket-accept'];
+        if (!acceptKey) {
+          console.error('WebSocket upgrade rejected: missing sec-websocket-accept from upstream', { pathname });
+          try {
+            socket.write('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+          } catch {}
+          socket.destroy();
+          try { proxySocket.destroy(); } catch {}
+          return;
+        }
         socket.write('HTTP/1.1 101 Switching Protocols\r\n' +
           'Upgrade: websocket\r\n' +
           'Connection: Upgrade\r\n' +
-          'Sec-WebSocket-Accept: ' + proxyRes.headers['sec-websocket-accept'] + '\r\n' +
+          'Sec-WebSocket-Accept: ' + acceptKey + '\r\n' +
+          'X-Content-Type-Options: nosniff\r\n' +
+          'X-Frame-Options: DENY\r\n' +
+          'Referrer-Policy: no-referrer\r\n' +
           '\r\n');
+        proxySocket.on('error', (err) => {
+          console.error('WebSocket proxy socket error:', err.message, { pathname });
+        });
+        socket.on('error', (err) => {
+          console.error('WebSocket client socket error:', err.message, { pathname });
+        });
         socket.pipe(proxySocket).pipe(socket);
       });
-      proxyReq.on('error', () => socket.destroy());
+      proxyReq.on('error', (err) => {
+        console.error('WebSocket proxy request error:', err.message, { pathname, target: target.toString() });
+        try {
+          if (!socket.destroyed) {
+            socket.write('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+          }
+        } catch {}
+        socket.destroy();
+      });
       proxyReq.end();
     } else {
       socket.destroy();
