@@ -655,13 +655,19 @@ func validateQRToken(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
+	if req.Token == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "token is required"})
+	}
+	tenantId := getTenant(c)
 	if db == nil {
 		return c.JSON(fiber.Map{"valid": true, "token": req.Token})
 	}
 	var qr QRAttendance
-	err := db.Where("token = ? AND is_used = ? AND expires_at > ?", req.Token, false, time.Now()).First(&qr).Error
-	if err != nil {
-		return c.JSON(fiber.Map{"valid": false, "error": "Invalid or expired QR token"})
+	if err := db.Where("token = ? AND tenant_id = ?", req.Token, tenantId).First(&qr).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"valid": false, "error": "QR token not found"})
+	}
+	if qr.IsUsed || time.Now().UTC().After(qr.ExpiresAt) {
+		return c.Status(401).JSON(fiber.Map{"valid": false, "error": "QR token expired or already used"})
 	}
 	return c.JSON(fiber.Map{"valid": true, "token": qr.Token, "geoFenceId": qr.GeoFenceID})
 }
@@ -673,8 +679,21 @@ func markQRUsed(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
+	if req.Token == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "token is required"})
+	}
+	tenantId := getTenant(c)
 	if db != nil {
-		db.Model(&QRAttendance{}).Where("token = ?", req.Token).Update("is_used", true)
+		res := db.Model(&QRAttendance{}).
+			Where("token = ? AND tenant_id = ? AND is_used = ? AND expires_at > ?",
+				req.Token, tenantId, false, time.Now().UTC()).
+			Update("is_used", true)
+		if res.Error != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to redeem QR token"})
+		}
+		if res.RowsAffected == 0 {
+			return c.Status(404).JSON(fiber.Map{"error": "QR token not found, expired, or already used"})
+		}
 	}
 	return c.JSON(fiber.Map{"message": "QR token marked as used"})
 }
