@@ -390,7 +390,7 @@ redisClient.on('error', (err) => console.log('Auth Redis Client Error', err));
   try {
     await redisClient.connect();
   } catch (err) {
-    console.error('Auth Redis connection failed, nonce check disabled:', err);
+    safeLog(console.error, 'Auth Redis connection failed, nonce check disabled:', err);
   }
 })();
 
@@ -852,7 +852,7 @@ setInterval(async () => {
     await pool.query("DELETE FROM failed_attempts WHERE locked_until IS NULL AND updated_at < NOW() - INTERVAL '1 hour'");
     await pool.query('DELETE FROM failed_attempts WHERE locked_until IS NOT NULL AND locked_until < NOW()');
   } catch (err) {
-    console.error('Failed to sweep stale failed_attempts rows:', err.message);
+    safeLog(console.error, 'Failed to sweep stale failed_attempts rows:', err);
   }
 }, 10 * 60 * 1000);
 
@@ -877,7 +877,7 @@ async function sendAuditEvent(eventType, userId, email, details = {}) {
     } catch (err) {
       if (attempt === delaysMs.length - 1) {
         try { auditDeliveryFailuresTotal.labels({ event_type: eventType }).inc(); } catch {}
-        console.error(`Audit log failed for ${eventType}:`, err.message);
+        safeLog(console.error, `Audit log failed for ${eventType}:`, err);
       }
     }
   }
@@ -897,7 +897,7 @@ async function sendEmail({ to, subject, text }) {
     console.log(`[email] to=${to} subject=${subject} body=${text}`);
     return true;
   } catch (err) {
-    console.error('Email send failed:', err.message);
+    safeLog(console.error, 'Email send failed:', err);
     return false;
   }
 }
@@ -1158,7 +1158,7 @@ async function initDB() {
       }
     }
   } catch (e) {
-    console.error('OAuth provider secret migration failed:', e.message);
+    safeLog(console.error, 'OAuth provider secret migration failed:', e);
   }
 
   await pool.query(`
@@ -1194,7 +1194,7 @@ async function initDB() {
 }
 
 initDB().catch((err) => {
-  console.error('Database initialization failed:', err);
+  safeLog(console.error, 'Database initialization failed:', err);
 });
 
 app.post('/register', createUserRateLimiter('register', 10, 15 * 60 * 1000, { keyByEmail: true }), async (req, res) => {
@@ -1248,7 +1248,7 @@ app.post('/register', createUserRateLimiter('register', 10, 15 * 60 * 1000, { ke
       user: sanitizeUser(result.rows[0]),
     });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     if (error.code === '23505') {
       return res.status(409).json({ message: 'User already exists' });
     }
@@ -1329,7 +1329,7 @@ app.post('/login', createUserRateLimiter('login', 20, 15 * 60 * 1000, { keyByEma
         try {
           await redisClient.set(`mfa_challenge:${jti}`, String(user.id), { EX: 300, NX: true });
         } catch (e) {
-          console.error('Failed to store MFA challenge jti', e.message);
+          safeLog(console.error, 'Failed to store MFA challenge jti', e);
         }
       }
       await sendAuditEvent('auth.login_mfa_required', user.id, email, {
@@ -1365,7 +1365,7 @@ app.post('/login', createUserRateLimiter('login', 20, 15 * 60 * 1000, { keyByEma
       mfa_required: false
     });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Server error during login' });
   }
 });
@@ -1432,7 +1432,7 @@ app.post('/refresh', createUserRateLimiter('refresh', 100), requireCsrfDoubleSub
       user: sanitizeUser(row),
     });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Server error during token refresh' });
   }
 });
@@ -1484,7 +1484,7 @@ app.post('/logout', createUserRateLimiter('logout', 100), requireCsrfDoubleSubmi
 
     res.status(200).json({ message: 'Logged out successfully' });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Server error during logout' });
   }
 });
@@ -1521,7 +1521,7 @@ app.post('/mfa/setup', requireRole(), createUserRateLimiter('mfa_setup', 5), asy
 
     res.json(response);
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'MFA setup failed' });
   }
 });
@@ -1554,7 +1554,7 @@ app.post('/mfa/rotate-backup-codes', requireRole(), createUserRateLimiter('mfa_v
 
     res.json({ message: 'Backup codes rotated successfully. Save these codes as they will not be shown again.', backup_codes: newCodes });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to rotate backup codes' });
   }
 });
@@ -1582,7 +1582,7 @@ app.post('/mfa/verify', requireRole(), createUserRateLimiter('mfa_verify', 10), 
 
     res.json({ message: 'MFA enabled successfully' });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'MFA verification failed' });
   }
 });
@@ -1725,7 +1725,7 @@ app.post('/mfa/validate', createUserRateLimiter('mfa_validate', 10), async (req,
       return res.json({ message: 'Token validated', validated: true, mfa_token: mfaToken });
     }
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'MFA validation failed' });
   }
 });
@@ -1753,7 +1753,7 @@ app.post('/mfa/disable', requireRole(), async (req, res) => {
 
     res.json({ message: 'MFA disabled successfully' });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to disable MFA' });
   }
 });
@@ -1768,7 +1768,7 @@ app.get('/mfa/status', requireRole(), async (req, res) => {
       mfa_setup: !!result.rows[0]
     });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to get MFA status' });
   }
 });
@@ -1812,7 +1812,7 @@ app.post('/devices/register', requireRole(), createUserRateLimiter('device_regis
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Device registration failed' });
   }
 });
@@ -1828,7 +1828,7 @@ app.get('/devices', requireRole(), async (req, res) => {
     );
     res.json(result.rows);
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to list devices' });
   }
 });
@@ -1852,7 +1852,7 @@ app.put('/devices/:id/trust', requireRole(), async (req, res) => {
 
     res.json(result.rows[0]);
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to update device trust' });
   }
 });
@@ -1876,7 +1876,7 @@ app.delete('/devices/:id', requireRole(), async (req, res) => {
 
     res.json({ message: 'Device removed' });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to remove device' });
   }
 });
@@ -1926,7 +1926,7 @@ app.post('/devices/verify', requireRole(), createUserRateLimiter('device_verify'
       }
     });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Device verification failed' });
   }
 });
@@ -1978,7 +1978,7 @@ app.get('/scim/v2/Users', requireScimAuth, createUserRateLimiter('scim_list', 30
       Resources: result.rows.map(user => formatScimUser(user, baseUrl))
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     return sendScimError(res, 500, 'Internal error');
   }
 });
@@ -2044,7 +2044,7 @@ app.post('/scim/v2/Users', requireScimAuth, createUserRateLimiter('scim_create',
 
     res.status(201).json(scimUser);
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     if (err.code === '23505') {
       return sendScimError(res, 409, 'User already exists');
     }
@@ -2066,7 +2066,7 @@ app.get('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_get',
     const baseUrl = `${req.protocol}://${req.get('host')}`;
     res.json(formatScimUser(result.rows[0], baseUrl));
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     return sendScimError(res, 500, 'Internal error');
   }
 });
@@ -2120,7 +2120,7 @@ app.put('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_updat
     const baseUrl = `${req.protocol}://${req.get('host')}`;
     res.json(formatScimUser(result.rows[0], baseUrl));
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     if (err.code === '23505') {
       return sendScimError(res, 409, 'User already exists');
     }
@@ -2219,7 +2219,7 @@ app.patch('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_pat
     const baseUrl = `${req.protocol}://${req.get('host')}`;
     res.json(formatScimUser(result.rows[0], baseUrl));
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     if (err.code === '23505') {
       return sendScimError(res, 409, 'User already exists');
     }
@@ -2250,7 +2250,7 @@ app.delete('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_de
 
     res.status(204).send();
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     return sendScimError(res, 500, 'Internal error');
   }
 });
@@ -2433,7 +2433,7 @@ app.post('/saml/acs', createUserRateLimiter('saml_acs', 20), async (req, res) =>
       user: sanitizeUser(userData)
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'SAML ACS processing error' });
   }
 });
@@ -2474,7 +2474,7 @@ app.post('/saml/login', createUserRateLimiter('saml_login', 20), async (req, res
       acs_url: acsUrl
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'SAML login initiation failed' });
   }
 });
@@ -2507,7 +2507,7 @@ app.post('/auth/passwordless/request', createUserRateLimiter('passwordless_reque
       message: 'Check your email for the login link'
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to generate magic link' });
   }
 });
@@ -2551,7 +2551,7 @@ app.post('/auth/passwordless/verify', createUserRateLimiter('passwordless_verify
       user: sanitizeUser(user)
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Magic link verification failed' });
   }
 });
@@ -2598,7 +2598,7 @@ app.post('/auth/password/reset-request', createUserRateLimiter('password_reset_r
     }
     return res.json(response);
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to process reset request' });
   }
 });
@@ -2648,7 +2648,7 @@ app.post('/auth/password/reset', createUserRateLimiter('password_reset', 10), as
 
     return res.json({ message: 'Password has been reset successfully' });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Password reset failed' });
   }
 });
@@ -2688,7 +2688,7 @@ app.post('/auth/admin/password-reset', requireRole('admin'), createUserRateLimit
 
     return res.json({ message: 'Password reset successfully', user: sanitizeUser({ ...user }) });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Admin password reset failed' });
   }
 });
@@ -2704,7 +2704,7 @@ app.get('/sessions', requireRole(), async (req, res) => {
     );
     res.json(result.rows);
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to list sessions' });
   }
 });
@@ -2749,7 +2749,7 @@ app.delete('/sessions/:id', requireRole(), async (req, res) => {
     }
     res.json({ message: 'Session revoked' });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to revoke session' });
   }
 });
@@ -2803,7 +2803,7 @@ app.delete('/sessions', requireRole(), async (req, res) => {
 
     res.json({ message: 'Other sessions revoked' });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to revoke sessions' });
   }
 });
@@ -2909,7 +2909,7 @@ app.post('/webauthn/register/begin', requireRole(), async (req, res) => {
       creationOptions: options,
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'WebAuthn registration initiation failed' });
   }
 });
@@ -2969,7 +2969,7 @@ app.post('/webauthn/register/complete', requireRole(), async (req, res) => {
 
     res.json({ status: 'ok', message: 'Hardware security key registered' });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'WebAuthn registration completion failed' });
   }
 });
@@ -3013,7 +3013,7 @@ app.post('/webauthn/authenticate/begin', createUserRateLimiter('webauthn_auth', 
       userId,
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'WebAuthn authentication initiation failed' });
   }
 });
@@ -3090,7 +3090,7 @@ app.post('/webauthn/authenticate/complete', createUserRateLimiter('webauthn_auth
       user: sanitizeUser(user),
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'WebAuthn authentication completion failed' });
   }
 });
@@ -3109,7 +3109,7 @@ app.get('/webauthn/credentials', requireRole(), createUserRateLimiter('webauthn_
       credential_id: r.credential_id.substring(0, 20) + '...',
     })));
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to list credentials' });
   }
 });
@@ -3127,7 +3127,7 @@ app.delete('/webauthn/credentials/:id', requireRole(), createUserRateLimiter('we
     await sendAuditEvent('auth.webauthn_removed', userId, req.user.email);
     res.json({ message: 'Security key removed' });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to remove credential' });
   }
 });
@@ -3145,7 +3145,7 @@ app.get('/oauth/providers', requireRole('admin'), createUserRateLimiter('oauth_p
     );
     res.json(result.rows);
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to list OAuth providers' });
   }
 });
@@ -3169,7 +3169,7 @@ app.post('/oauth/providers', requireRole('admin'), createUserRateLimiter('oauth_
     if (err.code === '23505') {
       return res.status(409).json({ message: 'Provider already configured for this tenant' });
     }
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to create OAuth provider' });
   }
 });
@@ -3252,7 +3252,7 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
       provider,
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'OAuth login initiation failed' });
   }
 });
@@ -3444,7 +3444,7 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
     }
   } catch (err) {
     if (res.headersSent) return;
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'OAuth callback processing failed' });
   }
 });
@@ -3460,7 +3460,7 @@ app.get('/oauth/links', requireRole(), createUserRateLimiter('oauth_links_list',
     );
     res.json(result.rows);
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to list OAuth links' });
   }
 });
@@ -3477,7 +3477,7 @@ app.delete('/oauth/links/:provider', requireRole(), createUserRateLimiter('oauth
     }
     res.json({ message: 'OAuth link disconnected' });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to remove OAuth link' });
   }
 });
