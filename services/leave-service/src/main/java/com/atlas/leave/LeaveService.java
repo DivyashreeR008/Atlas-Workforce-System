@@ -3,6 +3,8 @@ package com.atlas.leave;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -23,21 +25,36 @@ public class LeaveService {
         this.rabbitTemplate = rabbitTemplate;
     }
 
-    public List<LeaveRecord> getAllLeaveRequests(String tenantId) {
-        return repository.findByTenantId(tenantId);
+    public Page<LeaveRecord> getAllLeaveRequests(String tenantId, Pageable pageable) {
+        return repository.findByTenantId(tenantId, pageable);
     }
 
-    public List<LeaveRecord> getLeaveByEmployeeId(String tenantId, String employeeId) {
-        return repository.findByTenantIdAndEmployeeId(tenantId, employeeId);
+    public Page<LeaveRecord> getLeaveByEmployeeId(String tenantId, String employeeId, Pageable pageable) {
+        return repository.findByTenantIdAndEmployeeId(tenantId, employeeId, pageable);
     }
 
     @Transactional
     public LeaveRecord requestLeave(String tenantId, String employeeId, LocalDate startDate, LocalDate endDate, String leaveType, String reason) {
+        if (tenantId == null || tenantId.isBlank()) {
+            throw new IllegalArgumentException("tenantId is required");
+        }
+        if (employeeId == null || employeeId.isBlank()) {
+            throw new IllegalArgumentException("employeeId is required");
+        }
+        if (startDate == null || endDate == null) {
+            throw new IllegalArgumentException("startDate and endDate are required");
+        }
+        if (leaveType == null || leaveType.isBlank()) {
+            throw new IllegalArgumentException("leaveType is required");
+        }
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("reason is required");
+        }
         if (startDate.isAfter(endDate)) {
             throw new IllegalArgumentException("Start date must be before or equal to end date");
         }
 
-        List<LeaveRecord> overlapping = repository.findOverlapping(employeeId, startDate, endDate, null);
+        List<LeaveRecord> overlapping = repository.findOverlapping(tenantId, employeeId, startDate, endDate, null);
         if (!overlapping.isEmpty()) {
             throw new IllegalArgumentException("Leave request overlaps with an existing leave request");
         }
