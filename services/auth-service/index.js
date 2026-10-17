@@ -66,10 +66,19 @@ app.use(helmet());
 app.use(cookieParser());
 app.use(express.json({ limit: '1mb' }));
 
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
+const allowedOriginsEnv = process.env.ALLOWED_ORIGINS;
+if (!allowedOriginsEnv || !allowedOriginsEnv.trim()) {
+  console.error('FATAL: ALLOWED_ORIGINS environment variable is required (comma-separated, no localhost fallback)');
+  process.exit(1);
+}
+const allowedOrigins = allowedOriginsEnv
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
+if (NODE_ENV === 'production' && allowedOrigins.some((o) => o.includes('localhost') || o.startsWith('http://'))) {
+  console.error('FATAL: refusing to start with insecure ALLOWED_ORIGINS in production (localhost/HTTP); use explicit HTTPS origins');
+  process.exit(1);
+}
 
 app.use(
   cors({
@@ -124,11 +133,15 @@ const ACCESS_EXPIRY = '15m';
 const REFRESH_EXPIRY_DAYS = 7;
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
-const AUDIT_SERVICE_URL = process.env.AUDIT_SERVICE_URL || 'http://audit-compliance-service:8011';
+const AUDIT_SERVICE_URL = process.env.AUDIT_SERVICE_URL;
+if (!AUDIT_SERVICE_URL) {
+  console.error('FATAL: AUDIT_SERVICE_URL environment variable is required');
+  process.exit(1);
+}
 const INTERNAL_JWT_SECRET = process.env.INTERNAL_JWT_SECRET;
 const AUDIT_WRITER_AUDIENCE = 'audit-writer';
-const SAML_IDP_SSO_URL = process.env.SAML_IDP_SSO_URL || 'https://idp.example.com/sso';
-const SAML_IDP_ENTITY_ID = process.env.SAML_IDP_ENTITY_ID || 'https://idp.example.com/metadata';
+const SAML_IDP_SSO_URL = process.env.SAML_IDP_SSO_URL || '';
+const SAML_IDP_ENTITY_ID = process.env.SAML_IDP_ENTITY_ID || '';
 const SAML_IDP_CERT = (process.env.SAML_IDP_CERT || '').replace(/\\n/g, '\n');
 const SCIM_API_KEY = process.env.SCIM_API_KEY;
 const SCIM_ALLOWED_ROLES = ['employee'];
@@ -210,6 +223,12 @@ function isAllowedScimRole(role) {
   return typeof role === 'string' && SCIM_ALLOWED_ROLES.includes(role);
 }
 
+function isValidScimUserId(id) {
+  const s = String(id || '');
+  if (/^[0-9]+$/.test(s)) return true;
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(s);
+}
+
 if (!JWT_SECRET) {
   console.error('FATAL: JWT_SECRET environment variable is required');
   process.exit(1);
@@ -234,6 +253,36 @@ if (!SCIM_API_KEY) {
 // The guard must not be conditional on NODE_ENV; otherwise docker-compose
 // defaults make it inert and every `docker compose up` would run with
 // forgeable secrets with zero warnings.
+const KNOWN_DEFAULT_SECRETS = new Set([
+  'change-me-to-a-long-random-string',
+  'ChangeMe123!',
+  'atlas-internal-jwt-secret-change-me',
+  'atlas-mfa-stepup-secret-change-me',
+  'change-me-to-a-long-random-string-for-mfa-stepup',
+  'change-me-to-a-long-random-string-for-oauth-encryption',
+  'change-scim-api-key-in-production',
+  'change-me-to-slack-signing-secret',
+  'change-me-to-long-random-secret',
+]);
+const KNOWN_DEFAULT_URLS = new Set([
+  'https://idp.example.com/sso',
+  'https://idp.example.com/metadata',
+  'https://dev-000000.okta.com',
+]);
+if (
+  KNOWN_DEFAULT_SECRETS.has(JWT_SECRET) ||
+  KNOWN_DEFAULT_SECRETS.has(ADMIN_DEFAULT_PASSWORD) ||
+  (INTERNAL_JWT_SECRET && KNOWN_DEFAULT_SECRETS.has(INTERNAL_JWT_SECRET)) ||
+  (SCIM_API_KEY && KNOWN_DEFAULT_SECRETS.has(SCIM_API_KEY)) ||
+  (process.env.MFA_STEPUP_SECRET && KNOWN_DEFAULT_SECRETS.has(process.env.MFA_STEPUP_SECRET)) ||
+  (process.env.MFA_JWT_SECRET && KNOWN_DEFAULT_SECRETS.has(process.env.MFA_JWT_SECRET)) ||
+  (process.env.OAUTH_ENCRYPTION_KEY && KNOWN_DEFAULT_SECRETS.has(process.env.OAUTH_ENCRYPTION_KEY)) ||
+  KNOWN_DEFAULT_URLS.has(process.env.SAML_IDP_SSO_URL || '') ||
+  KNOWN_DEFAULT_URLS.has(process.env.SAML_IDP_ENTITY_ID || '')
+) {
+  console.error('FATAL: refusing to start with known default secrets/URLs (JWT_SECRET / ADMIN_DEFAULT_PASSWORD / INTERNAL_JWT_SECRET / SCIM_API_KEY / MFA_STEPUP_SECRET / OAUTH_ENCRYPTION_KEY / SAML_IDP_*); set strong values via .env');
+  process.exit(1);
+}
 if (JWT_SECRET === 'change-me-to-a-long-random-string' || ADMIN_DEFAULT_PASSWORD === 'ChangeMe123!') {
   console.error('FATAL: refusing to start with known default secrets (JWT_SECRET / ADMIN_DEFAULT_PASSWORD); set strong values via .env');
   process.exit(1);
@@ -241,9 +290,14 @@ if (JWT_SECRET === 'change-me-to-a-long-random-string' || ADMIN_DEFAULT_PASSWORD
 
 const jwtSecret = JWT_SECRET;
 
-const MFA_STEPUP_SECRET = process.env.MFA_STEPUP_SECRET || process.env.MFA_JWT_SECRET || JWT_SECRET;
+const MFA_STEPUP_SECRET = process.env.MFA_STEPUP_SECRET || process.env.MFA_JWT_SECRET;
+if (!MFA_STEPUP_SECRET) {
+  console.error('FATAL: MFA_STEPUP_SECRET environment variable is required (no fallback to JWT_SECRET)');
+  process.exit(1);
+}
 if (MFA_STEPUP_SECRET === JWT_SECRET) {
-  console.warn('WARNING: MFA_STEPUP_SECRET is not set or equals JWT_SECRET; step-up tokens share session secret - set a dedicated secret for production');
+  console.error('FATAL: MFA_STEPUP_SECRET must be distinct from JWT_SECRET');
+  process.exit(1);
 }
 const MFA_STEPUP_AUD = 'mfa-step-up';
 const MFA_STEPUP_ISS = 'atlas-auth';
@@ -252,10 +306,18 @@ const MFA_CHALLENGE_AUD = 'mfa-challenge';
 const MFA_CHALLENGE_ISS = 'atlas-auth';
 
 // OAuth at-rest encryption for sensitive provider secrets and tokens.
-// Uses OAUTH_ENCRYPTION_KEY when set, otherwise derives a 32-byte key
-// from JWT_SECRET so existing deployments still get encryption at rest
-// without leaving plaintext in the DB.
-const OAUTH_ENCRYPTION_KEY_RAW = process.env.OAUTH_ENCRYPTION_KEY || JWT_SECRET;
+// OAUTH_ENCRYPTION_KEY is required and must be distinct from JWT_SECRET;
+// falling back to the session secret would couple token encryption to
+// session signing and defeat key separation.
+const OAUTH_ENCRYPTION_KEY_RAW = process.env.OAUTH_ENCRYPTION_KEY;
+if (!OAUTH_ENCRYPTION_KEY_RAW) {
+  console.error('FATAL: OAUTH_ENCRYPTION_KEY environment variable is required (no fallback to JWT_SECRET)');
+  process.exit(1);
+}
+if (OAUTH_ENCRYPTION_KEY_RAW === JWT_SECRET) {
+  console.error('FATAL: OAUTH_ENCRYPTION_KEY must be distinct from JWT_SECRET');
+  process.exit(1);
+}
 
 function getOAuthEncryptionKey() {
   return crypto.createHash('sha256').update(OAUTH_ENCRYPTION_KEY_RAW).digest();
@@ -301,18 +363,18 @@ function isEncryptedOAuthSecret(value) {
   }
 }
 
-const OKTA_FALLBACK_BASE = 'https://dev-000000.okta.com';
-
 // Build an Okta base URL from tenant-configured provider data. The subdomain
 // is strictly validated so attacker-controlled provider config cannot smuggle
 // an arbitrary host into authorize/token/userinfo URLs (e.g. a client_id of
 // "evil.com/.okta.com" must not produce "https://evil.okta.com...").
+// Fail closed: unknown shapes return null and callers must reject instead of
+// falling back to a placeholder IdP.
 function resolveOktaBaseUrl(clientId) {
   const match = String(clientId || '').match(/^([a-zA-Z0-9-]{1,63})\.okta\.com$/);
   if (match) {
     return `https://${match[1]}.okta.com`;
   }
-  return OKTA_FALLBACK_BASE;
+  return null;
 }
 
 function validateOAuthIdToken(idToken, provider, expectedClientId, expectedEmail) {
@@ -374,23 +436,27 @@ if (!process.env.POSTGRES_URL) {
   process.exit(1);
 }
 
-const sslConfig = process.env.POSTGRES_SSL === 'true' || NODE_ENV === 'production'
-  ? { rejectUnauthorized: true }
-  : false;
+const sslConfig = process.env.POSTGRES_SSL === 'false'
+  ? false
+  : { rejectUnauthorized: true };
 
 const pool = new Pool({
   connectionString: process.env.POSTGRES_URL,
   ssl: sslConfig,
 });
 
-const REDIS_URL = process.env.REDIS_URL || 'redis://redis:6379';
+const REDIS_URL = process.env.REDIS_URL;
+if (!REDIS_URL) {
+  console.error('FATAL: REDIS_URL environment variable is required');
+  process.exit(1);
+}
 const redisClient = redis.createClient({ url: REDIS_URL });
 redisClient.on('error', (err) => console.log('Auth Redis Client Error', err));
 (async () => {
   try {
     await redisClient.connect();
   } catch (err) {
-    console.error('Auth Redis connection failed, nonce check disabled:', err);
+    safeLog(console.error, 'Auth Redis connection failed, nonce check disabled:', err);
   }
 })();
 
@@ -852,7 +918,7 @@ setInterval(async () => {
     await pool.query("DELETE FROM failed_attempts WHERE locked_until IS NULL AND updated_at < NOW() - INTERVAL '1 hour'");
     await pool.query('DELETE FROM failed_attempts WHERE locked_until IS NOT NULL AND locked_until < NOW()');
   } catch (err) {
-    console.error('Failed to sweep stale failed_attempts rows:', err.message);
+    safeLog(console.error, 'Failed to sweep stale failed_attempts rows:', err);
   }
 }, 10 * 60 * 1000);
 
@@ -877,14 +943,14 @@ async function sendAuditEvent(eventType, userId, email, details = {}) {
     } catch (err) {
       if (attempt === delaysMs.length - 1) {
         try { auditDeliveryFailuresTotal.labels({ event_type: eventType }).inc(); } catch {}
-        console.error(`Audit log failed for ${eventType}:`, err.message);
+        safeLog(console.error, `Audit log failed for ${eventType}:`, err);
       }
     }
   }
 }
 
 function getFrontendUrl() {
-  return (process.env.FRONTEND_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+  return (process.env.FRONTEND_URL || process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '');
 }
 
 // Email sender abstraction. No SMTP is configured in this repo, so the
@@ -897,7 +963,7 @@ async function sendEmail({ to, subject, text }) {
     console.log(`[email] to=${to} subject=${subject} body=${text}`);
     return true;
   } catch (err) {
-    console.error('Email send failed:', err.message);
+    safeLog(console.error, 'Email send failed:', err);
     return false;
   }
 }
@@ -947,7 +1013,8 @@ async function sendScimError(res, status, detail) {
   return res.status(status).json({
     schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
     detail,
-    status: String(status)
+    status: String(status),
+    message: detail,
   });
 }
 
@@ -1158,7 +1225,7 @@ async function initDB() {
       }
     }
   } catch (e) {
-    console.error('OAuth provider secret migration failed:', e.message);
+    safeLog(console.error, 'OAuth provider secret migration failed:', e);
   }
 
   await pool.query(`
@@ -1194,7 +1261,7 @@ async function initDB() {
 }
 
 initDB().catch((err) => {
-  console.error('Database initialization failed:', err);
+  safeLog(console.error, 'Database initialization failed:', err);
 });
 
 app.post('/register', createUserRateLimiter('register', 10, 15 * 60 * 1000, { keyByEmail: true }), async (req, res) => {
@@ -1248,7 +1315,7 @@ app.post('/register', createUserRateLimiter('register', 10, 15 * 60 * 1000, { ke
       user: sanitizeUser(result.rows[0]),
     });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     if (error.code === '23505') {
       return res.status(409).json({ message: 'User already exists' });
     }
@@ -1262,6 +1329,10 @@ app.post('/login', createUserRateLimiter('login', 20, 15 * 60 * 1000, { keyByEma
     return res.status(400).json({ message: 'Email and password are required' });
   }
 
+  const emailError = validateEmail(email);
+  if (emailError) {
+    return res.status(400).json({ message: emailError });
+  }
   const normalizedEmail = normalizeEmail(email);
 
   try {
@@ -1329,7 +1400,7 @@ app.post('/login', createUserRateLimiter('login', 20, 15 * 60 * 1000, { keyByEma
         try {
           await redisClient.set(`mfa_challenge:${jti}`, String(user.id), { EX: 300, NX: true });
         } catch (e) {
-          console.error('Failed to store MFA challenge jti', e.message);
+          safeLog(console.error, 'Failed to store MFA challenge jti', e);
         }
       }
       await sendAuditEvent('auth.login_mfa_required', user.id, email, {
@@ -1365,7 +1436,7 @@ app.post('/login', createUserRateLimiter('login', 20, 15 * 60 * 1000, { keyByEma
       mfa_required: false
     });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Server error during login' });
   }
 });
@@ -1432,7 +1503,7 @@ app.post('/refresh', createUserRateLimiter('refresh', 100), requireCsrfDoubleSub
       user: sanitizeUser(row),
     });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Server error during token refresh' });
   }
 });
@@ -1484,7 +1555,7 @@ app.post('/logout', createUserRateLimiter('logout', 100), requireCsrfDoubleSubmi
 
     res.status(200).json({ message: 'Logged out successfully' });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Server error during logout' });
   }
 });
@@ -1521,7 +1592,7 @@ app.post('/mfa/setup', requireRole(), createUserRateLimiter('mfa_setup', 5), asy
 
     res.json(response);
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'MFA setup failed' });
   }
 });
@@ -1554,7 +1625,7 @@ app.post('/mfa/rotate-backup-codes', requireRole(), createUserRateLimiter('mfa_v
 
     res.json({ message: 'Backup codes rotated successfully. Save these codes as they will not be shown again.', backup_codes: newCodes });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to rotate backup codes' });
   }
 });
@@ -1582,7 +1653,7 @@ app.post('/mfa/verify', requireRole(), createUserRateLimiter('mfa_verify', 10), 
 
     res.json({ message: 'MFA enabled successfully' });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'MFA verification failed' });
   }
 });
@@ -1725,12 +1796,12 @@ app.post('/mfa/validate', createUserRateLimiter('mfa_validate', 10), async (req,
       return res.json({ message: 'Token validated', validated: true, mfa_token: mfaToken });
     }
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'MFA validation failed' });
   }
 });
 
-app.post('/mfa/disable', requireRole(), async (req, res) => {
+app.post('/mfa/disable', requireRole(), createUserRateLimiter('mfa_disable', 5), async (req, res) => {
   try {
     const { password } = req.body;
     if (!password) {
@@ -1753,12 +1824,12 @@ app.post('/mfa/disable', requireRole(), async (req, res) => {
 
     res.json({ message: 'MFA disabled successfully' });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to disable MFA' });
   }
 });
 
-app.get('/mfa/status', requireRole(), async (req, res) => {
+app.get('/mfa/status', requireRole(), createUserRateLimiter('mfa_status', 60), async (req, res) => {
   try {
     const userId = req.user.id;
     const result = await pool.query('SELECT mfa_enabled FROM user_mfa WHERE user_id = $1', [userId]);
@@ -1768,7 +1839,7 @@ app.get('/mfa/status', requireRole(), async (req, res) => {
       mfa_setup: !!result.rows[0]
     });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to get MFA status' });
   }
 });
@@ -1812,12 +1883,12 @@ app.post('/devices/register', requireRole(), createUserRateLimiter('device_regis
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Device registration failed' });
   }
 });
 
-app.get('/devices', requireRole(), async (req, res) => {
+app.get('/devices', requireRole(), createUserRateLimiter('device_list', 60), async (req, res) => {
   try {
     const userId = req.user.id;
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 100);
@@ -1828,12 +1899,12 @@ app.get('/devices', requireRole(), async (req, res) => {
     );
     res.json(result.rows);
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to list devices' });
   }
 });
 
-app.put('/devices/:id/trust', requireRole(), async (req, res) => {
+app.put('/devices/:id/trust', requireRole(), createUserRateLimiter('device_trust', 20), async (req, res) => {
   try {
     const deviceId = parseInt(req.params.id);
     if (isNaN(deviceId)) {
@@ -1852,12 +1923,12 @@ app.put('/devices/:id/trust', requireRole(), async (req, res) => {
 
     res.json(result.rows[0]);
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to update device trust' });
   }
 });
 
-app.delete('/devices/:id', requireRole(), async (req, res) => {
+app.delete('/devices/:id', requireRole(), createUserRateLimiter('device_delete', 20), async (req, res) => {
   try {
     const deviceId = parseInt(req.params.id);
     if (isNaN(deviceId)) {
@@ -1876,7 +1947,7 @@ app.delete('/devices/:id', requireRole(), async (req, res) => {
 
     res.json({ message: 'Device removed' });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to remove device' });
   }
 });
@@ -1926,7 +1997,7 @@ app.post('/devices/verify', requireRole(), createUserRateLimiter('device_verify'
       }
     });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Device verification failed' });
   }
 });
@@ -1937,24 +2008,28 @@ app.get('/scim/v2/Users', requireScimAuth, createUserRateLimiter('scim_list', 30
     if (!tenant) {
       return sendScimError(res, 401, 'Authentication required');
     }
-    const count = Math.min(parseInt(req.query.count) || 10, 100);
-    const startIndex = Math.max(parseInt(req.query.startIndex) || 1, 1);
+    const rawCount = parseInt(req.query.count, 10);
+    const count = Number.isNaN(rawCount) ? 10 : Math.min(Math.max(rawCount, 1), 100);
+    const rawStartIndex = parseInt(req.query.startIndex, 10);
+    const startIndex = Number.isNaN(rawStartIndex) ? 1 : Math.max(rawStartIndex, 1);
     const offset = startIndex - 1;
 
     let whereClause = 'WHERE tenant_id = $1';
     let queryParams = [tenant];
 
     if (req.query.filter) {
-      const userNameMatch = req.query.filter.match(/userName\s+eq\s+"([^"]{1,254})"/i);
+      const rawFilter = String(req.query.filter);
+      const userNameMatch = rawFilter.match(/userName\s+eq\s+"([^"]{1,254})"/i);
       // Linear match on purpose: the value pattern must not reach back over
       // arbitrary filter text (that backtracking is a ReDoS vector).
-      const emailMatch = req.query.filter.match(/value\s+eq\s+"([^"]{1,254})"/i);
+      const emailMatch = rawFilter.match(/value\s+eq\s+"([^"]{1,254})"/i);
       const filterValue = userNameMatch?.[1] || emailMatch?.[1];
 
-      if (filterValue) {
-        whereClause += ` AND email = $${queryParams.length + 1}`;
-        queryParams.push(filterValue);
+      if (!filterValue) {
+        return sendScimError(res, 400, 'Unsupported SCIM filter. Supported: userName eq "email@example.com"');
       }
+      whereClause += ` AND email = $${queryParams.length + 1}`;
+      queryParams.push(filterValue);
     }
 
     const countResult = await pool.query(
@@ -1978,7 +2053,7 @@ app.get('/scim/v2/Users', requireScimAuth, createUserRateLimiter('scim_list', 30
       Resources: result.rows.map(user => formatScimUser(user, baseUrl))
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     return sendScimError(res, 500, 'Internal error');
   }
 });
@@ -2044,7 +2119,7 @@ app.post('/scim/v2/Users', requireScimAuth, createUserRateLimiter('scim_create',
 
     res.status(201).json(scimUser);
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     if (err.code === '23505') {
       return sendScimError(res, 409, 'User already exists');
     }
@@ -2058,6 +2133,9 @@ app.get('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_get',
     if (!tenant) {
       return sendScimError(res, 401, 'Authentication required');
     }
+    if (!isValidScimUserId(req.params.id)) {
+      return sendScimError(res, 400, 'Invalid user id');
+    }
     const result = await pool.query('SELECT * FROM users WHERE id = $1 AND tenant_id = $2', [req.params.id, tenant]);
     if (!result.rows[0]) {
       return sendScimError(res, 404, 'User not found');
@@ -2066,7 +2144,7 @@ app.get('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_get',
     const baseUrl = `${req.protocol}://${req.get('host')}`;
     res.json(formatScimUser(result.rows[0], baseUrl));
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     return sendScimError(res, 500, 'Internal error');
   }
 });
@@ -2076,6 +2154,9 @@ app.put('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_updat
     const tenant = req.scimTenant;
     if (!tenant) {
       return sendScimError(res, 401, 'Authentication required');
+    }
+    if (!isValidScimUserId(req.params.id)) {
+      return sendScimError(res, 400, 'Invalid user id');
     }
     const { userName, name, emails, roles, active } = req.body;
 
@@ -2120,7 +2201,7 @@ app.put('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_updat
     const baseUrl = `${req.protocol}://${req.get('host')}`;
     res.json(formatScimUser(result.rows[0], baseUrl));
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     if (err.code === '23505') {
       return sendScimError(res, 409, 'User already exists');
     }
@@ -2133,6 +2214,9 @@ app.patch('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_pat
     const tenant = req.scimTenant;
     if (!tenant) {
       return sendScimError(res, 401, 'Authentication required');
+    }
+    if (!isValidScimUserId(req.params.id)) {
+      return sendScimError(res, 400, 'Invalid user id');
     }
     const { Operations } = req.body;
     if (!Operations || !Array.isArray(Operations)) {
@@ -2219,7 +2303,7 @@ app.patch('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_pat
     const baseUrl = `${req.protocol}://${req.get('host')}`;
     res.json(formatScimUser(result.rows[0], baseUrl));
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     if (err.code === '23505') {
       return sendScimError(res, 409, 'User already exists');
     }
@@ -2232,6 +2316,9 @@ app.delete('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_de
     const tenant = req.scimTenant;
     if (!tenant) {
       return sendScimError(res, 401, 'Authentication required');
+    }
+    if (!isValidScimUserId(req.params.id)) {
+      return sendScimError(res, 400, 'Invalid user id');
     }
     const result = await pool.query(
       'UPDATE users SET active = false, updated_at = NOW() WHERE id = $1 AND tenant_id = $2 RETURNING id',
@@ -2250,7 +2337,7 @@ app.delete('/scim/v2/Users/:id', requireScimAuth, createUserRateLimiter('scim_de
 
     res.status(204).send();
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     return sendScimError(res, 500, 'Internal error');
   }
 });
@@ -2433,7 +2520,7 @@ app.post('/saml/acs', createUserRateLimiter('saml_acs', 20), async (req, res) =>
       user: sanitizeUser(userData)
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'SAML ACS processing error' });
   }
 });
@@ -2456,6 +2543,9 @@ app.get('/saml/metadata', (req, res) => {
 
 app.post('/saml/login', createUserRateLimiter('saml_login', 20), async (req, res) => {
   try {
+    if (!SAML_IDP_SSO_URL) {
+      return res.status(503).json({ message: 'SAML is not configured on this server. Set SAML_IDP_SSO_URL to enable SAML authentication.' });
+    }
     const entityId = `${req.protocol}://${req.get('host')}/saml/metadata`;
     const acsUrl = `${req.protocol}://${req.get('host')}/saml/acs`;
 
@@ -2474,7 +2564,7 @@ app.post('/saml/login', createUserRateLimiter('saml_login', 20), async (req, res
       acs_url: acsUrl
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'SAML login initiation failed' });
   }
 });
@@ -2486,9 +2576,17 @@ app.post('/auth/passwordless/request', createUserRateLimiter('passwordless_reque
       return res.status(400).json({ message: 'Email is required' });
     }
 
-    const userResult = await pool.query('SELECT id, email FROM users WHERE email = $1 AND active = true', [email]);
+    const emailError = validateEmail(email);
+    if (emailError) {
+      return res.status(400).json({ message: emailError });
+    }
+    const normalizedEmail = normalizeEmail(email);
+    const neutralMessage = 'Check your email for the login link';
+
+    const userResult = await pool.query('SELECT id, email FROM users WHERE email = $1 AND active = true', [normalizedEmail]);
     if (!userResult.rows[0]) {
-      return res.status(404).json({ message: 'User not found or inactive' });
+      await sendAuditEvent('auth.passwordless_requested', null, normalizedEmail, { found: false });
+      return res.json({ message: neutralMessage });
     }
 
     const user = userResult.rows[0];
@@ -2498,16 +2596,16 @@ app.post('/auth/passwordless/request', createUserRateLimiter('passwordless_reque
 
     await pool.query(
       'INSERT INTO passwordless_tokens (token, user_id, email, expires_at) VALUES ($1, $2, $3, $4)',
-      [tokenHash, user.id, email, expiresAt]
+      [tokenHash, user.id, normalizedEmail, expiresAt]
     );
 
-    await sendAuditEvent('auth.passwordless_requested', user.id, email);
+    await sendAuditEvent('auth.passwordless_requested', user.id, normalizedEmail, { found: true });
 
     res.json({
-      message: 'Check your email for the login link'
+      message: neutralMessage
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to generate magic link' });
   }
 });
@@ -2551,7 +2649,7 @@ app.post('/auth/passwordless/verify', createUserRateLimiter('passwordless_verify
       user: sanitizeUser(user)
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Magic link verification failed' });
   }
 });
@@ -2566,8 +2664,16 @@ app.post('/auth/password/reset-request', createUserRateLimiter('password_reset_r
       return res.status(400).json({ message: 'Email is required' });
     }
 
-    const normalizedEmail = email.trim();
+    const emailError = validateEmail(email);
+    if (emailError) {
+      return res.status(400).json({ message: emailError });
+    }
+    const normalizedEmail = normalizeEmail(email);
     const genericMessage = 'If an account exists for this email, a reset link has been sent.';
+    const frontendUrl = getFrontendUrl();
+    if (!frontendUrl) {
+      return res.status(503).json({ message: 'Password reset is not configured (FRONTEND_URL missing)' });
+    }
 
     const userResult = await pool.query('SELECT id, email, active FROM users WHERE email = $1', [normalizedEmail]);
     const user = userResult.rows[0];
@@ -2587,7 +2693,7 @@ app.post('/auth/password/reset-request', createUserRateLimiter('password_reset_r
       [user.id, tokenHash, expiresAt]
     );
 
-    const resetUrl = `${getFrontendUrl()}/reset-password?token=${rawToken}`;
+    const resetUrl = `${frontendUrl}/reset-password?token=${rawToken}`;
     await sendPasswordResetEmail(user.email, rawToken, resetUrl);
     await sendAuditEvent('auth.password_reset_requested', user.id, user.email, { found: true });
 
@@ -2598,7 +2704,7 @@ app.post('/auth/password/reset-request', createUserRateLimiter('password_reset_r
     }
     return res.json(response);
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to process reset request' });
   }
 });
@@ -2648,7 +2754,7 @@ app.post('/auth/password/reset', createUserRateLimiter('password_reset', 10), as
 
     return res.json({ message: 'Password has been reset successfully' });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Password reset failed' });
   }
 });
@@ -2688,12 +2794,12 @@ app.post('/auth/admin/password-reset', requireRole('admin'), createUserRateLimit
 
     return res.json({ message: 'Password reset successfully', user: sanitizeUser({ ...user }) });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Admin password reset failed' });
   }
 });
 
-app.get('/sessions', requireRole(), async (req, res) => {
+app.get('/sessions', requireRole(), createUserRateLimiter('sessions_list', 60), async (req, res) => {
   try {
     const userId = req.user.id;
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 100);
@@ -2704,12 +2810,12 @@ app.get('/sessions', requireRole(), async (req, res) => {
     );
     res.json(result.rows);
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to list sessions' });
   }
 });
 
-app.delete('/sessions/:id', requireRole(), async (req, res) => {
+app.delete('/sessions/:id', requireRole(), createUserRateLimiter('session_revoke', 20), async (req, res) => {
   try {
     const userId = req.user.id;
     if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(req.params.id)) {
@@ -2749,12 +2855,12 @@ app.delete('/sessions/:id', requireRole(), async (req, res) => {
     }
     res.json({ message: 'Session revoked' });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to revoke session' });
   }
 });
 
-app.delete('/sessions', requireRole(), async (req, res) => {
+app.delete('/sessions', requireRole(), createUserRateLimiter('sessions_revoke_all', 20), async (req, res) => {
   try {
     const userId = req.user.id;
     const currentSessionId = req.headers['x-session-id'];
@@ -2803,7 +2909,7 @@ app.delete('/sessions', requireRole(), async (req, res) => {
 
     res.json({ message: 'Other sessions revoked' });
   } catch (error) {
-    console.error(error);
+    safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to revoke sessions' });
   }
 });
@@ -2878,7 +2984,7 @@ async function consumeChallenge(userId, challenge) {
   return legacy.rowCount > 0;
 }
 
-app.post('/webauthn/register/begin', requireRole(), async (req, res) => {
+app.post('/webauthn/register/begin', requireRole(), createUserRateLimiter('webauthn_register', 10), async (req, res) => {
   try {
     const userId = req.user.id;
     const { device_name, device_type } = req.body;
@@ -2909,12 +3015,12 @@ app.post('/webauthn/register/begin', requireRole(), async (req, res) => {
       creationOptions: options,
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'WebAuthn registration initiation failed' });
   }
 });
 
-app.post('/webauthn/register/complete', requireRole(), async (req, res) => {
+app.post('/webauthn/register/complete', requireRole(), createUserRateLimiter('webauthn_register_complete', 10), async (req, res) => {
   try {
     const userId = req.user.id;
     const { device_name, device_type } = req.body;
@@ -2969,7 +3075,7 @@ app.post('/webauthn/register/complete', requireRole(), async (req, res) => {
 
     res.json({ status: 'ok', message: 'Hardware security key registered' });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'WebAuthn registration completion failed' });
   }
 });
@@ -3013,7 +3119,7 @@ app.post('/webauthn/authenticate/begin', createUserRateLimiter('webauthn_auth', 
       userId,
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'WebAuthn authentication initiation failed' });
   }
 });
@@ -3090,7 +3196,7 @@ app.post('/webauthn/authenticate/complete', createUserRateLimiter('webauthn_auth
       user: sanitizeUser(user),
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'WebAuthn authentication completion failed' });
   }
 });
@@ -3109,7 +3215,7 @@ app.get('/webauthn/credentials', requireRole(), createUserRateLimiter('webauthn_
       credential_id: r.credential_id.substring(0, 20) + '...',
     })));
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to list credentials' });
   }
 });
@@ -3127,7 +3233,7 @@ app.delete('/webauthn/credentials/:id', requireRole(), createUserRateLimiter('we
     await sendAuditEvent('auth.webauthn_removed', userId, req.user.email);
     res.json({ message: 'Security key removed' });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to remove credential' });
   }
 });
@@ -3145,7 +3251,7 @@ app.get('/oauth/providers', requireRole('admin'), createUserRateLimiter('oauth_p
     );
     res.json(result.rows);
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to list OAuth providers' });
   }
 });
@@ -3169,7 +3275,7 @@ app.post('/oauth/providers', requireRole('admin'), createUserRateLimiter('oauth_
     if (err.code === '23505') {
       return res.status(409).json({ message: 'Provider already configured for this tenant' });
     }
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to create OAuth provider' });
   }
 });
@@ -3178,6 +3284,9 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
   try {
     const { provider } = req.params;
     const { tenant_id } = req.body;
+    if (!['google', 'microsoft', 'github', 'okta'].includes(provider)) {
+      return res.status(400).json({ message: `Unsupported OAuth provider "${provider}"` });
+    }
     const tenantId = tenant_id || 'default';
     const redirectTo = req.body.redirect_to || '/dashboard';
 
@@ -3198,6 +3307,10 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
       [state, provider, tenantId, redirectTo, expiresAt]
     );
 
+    const oktaBase = provider === 'okta' ? resolveOktaBaseUrl(prov.client_id) : null;
+    if (provider === 'okta' && !oktaBase) {
+      return res.status(400).json({ message: 'Invalid Okta client_id; expected <subdomain>.okta.com' });
+    }
     const providerConfigs = {
       google: {
         authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -3231,7 +3344,7 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
         },
       },
       okta: {
-        authUrl: `${resolveOktaBaseUrl(prov.client_id)}/oauth2/v1/authorize`,
+        authUrl: `${oktaBase}/oauth2/v1/authorize`,
         params: {
           client_id: prov.client_id,
           redirect_uri: prov.redirect_uri || `${req.protocol}://${req.get('host')}/oauth/callback/${provider}`,
@@ -3242,7 +3355,10 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
       },
     };
 
-    const config = providerConfigs[provider] || providerConfigs.google;
+    const config = providerConfigs[provider];
+    if (!config) {
+      return res.status(400).json({ message: `Unsupported OAuth provider "${provider}"` });
+    }
     const params = new URLSearchParams(config.params);
     const redirectUrl = `${config.authUrl}?${params.toString()}`;
 
@@ -3252,7 +3368,7 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
       provider,
     });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'OAuth login initiation failed' });
   }
 });
@@ -3261,6 +3377,9 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
   try {
     const { provider } = req.params;
     const { code, state } = req.body;
+    if (!['google', 'microsoft', 'github', 'okta'].includes(provider)) {
+      return res.status(400).json({ message: `Unsupported OAuth provider "${provider}"` });
+    }
 
     if (!code || !state) {
       return res.status(400).json({ message: 'code and state are required' });
@@ -3287,6 +3406,10 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
 
     const prov = provResult.rows[0];
 
+    const oktaBaseForCallback = provider === 'okta' ? resolveOktaBaseUrl(prov.client_id) : null;
+    if (provider === 'okta' && !oktaBaseForCallback) {
+      return res.status(400).json({ message: 'Invalid Okta client_id; expected <subdomain>.okta.com' });
+    }
     let tokenUrl, userInfoUrl, userInfoHeaders;
     const tokenConfigs = {
       google: {
@@ -3303,12 +3426,15 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
         userInfoHeaders: { Accept: 'application/json' },
       },
       okta: {
-        tokenUrl: `${resolveOktaBaseUrl(prov.client_id)}/oauth2/v1/token`,
-        userInfoUrl: `${resolveOktaBaseUrl(prov.client_id)}/oauth2/v1/userinfo`,
+        tokenUrl: `${oktaBaseForCallback}/oauth2/v1/token`,
+        userInfoUrl: `${oktaBaseForCallback}/oauth2/v1/userinfo`,
       },
     };
 
-    const tokenConfig = tokenConfigs[provider] || tokenConfigs.google;
+    const tokenConfig = tokenConfigs[provider];
+    if (!tokenConfig) {
+      return res.status(400).json({ message: `Unsupported OAuth provider "${provider}"` });
+    }
 
     try {
       const clientSecret = isEncryptedOAuthSecret(prov.client_secret) ? decryptOAuthSecret(prov.client_secret) : prov.client_secret;
@@ -3444,7 +3570,7 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
     }
   } catch (err) {
     if (res.headersSent) return;
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'OAuth callback processing failed' });
   }
 });
@@ -3460,7 +3586,7 @@ app.get('/oauth/links', requireRole(), createUserRateLimiter('oauth_links_list',
     );
     res.json(result.rows);
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to list OAuth links' });
   }
 });
@@ -3477,7 +3603,7 @@ app.delete('/oauth/links/:provider', requireRole(), createUserRateLimiter('oauth
     }
     res.json({ message: 'OAuth link disconnected' });
   } catch (err) {
-    console.error(err);
+    safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Failed to remove OAuth link' });
   }
 });
@@ -3499,6 +3625,7 @@ module.exports = {
   parseScimApiKeys,
   resolveScimTenant,
   isAllowedScimRole,
+  isValidScimUserId,
   SCIM_TENANT_KEYS,
   storeWebauthnChallenge,
   getLatestWebauthnChallenge,

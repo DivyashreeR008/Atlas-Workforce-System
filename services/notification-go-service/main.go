@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,6 +23,28 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/streadway/amqp"
 )
+
+func getDurationEnv(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+		log.Printf("Warning: invalid %s %q, using %s", key, v, fallback)
+	}
+	return fallback
+}
+
+func wsPingInterval() time.Duration {
+	return getDurationEnv("WS_PING_INTERVAL_SEC", 20*time.Second)
+}
+
+func wsWriteTimeout() time.Duration {
+	return getDurationEnv("WS_WRITE_TIMEOUT_SEC", 10*time.Second)
+}
+
+func wsReadTimeout() time.Duration {
+	return getDurationEnv("WS_READ_TIMEOUT_SEC", 30*time.Second)
+}
 
 var (
 	httpRequestCount = prometheus.NewCounterVec(
@@ -63,7 +86,7 @@ var upgrader = websocket.Upgrader{
 		}
 		allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
 		if allowedOrigins == "" {
-			allowedOrigins = "http://localhost:3000"
+			return false
 		}
 		for _, o := range strings.Split(allowedOrigins, ",") {
 			if strings.TrimSpace(o) == origin {
@@ -149,7 +172,7 @@ const maxConnsPerIP = 10
 var (
 	store         = &NotificationStore{}
 	clients       = make(map[*Client]bool)
-	broadcast     = make(chan BroadcastMessage)
+	broadcast     = make(chan BroadcastMessage, 256)
 	mutex         = &sync.Mutex{}
 	ipConnections = make(map[string]int)
 	ipMutex       = &sync.Mutex{}
@@ -235,23 +258,27 @@ func internalAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (c *Client) writePump() {
-	ticker := time.NewTicker(20 * time.Second)
+	pingInterval := wsPingInterval()
+	writeTimeout := wsWriteTimeout()
+	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case message, ok := <-c.send:
-			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if !ok {
 				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				log.Printf("WebSocket write error for tenant %s: %v", c.tenantID, err)
 				return
 			}
 		case <-ticker.C:
-			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Printf("WebSocket ping error for tenant %s: %v", c.tenantID, err)
 				return
 			}
 		}
@@ -268,15 +295,23 @@ func (c *Client) readPump() {
 		_ = c.conn.Close()
 	}()
 
-	_ = c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	readTimeout := wsReadTimeout()
+	_ = c.conn.SetReadDeadline(time.Now().Add(readTimeout))
 	c.conn.SetPongHandler(func(string) error {
-		_ = c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		_ = c.conn.SetReadDeadline(time.Now().Add(readTimeout))
 		return nil
 	})
 
 	for {
 		_, _, err := c.conn.ReadMessage()
 		if err != nil {
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
+				log.Printf("WebSocket closed for tenant %s: %v", c.tenantID, err)
+			} else if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("WebSocket unexpected close for tenant %s: %v", c.tenantID, err)
+			} else {
+				log.Printf("WebSocket read error for tenant %s: %v", c.tenantID, err)
+			}
 			break
 		}
 	}
@@ -328,8 +363,11 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clientIP := r.RemoteAddr
-	if idx := strings.LastIndex(clientIP, ":"); idx != -1 {
-		clientIP = clientIP[:idx]
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		clientIP = host
+	} else {
+		log.Printf("Warning: could not split host/port from %q: %v", r.RemoteAddr, err)
+		clientIP = r.RemoteAddr
 	}
 
 	if !canAcceptConnection(clientIP) {
@@ -356,6 +394,14 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	client := &Client{conn: ws, send: make(chan []byte, 256), tenantID: tenantID, clientIP: clientIP}
 
 	mutex.Lock()
+	if len(clients) >= maxClients {
+		mutex.Unlock()
+		_ = ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "server at capacity"))
+		_ = ws.Close()
+		releaseConnection(clientIP)
+		log.Printf("Rejected websocket for tenant %s: at capacity after upgrade", tenantID)
+		return
+	}
 	clients[client] = true
 	mutex.Unlock()
 
@@ -370,15 +416,24 @@ func handleMessages(ctx context.Context) {
 			return
 		case msg := <-broadcast:
 			mutex.Lock()
+			targets := make([]*Client, 0, len(clients))
 			for client := range clients {
 				if client.tenantID == msg.TenantID {
-					select {
-					case client.send <- msg.Payload:
-					default:
-					}
+					targets = append(targets, client)
 				}
 			}
 			mutex.Unlock()
+			skipped := 0
+			for _, client := range targets {
+				select {
+				case client.send <- msg.Payload:
+				default:
+					skipped++
+				}
+			}
+			if skipped > 0 {
+				log.Printf("Broadcast to tenant %s skipped %d slow clients", msg.TenantID, skipped)
+			}
 		}
 	}
 }
@@ -568,7 +623,7 @@ func processMessage(body []byte) {
 		}
 	}()
 
-	log.Printf("Received a message: %s", body)
+	log.Printf("Received message of %d bytes", len(body))
 
 	var rawData map[string]interface{}
 	if err := json.Unmarshal(body, &rawData); err != nil {
@@ -604,9 +659,10 @@ func processMessage(body []byte) {
 	msgWrapper := map[string]interface{}{
 		"type":      "notification",
 		"data":      notif,
-		"timestamp": time.Now().Format(time.RFC3339),
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	}
 	jsonMsg, _ := json.Marshal(msgWrapper)
+	log.Printf("Stored notification %s for tenant %s (%d bytes payload, %d bytes wire)", notif.ID, tenantID, len(body), len(jsonMsg))
 	broadcast <- BroadcastMessage{TenantID: tenantID, Payload: jsonMsg}
 }
 
@@ -641,10 +697,13 @@ func (sw *statusWriter) WriteHeader(code int) {
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8004"
+		log.Fatal("FATAL: PORT environment variable is required")
 	}
 	if !validPort(port) {
 		log.Fatal("FATAL: invalid PORT environment variable")
+	}
+	if os.Getenv("ALLOWED_ORIGINS") == "" {
+		log.Fatal("FATAL: ALLOWED_ORIGINS environment variable is required")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -343,3 +343,78 @@ async def test_strategic_recommendations(client):
         assert "action" in r
         assert "impact" in r
         assert "timeline" in r
+
+
+@pytest.mark.asyncio
+async def test_attrition_batch_cap_rejects_oversize(client):
+    employees = [{"employee_id": f"E{i:04d}"} for i in range(101)]
+    resp = await client.post("/api/v1/predict/attrition-risk", json={"employees": employees})
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_attrition_batch_empty_rejected(client):
+    resp = await client.post("/api/v1/predict/attrition-risk", json={"employees": []})
+    assert resp.status_code == 422
+
+
+def test_session_expiry_evicts_stale():
+    import time as _time
+    from models import SessionStore
+    SessionStore._sessions.clear()
+    SessionStore._ttl_seconds = 60
+    sess = SessionStore.get_or_create(None)
+    sid = sess.session_id
+    assert SessionStore.get(sid) is not None
+    sess.last_activity = _time.time() - 3600
+    assert SessionStore.get(sid) is None
+    SessionStore._sessions.clear()
+    SessionStore._ttl_seconds = 3600
+
+
+def test_session_cleanup_counts_expired():
+    import time as _time
+    from models import SessionStore
+    SessionStore._sessions.clear()
+    SessionStore._ttl_seconds = 60
+    s1 = SessionStore.get_or_create(None)
+    s2 = SessionStore.get_or_create(None)
+    s1.last_activity = _time.time() - 3600
+    removed = SessionStore.cleanup_expired()
+    assert removed == 1
+    assert SessionStore.get(s2.session_id) is not None
+    SessionStore._sessions.clear()
+    SessionStore._ttl_seconds = 3600
+
+
+@pytest.mark.asyncio
+async def test_expired_session_returns_404(client):
+    import time as _time
+    from models import SessionStore
+    chat = await client.post("/api/v1/copilot/chat", json={"message": "Hi"})
+    sid = chat.json()["session_id"]
+    sess = SessionStore._sessions.get(sid)
+    assert sess is not None
+    sess.last_activity = _time.time() - (SessionStore._ttl_seconds + 10)
+    resp = await client.get(f"/api/v1/copilot/sessions/{sid}")
+    assert resp.status_code == 404
+
+
+def test_resume_parser_uses_utc_clock():
+    from datetime import datetime, timezone
+    from resume_parser import extract_experience
+    text = "Senior Engineer at Acme Corp 2020-Present"
+    entries = extract_experience(text)
+    assert len(entries) >= 1
+    expected = datetime.now(timezone.utc).year - 2020
+    assert entries[0]["years"] == expected
+
+
+def test_resume_parser_ongoing_variants_use_utc_year():
+    from datetime import datetime, timezone
+    from resume_parser import extract_experience
+    current = datetime.now(timezone.utc).year
+    for marker in ("Current", "Now", "Ongoing"):
+        entries = extract_experience(f"Lead at Globex 2019-{marker}")
+        assert entries, marker
+        assert entries[0]["years"] == current - 2019

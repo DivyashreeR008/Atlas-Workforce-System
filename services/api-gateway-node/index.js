@@ -152,7 +152,17 @@ async function checkCache(req, res, next) {
 const app = express();
 // Trust proxy is required so express-rate-limit sees the real client IP behind k8s ingress / docker proxy.
 // Number of trusted hops is configurable via TRUST_PROXY_HOPS (defaults to 1 for single ingress).
-const TRUST_PROXY_HOPS = parseInt(process.env.TRUST_PROXY_HOPS || '1', 10);
+function resolveTrustProxyHops() {
+  const raw = process.env.TRUST_PROXY_HOPS;
+  if (raw === undefined || raw === '') return 1;
+  const parsed = parseInt(String(raw), 10);
+  if (!Number.isInteger(parsed) || Number.isNaN(parsed) || parsed < 0 || parsed > 5) {
+    console.warn(`WARNING: invalid TRUST_PROXY_HOPS=${JSON.stringify(raw)}; falling back to 1 (expected integer 0-5)`);
+    return 1;
+  }
+  return parsed;
+}
+const TRUST_PROXY_HOPS = resolveTrustProxyHops();
 app.set('trust proxy', TRUST_PROXY_HOPS);
 const PORT = process.env.PORT || 8080;
 const NODE_ENV = process.env.NODE_ENV || 'production';
@@ -363,6 +373,37 @@ app.use('/api/billing', sensitiveLimiter);
 
 app.use('/api/ats/career', careerLimiter);
 app.use('/api/ats/career/apply', careerApplyLimiter);
+
+// SCIM provisioning and SAML handshake sit alongside the auth tier above:
+// unauthenticated, high-value, and already rate-limited downstream in
+// auth-service. Mirror the neighbor limiters at the edge so bulk
+// provisioning or login loops cannot saturate the proxy.
+const scimLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many SCIM requests, please try again later' },
+  store: new RedisStore({
+    sendCommand: (...args) => redisClient.sendCommand(args),
+    prefix: 'rl:scim:',
+  }),
+});
+
+const samlLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many SAML requests, please try again later' },
+  store: new RedisStore({
+    sendCommand: (...args) => redisClient.sendCommand(args),
+    prefix: 'rl:saml:',
+  }),
+});
+
+app.use('/scim', scimLimiter);
+app.use('/saml', samlLimiter);
 
 // General API surface guard; specific tiers above keep their own counters
 // (skip in apiLimiter avoids double-counting, login 5/15 stays tightest).
@@ -996,38 +1037,86 @@ app.post('/api/webhooks/slack', express.urlencoded({
   }
 
   try {
-    const { text, user_name } = req.body;
+    const { text, user_id, user_name, team_id } = req.body;
 
-    const employeeId = user_name || 'slack_user';
-    const tenantId = 'default';
+    // Tenant comes from the verified Slack workspace (team_id), never a
+    // client-supplied default. The signature above already authenticated the
+    // request, so team_id is the verified workspace identity.
+    const tenantId = typeof team_id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(team_id) ? team_id : null;
+    if (!tenantId) {
+      return res.status(400).json({
+        response_type: 'ephemeral',
+        text: 'Missing Slack workspace context (team_id).'
+      });
+    }
+    const employeeId = (typeof user_id === 'string' && user_id.trim()) || (typeof user_name === 'string' && user_name.trim()) || null;
+    if (!employeeId) {
+      return res.status(400).json({
+        response_type: 'ephemeral',
+        text: 'Missing Slack user identity.'
+      });
+    }
 
-    const parts = text ? text.split(' ') : [];
-    if (parts.length < 3) {
-      return res.json({
-        response_type: "ephemeral",
-        text: "Please use format: `/atlas-leave YYYY-MM-DD to YYYY-MM-DD Reason`"
+    const parts = text ? String(text).trim().split(/\s+/) : [];
+    if (parts.length < 3 || parts[1].toLowerCase() !== 'to') {
+      return res.status(400).json({
+        response_type: 'ephemeral',
+        text: 'Please use format: `/atlas-leave YYYY-MM-DD to YYYY-MM-DD Reason`'
       });
     }
 
     const startDate = parts[0];
     const endDate = parts[2];
-    const leaveType = 'VACATION';
-    const reason = parts.slice(3).join(' ') || 'Slack request';
+    const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRe.test(startDate) || !dateRe.test(endDate)) {
+      return res.status(400).json({
+        response_type: 'ephemeral',
+        text: 'Dates must be YYYY-MM-DD.'
+      });
+    }
+    const start = new Date(`${startDate}T00:00:00Z`);
+    const end = new Date(`${endDate}T00:00:00Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
+      return res.status(400).json({
+        response_type: 'ephemeral',
+        text: 'Invalid date range: end date must be on or after start date.'
+      });
+    }
+    const rawType = (parts[3] || 'VACATION').toUpperCase();
+    const ALLOWED_LEAVE_TYPES = new Set(['VACATION', 'SICK', 'PERSONAL', 'UNPAID', 'MATERNITY', 'PATERNITY', 'BEREAVEMENT']);
+    // Optional leave type in position 3: when it matches the allowlist it is
+    // consumed as the type, otherwise the whole tail is the reason and the
+    // type stays VACATION (back-compat with `/atlas-leave ... Reason`).
+    let leaveType = 'VACATION';
+    let reasonParts = parts.slice(3);
+    if (ALLOWED_LEAVE_TYPES.has(rawType)) {
+      leaveType = rawType;
+      reasonParts = parts.slice(4);
+    }
+    const reason = reasonParts.join(' ').slice(0, 500) || 'Slack request';
 
     const leaveServiceUrl = `${services.leave}/request`;
     const response = await axios.post(leaveServiceUrl, {
       employeeId, startDate, endDate, leaveType, reason
     }, {
-      headers: { 'X-Tenant-Id': tenantId }
+      headers: { 'X-Tenant-Id': tenantId },
+      timeout: 5000
     });
 
     return res.json({
-      response_type: "in_channel",
+      response_type: 'in_channel',
       text: `Leave request submitted for ${startDate} to ${endDate}`
     });
   } catch (err) {
     console.error('Slack Webhook Error:', err.message);
-    res.json({ response_type: "ephemeral", text: 'Failed to submit leave request. Please try again.' });
+    if (err.code === 'ECONNABORTED') {
+      return res.status(504).json({ response_type: 'ephemeral', text: 'Leave service timed out. Please try again.' });
+    }
+    const downstreamStatus = err.response?.status;
+    if (typeof downstreamStatus === 'number' && downstreamStatus >= 400 && downstreamStatus < 500) {
+      return res.status(502).json({ response_type: 'ephemeral', text: 'Leave request rejected by leave service.' });
+    }
+    return res.status(502).json({ response_type: 'ephemeral', text: 'Failed to submit leave request. Please try again.' });
   }
 });
 
@@ -1072,6 +1161,8 @@ function proxyService(target, prefix, pathRewrite) {
     target,
     changeOrigin: true,
     pathRewrite,
+    timeout: 10000,
+    proxyTimeout: 10000,
     on: {
       proxyReq(proxyReq, req) {
         const correlationId = req.headers['x-correlation-id'] || crypto.randomUUID();
@@ -1084,6 +1175,12 @@ function proxyService(target, prefix, pathRewrite) {
         if (tenantId) {
           proxyReq.setHeader('x-tenant-id', tenantId);
           proxyReq.setHeader('X-Tenant-Id', tenantId);
+        }
+      },
+      error(err, req, res) {
+        console.error('Proxy error for', prefix, '->', target, ':', err.message);
+        if (!res.headersSent) {
+          res.status(502).json({ message: 'Bad gateway: upstream service unavailable' });
         }
       }
     }
@@ -1309,6 +1406,14 @@ module.exports = {
   authMiddleware,
   isPublicOrAuthPath,
   correlationIdMiddleware,
+  mfaStepUpMiddleware,
+  auditProxyMiddleware,
+  deviceTrustHeaderMiddleware,
+  checkCache,
+  cacheInvalidationMiddleware,
+  verifySlackRequest,
+  isWsPath,
+  globalErrorHandler,
 };
 
 if (require.main === module) {
@@ -1361,14 +1466,41 @@ if (require.main === module) {
       }
       const proxyReq = http.request(target.toString(), { method: 'GET', headers: req.headers });
       proxyReq.on('upgrade', (proxyRes, proxySocket) => {
+        const acceptKey = proxyRes.headers['sec-websocket-accept'];
+        if (!acceptKey) {
+          console.error('WebSocket upgrade rejected: missing sec-websocket-accept from upstream', { pathname });
+          try {
+            socket.write('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+          } catch {}
+          socket.destroy();
+          try { proxySocket.destroy(); } catch {}
+          return;
+        }
         socket.write('HTTP/1.1 101 Switching Protocols\r\n' +
           'Upgrade: websocket\r\n' +
           'Connection: Upgrade\r\n' +
-          'Sec-WebSocket-Accept: ' + proxyRes.headers['sec-websocket-accept'] + '\r\n' +
+          'Sec-WebSocket-Accept: ' + acceptKey + '\r\n' +
+          'X-Content-Type-Options: nosniff\r\n' +
+          'X-Frame-Options: DENY\r\n' +
+          'Referrer-Policy: no-referrer\r\n' +
           '\r\n');
+        proxySocket.on('error', (err) => {
+          console.error('WebSocket proxy socket error:', err.message, { pathname });
+        });
+        socket.on('error', (err) => {
+          console.error('WebSocket client socket error:', err.message, { pathname });
+        });
         socket.pipe(proxySocket).pipe(socket);
       });
-      proxyReq.on('error', () => socket.destroy());
+      proxyReq.on('error', (err) => {
+        console.error('WebSocket proxy request error:', err.message, { pathname, target: target.toString() });
+        try {
+          if (!socket.destroyed) {
+            socket.write('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+          }
+        } catch {}
+        socket.destroy();
+      });
       proxyReq.end();
     } else {
       socket.destroy();

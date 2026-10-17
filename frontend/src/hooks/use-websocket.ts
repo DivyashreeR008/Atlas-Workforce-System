@@ -2,9 +2,13 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { getAccessToken } from "@/lib/auth";
+import { requiredEnv } from "@/lib/env";
 import { getReconnectDelay } from "@/lib/reconnect";
 
-const WS_BASE = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080/api/live/ws";
+const WS_BASE = requiredEnv(
+  "NEXT_PUBLIC_WS_URL",
+  "ws://localhost:8080/api/live/ws"
+);
 
 export function useWebSocket<T = Record<string, unknown>>(channel: string, enabled = true) {
   const [messages, setMessages] = useState<T[]>([]);
