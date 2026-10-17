@@ -135,6 +135,16 @@ func (h *EnrollmentHandler) UpdateProgress(c *fiber.Ctx) error {
 			"error": "Failed to fetch enrollment",
 		})
 	}
+	if enrollment.Status == "COMPLETED" {
+		return c.Status(http.StatusConflict).JSON(fiber.Map{
+			"error": "Completed enrollments cannot be updated",
+		})
+	}
+	if enrollment.Status == "DROPPED" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "Dropped enrollments cannot be updated",
+		})
+	}
 
 	var req struct {
 		ProgressPct float64 `json:"progress_pct"`
@@ -147,6 +157,11 @@ func (h *EnrollmentHandler) UpdateProgress(c *fiber.Ctx) error {
 	if req.ProgressPct < 0 || req.ProgressPct > 100 {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
 			"error": "Progress must be between 0 and 100",
+		})
+	}
+	if req.ProgressPct < enrollment.ProgressPct {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "Progress cannot decrease",
 		})
 	}
 
@@ -167,7 +182,7 @@ func (h *EnrollmentHandler) UpdateProgress(c *fiber.Ctx) error {
 		})
 	}
 
-	h.DB.First(&enrollment, "id = ?", id)
+	h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).First(&enrollment)
 	return c.JSON(fiber.Map{
 		"data": enrollment,
 	})
@@ -196,8 +211,66 @@ func (h *EnrollmentHandler) Complete(c *fiber.Ctx) error {
 		req.Score = nil
 	}
 
+	if enrollment.Status == "COMPLETED" {
+		return c.Status(http.StatusConflict).JSON(fiber.Map{
+			"error": "Enrollment is already completed",
+		})
+	}
+	if enrollment.Status == "DROPPED" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "Dropped enrollments cannot be completed",
+		})
+	}
+
+	var course models.Course
+	if err := h.DB.Where("id = ? AND tenant_id = ?", enrollment.CourseID, tenantID).First(&course).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{
+				"error": "Course not found",
+			})
+		}
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to fetch course",
+		})
+	}
+	if enrollment.ProgressPct < course.CompletionThresholdPct {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": fmt.Sprintf("Progress %.2f is below completion threshold %.2f", enrollment.ProgressPct, course.CompletionThresholdPct),
+		})
+	}
+
+	var assessments []models.Assessment
+	if err := h.DB.Where("course_id = ? AND tenant_id = ?", enrollment.CourseID, tenantID).Find(&assessments).Error; err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to fetch assessments",
+		})
+	}
+	effectiveScore := enrollment.Score
+	if req.Score != nil {
+		effectiveScore = req.Score
+	}
+	if len(assessments) > 0 {
+		if effectiveScore == nil {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+				"error": "Score is required to complete an assessed course",
+			})
+		}
+		for _, a := range assessments {
+			if *effectiveScore < a.PassingScore {
+				return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+					"error": fmt.Sprintf("Score %.2f is below passing score %.2f", *effectiveScore, a.PassingScore),
+				})
+			}
+		}
+	}
+
 	now := time.Now()
-	certID := fmt.Sprintf("CERT-%s-%s", enrollment.EmployeeID, uuid.New().String()[:8])
+	certID := ""
+	if enrollment.CertificateID != nil && *enrollment.CertificateID != "" {
+		certID = *enrollment.CertificateID
+	} else {
+		certID = fmt.Sprintf("CERT-%s-%s", enrollment.EmployeeID, uuid.New().String()[:8])
+	}
 	updates := map[string]interface{}{
 		"status":         "COMPLETED",
 		"progress_pct":   100.00,
@@ -217,7 +290,7 @@ func (h *EnrollmentHandler) Complete(c *fiber.Ctx) error {
 		})
 	}
 
-	h.DB.First(&enrollment, "id = ?", id)
+	h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).First(&enrollment)
 	return c.JSON(fiber.Map{
 		"data": enrollment,
 	})
@@ -279,16 +352,46 @@ func (h *EnrollmentHandler) BulkEnroll(c *fiber.Ctx) error {
 			"error": "Failed to fetch course",
 		})
 	}
+	if course.Status != "PUBLISHED" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "Course must be published before enrollment",
+		})
+	}
+
+	tx := h.DB.Begin()
+	if tx.Error != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to start enrollment transaction",
+		})
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			tx.Rollback()
+		}
+	}()
+
+	type bulkDetail struct {
+		EmployeeID string `json:"employee_id"`
+		Status     string `json:"status"`
+		Reason     string `json:"reason,omitempty"`
+	}
 
 	var created []models.Enrollment
+	var details []bulkDetail
 	var skipped int
 
 	for _, empID := range req.EmployeeIDs {
+		if empID == "" {
+			details = append(details, bulkDetail{EmployeeID: empID, Status: "failed", Reason: "employee_id is required"})
+			continue
+		}
 		var existing models.Enrollment
-		result := h.DB.Where("course_id = ? AND employee_id = ? AND tenant_id = ?",
+		result := tx.Set("gorm:query_option", "FOR UPDATE").Where("course_id = ? AND employee_id = ? AND tenant_id = ?",
 			req.CourseID, empID, tenantID).First(&existing)
 		if result.Error == nil {
 			skipped++
+			details = append(details, bulkDetail{EmployeeID: empID, Status: "skipped", Reason: "already enrolled"})
 			continue
 		}
 
@@ -299,15 +402,28 @@ func (h *EnrollmentHandler) BulkEnroll(c *fiber.Ctx) error {
 			EmployeeID: empID,
 			Status:     "ENROLLED",
 		}
-		if err := h.DB.Create(&enrollment).Error; err != nil {
+		if err := tx.Create(&enrollment).Error; err != nil {
+			details = append(details, bulkDetail{EmployeeID: empID, Status: "failed", Reason: "failed to enroll employee"})
 			continue
 		}
 		created = append(created, enrollment)
+		details = append(details, bulkDetail{EmployeeID: empID, Status: "enrolled"})
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to complete bulk enrollment",
+		})
+	}
+	committed = true
+	if details == nil {
+		details = []bulkDetail{}
 	}
 
 	return c.Status(http.StatusCreated).JSON(fiber.Map{
-		"data":    created,
+		"data":     created,
 		"enrolled": len(created),
-		"skipped": skipped,
+		"skipped":  skipped,
+		"details":  details,
 	})
 }

@@ -22,7 +22,7 @@ public class RoleAspect {
     public Object checkRole(ProceedingJoinPoint joinPoint, RequiresRole requiresRole) throws Throwable {
         ServletRequestAttributes attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
         if (attrs == null) {
-            return ResponseEntity.status(500).body(Map.of("error", "No request context"));
+            return ResponseEntity.status(403).body(Map.of("error", "Access denied: no request context"));
         }
 
         HttpServletRequest request = attrs.getRequest();

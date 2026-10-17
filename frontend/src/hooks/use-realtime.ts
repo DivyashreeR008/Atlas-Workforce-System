@@ -2,8 +2,12 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { getAccessToken } from "@/lib/auth";
+import { requiredEnv } from "@/lib/env";
 
-const SSE_BASE = process.env.NEXT_PUBLIC_SSE_URL ?? "http://localhost:8080/api/live/sse";
+const SSE_BASE = requiredEnv(
+  "NEXT_PUBLIC_SSE_URL",
+  "http://localhost:8080/api/live/sse"
+);
 
 interface SSEEvent {
   channel: string;

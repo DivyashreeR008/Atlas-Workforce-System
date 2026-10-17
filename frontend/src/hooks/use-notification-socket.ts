@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { requiredEnv } from "@/lib/env";
 import { getReconnectDelay } from "@/lib/reconnect";
 
 export interface LiveNotification {
@@ -11,8 +12,10 @@ export interface LiveNotification {
   createdAt: string;
 }
 
-const NOTIFICATION_WS_URL =
-  process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080/api/notification/ws";
+const NOTIFICATION_WS_URL = requiredEnv(
+  "NEXT_PUBLIC_WS_URL",
+  "ws://localhost:8080/api/notification/ws"
+);
 
 function parseNotification(raw: string): LiveNotification | null {
   try {

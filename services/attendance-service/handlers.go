@@ -1,15 +1,38 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"math"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
+
+func parsePaging(c *fiber.Ctx) (page, pageSize, offset int) {
+	page = 1
+	pageSize = 20
+	if v := c.Query("page"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			page = p
+		}
+	}
+	if v := c.Query("page_size"); v != "" {
+		if ps, err := strconv.Atoi(v); err == nil && ps > 0 {
+			pageSize = ps
+		}
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	offset = (page - 1) * pageSize
+	return page, pageSize, offset
+}
 
 // ============================================================
 // CORE ATTENDANCE HANDLERS
@@ -27,7 +50,12 @@ func listAttendance(c *fiber.Ctx) error {
 	}
 	// Best-effort flag for records left open past the threshold (forgotten
 	// clock-out). Runs async so reads stay fast; skips already-flagged rows.
-	go flagStaleOpenRecords(tenantId)
+	// Bounded so a slow DB cannot pile up goroutines after the response.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		flagStaleOpenRecords(ctx, tenantId)
+	}()
 	var records []AttendanceRecord
 	q := db.Where("tenant_id = ?", tenantId).Order("date DESC, clock_in DESC")
 
@@ -46,7 +74,8 @@ func listAttendance(c *fiber.Ctx) error {
 	if endDate := c.Query("endDate"); endDate != "" {
 		q = q.Where("date <= ?", endDate)
 	}
-	q.Find(&records)
+	_, pageSize, offset := parsePaging(c)
+	q.Offset(offset).Limit(pageSize).Find(&records)
 	if records == nil {
 		records = []AttendanceRecord{}
 	}
@@ -109,11 +138,17 @@ func clockIn(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
+	if req.EmployeeID == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "employeeId is required"})
+	}
+	if req.LocalDate == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "localDate is required"})
+	}
+	if _, err := time.Parse("2006-01-02", req.LocalDate); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "localDate must be YYYY-MM-DD"})
+	}
 
 	today := req.LocalDate
-	if today == "" {
-		today = time.Now().UTC().Format("2006-01-02")
-	}
 	tenantId := getTenant(c)
 
 	if db == nil {
@@ -154,9 +189,9 @@ func clockIn(c *fiber.Ctx) error {
 				geoFenceID = &fence.ID
 			}
 		}
-		// Check late arrival
-		status = checkLateArrival(tenantId, req.EmployeeID, today, status)
 	}
+	// Always judge lateness, with or without GPS.
+	status = checkLateArrival(tenantId, req.EmployeeID, today, status)
 
 	record := AttendanceRecord{
 		TenantID:    tenantId,
@@ -209,8 +244,13 @@ func clockIn(c *fiber.Ctx) error {
 	// Publish clock-in event to live dashboard
 	publishEvent("attendance.clockin", tenantId, record)
 
-	// Detect anomalies after clock-in
-	go detectAnomaliesAfterClockIn(record)
+	// Detect anomalies after clock-in. Bounded so shutdown or a slow DB
+	// cannot leak this goroutine.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		detectAnomaliesAfterClockIn(ctx, record)
+	}()
 
 	return c.JSON(record)
 }
@@ -255,14 +295,20 @@ func clockOut(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Already clocked out"})
 	}
 
-	now := time.Now().UTC()
-	record.ClockOut = &now
+	loc := record.ClockIn.Location()
+	if loc == nil {
+		loc = time.UTC
+	}
+	clockOutAt := time.Now().In(loc)
+	record.ClockOut = &clockOutAt
 
 	// Overtime is capped at the shift policy maximum. Anything beyond the
 	// cap is not payable and is recorded as an anomaly for manager review,
 	// so a forgotten clock-out cannot turn into unlimited paid overtime.
-	duration := now.Sub(record.ClockIn.UTC()).Hours()
-	policy := getShiftPolicy(tenantId, req.EmployeeID, today)
+	// Duration uses Sub on the clock-in timezone so DST jumps measure
+	// elapsed time, and the date bucket comes from the stored record.
+	duration := clockOutAt.Sub(record.ClockIn).Hours()
+	policy := getShiftPolicy(tenantId, req.EmployeeID, record.Date)
 	payable, excess := computeCappedOvertime(duration, policy.standardHours, policy.maxOvertime)
 	record.Overtime = payable
 	record.OvertimeMultiplier = policy.multiplier
@@ -312,7 +358,8 @@ func listGeoFences(c *fiber.Ctx) error {
 		return c.JSON([]GeoFence{})
 	}
 	var fences []GeoFence
-	db.Where("tenant_id = ?", tenantId).Find(&fences)
+	_, pageSize, offset := parsePaging(c)
+	db.Where("tenant_id = ?", tenantId).Offset(offset).Limit(pageSize).Find(&fences)
 	if fences == nil {
 		fences = []GeoFence{}
 	}
@@ -399,7 +446,8 @@ func listShifts(c *fiber.Ctx) error {
 		return c.JSON([]Shift{})
 	}
 	var shifts []Shift
-	db.Where("tenant_id = ?", tenantId).Find(&shifts)
+	_, pageSize, offset := parsePaging(c)
+	db.Where("tenant_id = ?", tenantId).Offset(offset).Limit(pageSize).Find(&shifts)
 	if shifts == nil {
 		shifts = []Shift{}
 	}
@@ -564,7 +612,8 @@ func listRosters(c *fiber.Ctx) error {
 	if empID := c.Query("employeeId"); empID != "" {
 		q = q.Where("employee_id = ?", empID)
 	}
-	q.Preload("Shift").Find(&rosters)
+	_, pageSize, offset := parsePaging(c)
+	q.Preload("Shift").Offset(offset).Limit(pageSize).Find(&rosters)
 	if rosters == nil {
 		rosters = []Roster{}
 	}
@@ -644,13 +693,19 @@ func validateQRToken(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
+	if req.Token == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "token is required"})
+	}
+	tenantId := getTenant(c)
 	if db == nil {
 		return c.JSON(fiber.Map{"valid": true, "token": req.Token})
 	}
 	var qr QRAttendance
-	err := db.Where("token = ? AND is_used = ? AND expires_at > ?", req.Token, false, time.Now()).First(&qr).Error
-	if err != nil {
-		return c.JSON(fiber.Map{"valid": false, "error": "Invalid or expired QR token"})
+	if err := db.Where("token = ? AND tenant_id = ?", req.Token, tenantId).First(&qr).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"valid": false, "error": "QR token not found"})
+	}
+	if qr.IsUsed || time.Now().UTC().After(qr.ExpiresAt) {
+		return c.Status(401).JSON(fiber.Map{"valid": false, "error": "QR token expired or already used"})
 	}
 	return c.JSON(fiber.Map{"valid": true, "token": qr.Token, "geoFenceId": qr.GeoFenceID})
 }
@@ -662,8 +717,21 @@ func markQRUsed(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
+	if req.Token == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "token is required"})
+	}
+	tenantId := getTenant(c)
 	if db != nil {
-		db.Model(&QRAttendance{}).Where("token = ?", req.Token).Update("is_used", true)
+		res := db.Model(&QRAttendance{}).
+			Where("token = ? AND tenant_id = ? AND is_used = ? AND expires_at > ?",
+				req.Token, tenantId, false, time.Now().UTC()).
+			Update("is_used", true)
+		if res.Error != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to redeem QR token"})
+		}
+		if res.RowsAffected == 0 {
+			return c.Status(404).JSON(fiber.Map{"error": "QR token not found, expired, or already used"})
+		}
 	}
 	return c.JSON(fiber.Map{"message": "QR token marked as used"})
 }
@@ -694,7 +762,8 @@ func listNFCRegistrations(c *fiber.Ctx) error {
 		return c.JSON([]NFCRegistration{})
 	}
 	var nfcs []NFCRegistration
-	db.Where("tenant_id = ?", tenantId).Find(&nfcs)
+	_, pageSize, offset := parsePaging(c)
+	db.Where("tenant_id = ?", tenantId).Offset(offset).Limit(pageSize).Find(&nfcs)
 	if nfcs == nil {
 		nfcs = []NFCRegistration{}
 	}
@@ -805,7 +874,8 @@ func listBiometricDevices(c *fiber.Ctx) error {
 		return c.JSON([]BiometricDevice{})
 	}
 	var devices []BiometricDevice
-	db.Where("tenant_id = ?", tenantId).Find(&devices)
+	_, pageSize, offset := parsePaging(c)
+	db.Where("tenant_id = ?", tenantId).Offset(offset).Limit(pageSize).Find(&devices)
 	if devices == nil {
 		devices = []BiometricDevice{}
 	}
@@ -853,7 +923,8 @@ func listAnomalies(c *fiber.Ctx) error {
 	if resolved := c.Query("resolved"); resolved != "" {
 		q = q.Where("is_resolved = ?", resolved == "true")
 	}
-	q.Order("detected_at DESC").Find(&anomalies)
+	_, pageSize, offset := parsePaging(c)
+	q.Order("detected_at DESC").Offset(offset).Limit(pageSize).Find(&anomalies)
 	if anomalies == nil {
 		anomalies = []AnomalyLog{}
 	}
@@ -900,7 +971,8 @@ func listWFHEntries(c *fiber.Ctx) error {
 	if date := c.Query("date"); date != "" {
 		q = q.Where("date = ?", date)
 	}
-	q.Order("date DESC").Find(&entries)
+	_, pageSize, offset := parsePaging(c)
+	q.Order("date DESC").Offset(offset).Limit(pageSize).Find(&entries)
 	if entries == nil {
 		entries = []WFHTracking{}
 	}
@@ -1320,14 +1392,24 @@ func logAnomaly(tenantID, employeeID string, recordID *uint, anomalyType, severi
 // flagStaleOpenRecords marks still-open records past the threshold so a
 // forgotten clock-out shows up in the anomaly list instead of silently
 // growing. Already-flagged rows are skipped.
-func flagStaleOpenRecords(tenantId string) {
+func flagStaleOpenRecords(ctx context.Context, tenantId string) {
 	if db == nil {
 		return
+	}
+	select {
+	case <-ctx.Done():
+		return
+	default:
 	}
 	cutoff := time.Now().UTC().Add(-MaxOpenRecordHours * time.Hour)
 	var stale []AttendanceRecord
 	db.Where("tenant_id = ? AND clock_out IS NULL AND clock_in < ?", tenantId, cutoff).Find(&stale)
 	for i := range stale {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		r := stale[i]
 		var existing int64
 		db.Model(&AnomalyLog{}).Where("tenant_id = ? AND record_id = ? AND anomaly_type = ? AND is_resolved = ?",
@@ -1348,6 +1430,20 @@ func flagStaleOpenRecords(tenantId string) {
 	}
 }
 
+func siteLocation() *time.Location {
+	if tz := os.Getenv("SITE_TIMEZONE"); tz != "" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			return loc
+		}
+	}
+	if tz := os.Getenv("TIMEZONE"); tz != "" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			return loc
+		}
+	}
+	return time.Local
+}
+
 func checkLateArrival(tenantID, employeeID, date, currentStatus string) string {
 	if currentStatus == "REMOTE" || currentStatus == "WFH" {
 		return currentStatus
@@ -1355,19 +1451,31 @@ func checkLateArrival(tenantID, employeeID, date, currentStatus string) string {
 	if db == nil {
 		return currentStatus
 	}
-	var es EmployeeShift
-	err := db.Where("tenant_id = ? AND employee_id = ? AND is_active = ?", tenantID, employeeID, true).
-		Preload("Shift").First(&es).Error
-	if err != nil || es.Shift.ID == 0 {
+	loc := siteLocation()
+	var shift Shift
+	found := false
+	var roster Roster
+	if err := db.Where("tenant_id = ? AND employee_id = ? AND date = ?", tenantID, employeeID, date).
+		Preload("Shift").First(&roster).Error; err == nil && roster.Shift.ID != 0 {
+		shift = roster.Shift
+		found = true
+	} else {
+		var es EmployeeShift
+		if err := db.Where("tenant_id = ? AND employee_id = ? AND is_active = ?", tenantID, employeeID, true).
+			Preload("Shift").First(&es).Error; err == nil && es.Shift.ID != 0 {
+			shift = es.Shift
+			found = true
+		}
+	}
+	if !found {
 		return currentStatus
 	}
-	shift := es.Shift
 	startH, startM, err := parseShiftTime(shift.StartTime)
 	if err != nil {
 		return currentStatus
 	}
-	now := time.Now().UTC()
-	shiftStart := time.Date(now.Year(), now.Month(), now.Day(), startH, startM+shift.GraceMinutes, 0, 0, time.UTC)
+	now := time.Now().In(loc)
+	shiftStart := time.Date(now.Year(), now.Month(), now.Day(), startH, startM+shift.GraceMinutes, 0, 0, loc)
 	if now.After(shiftStart) {
 		return "LATE"
 	}
@@ -1390,9 +1498,14 @@ func verifyFace(tenantID, employeeID, faceImage string) bool {
 	return false
 }
 
-func detectAnomaliesAfterClockIn(record AttendanceRecord) {
+func detectAnomaliesAfterClockIn(ctx context.Context, record AttendanceRecord) {
 	if db == nil {
 		return
+	}
+	select {
+	case <-ctx.Done():
+		return
+	default:
 	}
 
 	tenantId := record.TenantID
@@ -1409,7 +1522,7 @@ func detectAnomaliesAfterClockIn(record AttendanceRecord) {
 			AnomalyType: "duplicate_clockin",
 			Severity:    "medium",
 			Description: fmt.Sprintf("Employee %s has %d clock-in records on %s", employeeId, count, record.Date),
-			DetectedAt:  time.Now(),
+			DetectedAt:  time.Now().UTC(),
 		})
 	}
 
@@ -1437,7 +1550,7 @@ func detectAnomaliesAfterClockIn(record AttendanceRecord) {
 					AnomalyType: "location_anomaly",
 					Severity:    "high",
 					Description: fmt.Sprintf("Employee %s clocked in %.0fm from usual location", employeeId, dist),
-					DetectedAt:  time.Now(),
+					DetectedAt:  time.Now().UTC(),
 				})
 			}
 		}
@@ -1455,7 +1568,7 @@ func detectAnomaliesAfterClockIn(record AttendanceRecord) {
 			AnomalyType: "frequent_overtime",
 			Severity:    "low",
 			Description: fmt.Sprintf("Employee %s has worked overtime on %d of last 10 days", employeeId, len(recentOTRecords)),
-			DetectedAt:  time.Now(),
+			DetectedAt:  time.Now().UTC(),
 		})
 	}
 }

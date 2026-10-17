@@ -39,3 +39,28 @@ body:
       options:
         - label: I am filing this during Sprint 26 and understand maintainers will label scoped tasks `osn-sprint-26`
         - label: I have read CONTRIBUTING.md and will comment to claim before opening a PR
+  
+  - type: input
+    id: versions
+    attributes:
+      label: Software versions
+      description: Specify the affected service and relevant dependency versions.
+      placeholder: "Node 20, Python 3.11, Docker Compose v2"
+
+  - type: textarea
+    id: tenant_setup
+    attributes:
+      label: Tenant setup
+      description: Describe tenant configuration, roles, and permissions needed to reproduce the bug. Do not include secrets.
+      placeholder: "Tenant configuration, user role, feature flags, relevant settings"
+
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected vs actual behavior
+      description: Explain what you expected and what actually happened.
+      placeholder: |
+        Expected:
+        Actual:
+    validations:
+      required: true

@@ -1,5 +1,6 @@
 import logging
 import hashlib
+import re
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,15 +33,21 @@ logger = get_logger("analytics-service")
 payroll_cache = {}
 payroll_cache_timestamp = {}
 PAYROLL_CACHE_TTL = 300
+payroll_cache_lock = threading.Lock()
 
 
 def invalidate_payroll_cache(tenant_id=None):
-    if tenant_id:
-        payroll_cache.pop(f"payroll_{tenant_id}", None)
-        payroll_cache_timestamp.pop(f"payroll_{tenant_id}", None)
-    else:
-        payroll_cache.clear()
-        payroll_cache_timestamp.clear()
+    with payroll_cache_lock:
+        if tenant_id:
+            payroll_cache.pop(f"payroll_{tenant_id}", None)
+            payroll_cache_timestamp.pop(f"payroll_{tenant_id}", None)
+        else:
+            payroll_cache.clear()
+            payroll_cache_timestamp.clear()
+
+
+def record_payroll_write(tenant_id=None):
+    invalidate_payroll_cache(tenant_id)
 
 
 def safe_divide(numerator, denominator, default=0):
@@ -243,8 +250,9 @@ def get_payroll_analytics(x_tenant_id: str = Header("default", alias="X-Tenant-I
 
     cache_key = f"payroll_{x_tenant_id}"
     now = time.time()
-    if cache_key in payroll_cache and (now - payroll_cache_timestamp.get(cache_key, 0)) < PAYROLL_CACHE_TTL:
-        return payroll_cache[cache_key]
+    with payroll_cache_lock:
+        if cache_key in payroll_cache and (now - payroll_cache_timestamp.get(cache_key, 0)) < PAYROLL_CACHE_TTL:
+            return payroll_cache[cache_key]
 
     try:
         query = """
@@ -256,8 +264,9 @@ def get_payroll_analytics(x_tenant_id: str = Header("default", alias="X-Tenant-I
         """
         df = pd.read_sql_query(text(query).bindparams(tenant_id=x_tenant_id), engine)
         result = df.to_dict(orient="records")
-        payroll_cache[cache_key] = result
-        payroll_cache_timestamp[cache_key] = now
+        with payroll_cache_lock:
+            payroll_cache[cache_key] = result
+            payroll_cache_timestamp[cache_key] = now
         return result
     except Exception:
         logger.exception("analytics.payroll_failed", extra={"tenant_id": x_tenant_id})
@@ -283,6 +292,9 @@ def get_performance_prediction():
         "predictions_ready": True,
         "top_performer_id": int(top_performer["employee_id"]),
         "score": float(top_performer["performance_score"]),
+        "provisional": True,
+        "source": "mock-heuristic",
+        "disclaimer": "Provisional mock output for UI development; not a production prediction.",
     }
 
 
@@ -727,18 +739,24 @@ def verify_payroll_consistency(
     period: str,
     x_tenant_id: str = Header("default", alias="X-Tenant-Id")
 ):
+    if not re.match(r"^\d{4}-(0[1-9]|1[0-2])$", period or ""):
+        raise HTTPException(status_code=400, detail="Invalid period format, expected YYYY-MM")
     if not engine:
         raise HTTPException(status_code=500, detail="Database connection failed")
+    MAX_VERIFY_ROWS = 5000
     try:
         payroll_query = text("""
             SELECT employee_id, period, base_salary, allowances, deductions,
                    gross_salary, net_salary, tax
             FROM payroll_records
             WHERE tenant_id = :tenant_id AND period = :period
+            LIMIT 5000
         """)
         payroll_df = pd.read_sql_query(
             payroll_query.bindparams(tenant_id=x_tenant_id, period=period), engine
         )
+        if len(payroll_df) > MAX_VERIFY_ROWS:
+            payroll_df = payroll_df.head(MAX_VERIFY_ROWS)
 
         attendance_query = text("""
             SELECT employee_id, date, status, clock_in, clock_out
@@ -746,28 +764,36 @@ def verify_payroll_consistency(
             WHERE tenant_id = :tenant_id
               AND date >= (:period || '-01')::date
               AND date < ((:period || '-01')::date + INTERVAL '1 month')
+            LIMIT 5000
         """)
         attendance_df = pd.read_sql_query(
             attendance_query.bindparams(tenant_id=x_tenant_id, period=period), engine
         )
+        if len(attendance_df) > MAX_VERIFY_ROWS:
+            attendance_df = attendance_df.head(MAX_VERIFY_ROWS)
 
+        attendance_by_employee = dict(tuple(attendance_df.groupby("employee_id"))) if not attendance_df.empty else {}
         discrepancies = []
         for _, row in payroll_df.iterrows():
             emp_id = row["employee_id"]
             # Log only a non-reversible fingerprint, never the raw employee ID.
             emp_fp = hashlib.sha256(f"{x_tenant_id}:{emp_id}".encode()).hexdigest()[:16]
-            emp_attendance = attendance_df[attendance_df["employee_id"] == emp_id]
-            total_hours = 0
-            total_days = len(emp_attendance)
-            for _, a in emp_attendance.iterrows():
-                if a["clock_in"] and a["clock_out"]:
-                    try:
-                        cin = pd.to_datetime(a["clock_in"])
-                        cout = pd.to_datetime(a["clock_out"])
-                        total_hours += (cout - cin).total_seconds() / 3600
-                    except (ValueError, TypeError) as e:
-                        logger.warning("payroll.verify_row_skipped",
-                            extra={"error": str(e), "employee_fp": emp_fp, "period": period})
+            emp_attendance = attendance_by_employee.get(emp_id)
+            if emp_attendance is None:
+                total_days = 0
+                total_hours = 0
+            else:
+                total_days = len(emp_attendance)
+                total_hours = 0
+                for _, a in emp_attendance.iterrows():
+                    if a["clock_in"] and a["clock_out"]:
+                        try:
+                            cin = pd.to_datetime(a["clock_in"])
+                            cout = pd.to_datetime(a["clock_out"])
+                            total_hours += (cout - cin).total_seconds() / 3600
+                        except (ValueError, TypeError) as e:
+                            logger.warning("payroll.verify_row_skipped",
+                                extra={"error": str(e), "employee_fp": emp_fp, "period": period})
             discrepancies.append({
                 "employee_id": emp_id,
                 "period": period,
@@ -776,6 +802,8 @@ def verify_payroll_consistency(
                 "attendance_hours": round(total_hours, 2),
                 "base_salary": float(row["base_salary"]),
             })
+            if len(discrepancies) >= MAX_VERIFY_ROWS:
+                break
 
         return {
             "period": period,
@@ -844,6 +872,12 @@ def get_activity_feed(x_tenant_id: str = Header("default", alias="X-Tenant-Id"))
              "timestamp": "2026-05-21T09:00:00Z"},
         ],
     }
+
+
+@app.post("/analytics/payroll/invalidate", tags=["analytics"], summary="Invalidate payroll cache")
+def invalidate_payroll_cache_endpoint(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
+    record_payroll_write(x_tenant_id)
+    return {"status": "invalidated", "tenant_id": x_tenant_id}
 
 
 def payroll_processed_consumer():

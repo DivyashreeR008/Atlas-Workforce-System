@@ -131,12 +131,17 @@ async def lifespan(app: FastAPI):
     start_rabbitmq_consumer()
 
     def _background_loop():
+        failures = 0
         while True:
             try:
                 process_outbox()
                 retry_failed_deliveries()
             except Exception as e:
-                pass
+                failures += 1
+                logger.exception(
+                    "integration.background_loop_failed",
+                    extra={"error": str(e), "error_type": type(e).__name__, "failures_total": failures},
+                )
             time.sleep(15)
 
     bg_thread = threading.Thread(target=_background_loop, daemon=True)

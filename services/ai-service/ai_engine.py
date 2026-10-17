@@ -474,8 +474,8 @@ def _detect_anomalies(data_source: str, metric: str = "", department: str = "", 
 
 
 def _optimize_shifts(department: str, date_range: list[str], current_schedule: list[dict] = None, constraints: dict = None) -> dict:
-    start = datetime.strptime(date_range[0], "%Y-%m-%d") if date_range else datetime.now()
-    days = abs((datetime.strptime(date_range[1], "%Y-%m-%d") - start).days) + 1 if len(date_range) > 1 else 7
+    start = datetime.strptime(date_range[0], "%Y-%m-%d").replace(tzinfo=timezone.utc) if date_range else datetime.now(timezone.utc)
+    days = abs((datetime.strptime(date_range[1], "%Y-%m-%d").replace(tzinfo=timezone.utc) - start).days) + 1 if len(date_range) > 1 else 7
     schedule = []
     for d in range(days):
         day = (start + timedelta(days=d)).strftime("%Y-%m-%d")
