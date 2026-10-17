@@ -3,7 +3,7 @@ import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, Header, HTTPException, Request
+from fastapi import FastAPI, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -164,14 +164,21 @@ def workforce_dashboard(x_tenant_id: str = Header("default", alias="X-Tenant-Id"
 
 
 @app.get("/api/v1/workforce/strategic-plans", tags=["Dashboard"])
-def list_strategic_plans(page: int = 1, page_size: int = 20, status: str = None, x_tenant_id: str = Header("default", alias="X-Tenant-Id"), db: Session = Depends(get_db)):
+def list_strategic_plans(page: int = Query(1, ge=1, le=10000), page_size: int = Query(20, ge=1, le=100), status: str = Query(None, max_length=50), x_tenant_id: str = Header("default", alias="X-Tenant-Id"), db: Session = Depends(get_db)):
     return crud.list_strategic_plans(db, x_tenant_id, page, page_size, status)
+
+
+def _parse_plan_id(plan_id: str):
+    from uuid import UUID
+    try:
+        return UUID(str(plan_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=404, detail="Strategic plan not found")
 
 
 @app.get("/api/v1/workforce/strategic-plans/{plan_id}", tags=["Dashboard"])
 def get_strategic_plan(plan_id, x_tenant_id: str = Header("default", alias="X-Tenant-Id"), db: Session = Depends(get_db)):
-    from uuid import UUID
-    result = crud.get_strategic_plan(db, UUID(plan_id), x_tenant_id)
+    result = crud.get_strategic_plan(db, _parse_plan_id(plan_id), x_tenant_id)
     if not result:
         from fastapi import HTTPException
         raise HTTPException(404, detail="Strategic plan not found")
@@ -187,10 +194,9 @@ def create_strategic_plan(payload: dict, x_tenant_id: str = Header("default", al
 
 @app.put("/api/v1/workforce/strategic-plans/{plan_id}", tags=["Dashboard"])
 def update_strategic_plan(plan_id, payload: dict, x_tenant_id: str = Header("default", alias="X-Tenant-Id"), db: Session = Depends(get_db)):
-    from uuid import UUID
     from schemas import StrategicPlanUpdate
     validated = StrategicPlanUpdate(**payload)
-    result = crud.update_strategic_plan(db, UUID(plan_id), x_tenant_id, validated.model_dump(exclude_unset=True))
+    result = crud.update_strategic_plan(db, _parse_plan_id(plan_id), x_tenant_id, validated.model_dump(exclude_unset=True))
     if not result:
         from fastapi import HTTPException
         raise HTTPException(404, detail="Strategic plan not found")
@@ -199,8 +205,7 @@ def update_strategic_plan(plan_id, payload: dict, x_tenant_id: str = Header("def
 
 @app.delete("/api/v1/workforce/strategic-plans/{plan_id}", tags=["Dashboard"])
 def delete_strategic_plan(plan_id, x_tenant_id: str = Header("default", alias="X-Tenant-Id"), db: Session = Depends(get_db)):
-    from uuid import UUID
-    if not crud.delete_strategic_plan(db, UUID(plan_id), x_tenant_id):
+    if not crud.delete_strategic_plan(db, _parse_plan_id(plan_id), x_tenant_id):
         from fastapi import HTTPException
         raise HTTPException(404, detail="Strategic plan not found")
     return {"message": "Strategic plan deleted"}

@@ -16,6 +16,7 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.Map;
 
@@ -66,7 +67,8 @@ public class InternalAuthFilter implements Filter {
 			String signature = parts[2];
 
 			String expectedSignature = computeHmac(header + "." + payload, internalJwtSecret);
-			if (!expectedSignature.equals(signature)) {
+			if (!MessageDigest.isEqual(expectedSignature.getBytes(StandardCharsets.UTF_8),
+					signature.getBytes(StandardCharsets.UTF_8))) {
 				sendError(response, 401, "Invalid token signature");
 				return;
 			}
@@ -75,13 +77,23 @@ public class InternalAuthFilter implements Filter {
 			@SuppressWarnings("unchecked")
 			Map<String, Object> claims = objectMapper.readValue(decodedPayload, Map.class);
 
-			long exp = claims.containsKey("exp") ? ((Number) claims.get("exp")).longValue() : 0;
+			Object expClaim = claims.get("exp");
+			if (!(expClaim instanceof Number)) {
+				sendError(response, 401, "Invalid or missing exp claim");
+				return;
+			}
+			long exp = ((Number) expClaim).longValue();
 			if (System.currentTimeMillis() / 1000 > exp) {
 				sendError(response, 401, "Token expired");
 				return;
 			}
 
-			String tenantId = String.valueOf(claims.getOrDefault("tenant_id", "default"));
+			Object tenantClaim = claims.get("tenant_id");
+			if (tenantClaim == null || tenantClaim.toString().isBlank()) {
+				sendError(response, 401, "Missing tenant claim");
+				return;
+			}
+			String tenantId = tenantClaim.toString();
 			String headerTenantId = request.getHeader("X-Tenant-Id");
 			if (headerTenantId != null && !headerTenantId.isEmpty() && !tenantId.equals(headerTenantId)) {
 				sendError(response, 403, "Tenant mismatch: X-Tenant-Id does not match verified token claims");

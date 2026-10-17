@@ -256,15 +256,18 @@ func handleEmployeeDeletion(tenantID, employeeID string) {
 		&FaceEnrollment{},
 	}
 	for _, model := range models {
-		db.Model(model).
+		if err := db.Model(model).
 			Where("tenant_id = ? AND employee_id = ?", tenantID, employeeID).
-			Update("employee_id", archivedID)
+			Update("employee_id", archivedID).Error; err != nil {
+			log.Printf("Warning: failed to archive %T for employee %s/%s: %v", model, tenantID, employeeID, err)
+		}
 	}
 	log.Printf("Archived all records for deleted employee: %s/%s -> %s", tenantID, employeeID, archivedID)
 }
 
 func publishEvent(routingKey, tenantID string, record AttendanceRecord) {
 	if rabbitChan == nil {
+		log.Printf("Warning: RabbitMQ channel unavailable, dropping event %s for %s/%s", routingKey, tenantID, record.EmployeeID)
 		return
 	}
 

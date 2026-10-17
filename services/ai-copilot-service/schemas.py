@@ -56,7 +56,7 @@ class EmployeeRiskInput(BaseModel):
 
 
 class AttritionRiskRequest(BaseModel):
-    employees: list[EmployeeRiskInput]
+    employees: list[EmployeeRiskInput] = Field(..., min_length=1, max_length=100)
 
 
 class RiskPrediction(BaseModel):

@@ -1,0 +1,58 @@
+
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+categories:
+  - title: Breaking Changes
+    semver-increment: major
+    when:
+      labels:
+        - breaking
+        - breaking-change
+
+  - title: Security
+    when:
+      labels:
+        - security
+        - vulnerability
+
+  - title: Features
+    semver-increment: minor
+    when:
+      labels:
+        - feature
+        - enhancement
+
+  - title: Bug Fixes
+    when:
+      labels:
+        - bug
+        - fix
+        - bugfix
+
+  - title: Dependencies
+    when:
+      labels:
+        - dependencies
+        - dependency
+
+  - title: Documentation and Maintenance
+    when:
+      labels:
+        - documentation
+        - chore
+        - maintenance
+
+  - type: version-resolver
+    semver-increment: patch
+
+change-template: '- $TITLE (#$NUMBER) $AUTHORS'
+
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  ---
+  These notes are generated automatically.
+  Maintainers review and publish releases manually.

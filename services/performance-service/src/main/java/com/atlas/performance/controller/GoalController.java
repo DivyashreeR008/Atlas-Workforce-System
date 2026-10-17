@@ -52,6 +52,9 @@ public class GoalController {
         try {
             return ResponseEntity.ok(service.getGoal(tenantId, id));
         } catch (IllegalArgumentException e) {
+            if (e.getMessage() != null && e.getMessage().toLowerCase().contains("not found")) {
+                return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
+            }
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
@@ -65,6 +68,9 @@ public class GoalController {
         try {
             return ResponseEntity.ok(service.updateGoal(tenantId, id, goal));
         } catch (IllegalArgumentException e) {
+            if (e.getMessage() != null && e.getMessage().toLowerCase().contains("not found")) {
+                return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
+            }
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
@@ -78,6 +84,9 @@ public class GoalController {
             service.deleteGoal(tenantId, id);
             return ResponseEntity.ok(Map.of("message", "Goal deleted successfully"));
         } catch (IllegalArgumentException e) {
+            if (e.getMessage() != null && e.getMessage().toLowerCase().contains("not found")) {
+                return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
+            }
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
@@ -94,6 +103,9 @@ public class GoalController {
             String keyResults = (String) request.get("keyResults");
             return ResponseEntity.ok(service.updateGoalProgress(tenantId, id, progressPct, keyResults));
         } catch (IllegalArgumentException e) {
+            if (e.getMessage() != null && e.getMessage().toLowerCase().contains("not found")) {
+                return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
+            }
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
@@ -107,6 +119,9 @@ public class GoalController {
         try {
             return ResponseEntity.ok(service.updateGoalStatus(tenantId, id, request.get("status")));
         } catch (IllegalArgumentException e) {
+            if (e.getMessage() != null && e.getMessage().toLowerCase().contains("not found")) {
+                return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
+            }
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }

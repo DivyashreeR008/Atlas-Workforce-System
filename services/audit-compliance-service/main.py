@@ -785,46 +785,61 @@ async def verify_chain_integrity(
     effective_tenant = resolve_tenant(tenant_id, verified_tenant)
     from crud import _compute_hash
 
-    entries = (
-        db.query(AuditLog)
-        .filter(AuditLog.tenant_id == effective_tenant)
-        .order_by(AuditLog.created_at.asc())
-        .all()
-    )
+    VERIFY_BATCH_SIZE = 500
 
     issues = []
-    for i, entry in enumerate(entries):
-        expected_prev_hash = entries[i - 1].hash if i > 0 else ""
-        if (entry.previous_hash or "") != expected_prev_hash:
-            issues.append({
-                "index": i,
-                "id": str(entry.id),
-                "issue": "previous_hash mismatch",
-                "expected": expected_prev_hash,
-                "found": entry.previous_hash or "",
-            })
-
-        expected_hash = _compute_hash(
-            previous_hash=expected_prev_hash,
-            event_type=entry.event_type,
-            actor_id=entry.actor_id,
-            action=entry.action,
-            resource_type=entry.resource_type,
-            resource_id=entry.resource_id,
-            created_at=entry.created_at,
+    index = 0
+    total_entries = 0
+    expected_prev_hash = ""
+    offset = 0
+    while True:
+        batch = (
+            db.query(AuditLog)
+            .filter(AuditLog.tenant_id == effective_tenant)
+            .order_by(AuditLog.created_at.asc())
+            .offset(offset)
+            .limit(VERIFY_BATCH_SIZE)
+            .all()
         )
-        if entry.hash != expected_hash:
-            issues.append({
-                "index": i,
-                "id": str(entry.id),
-                "issue": "hash mismatch — entry has been tampered with",
-                "expected": expected_hash,
-                "found": entry.hash,
-            })
+        if not batch:
+            break
+        for entry in batch:
+            if (entry.previous_hash or "") != expected_prev_hash:
+                issues.append({
+                    "index": index,
+                    "id": str(entry.id),
+                    "issue": "previous_hash mismatch",
+                    "expected": expected_prev_hash,
+                    "found": entry.previous_hash or "",
+                })
+
+            expected_hash = _compute_hash(
+                previous_hash=expected_prev_hash,
+                event_type=entry.event_type,
+                actor_id=entry.actor_id,
+                action=entry.action,
+                resource_type=entry.resource_type,
+                resource_id=entry.resource_id,
+                created_at=entry.created_at,
+            )
+            if entry.hash != expected_hash:
+                issues.append({
+                    "index": index,
+                    "id": str(entry.id),
+                    "issue": "hash mismatch — entry has been tampered with",
+                    "expected": expected_hash,
+                    "found": entry.hash,
+                })
+            expected_prev_hash = entry.hash
+            index += 1
+        total_entries += len(batch)
+        if len(batch) < VERIFY_BATCH_SIZE:
+            break
+        offset += len(batch)
 
     return {
         "tenant_id": effective_tenant,
-        "total_entries": len(entries),
+        "total_entries": total_entries,
         "chain_intact": len(issues) == 0,
         "issues": issues,
     }
