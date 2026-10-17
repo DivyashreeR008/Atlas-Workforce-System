@@ -88,6 +88,38 @@ async def test_ai_insights_mock(client):
 
 
 @pytest.mark.asyncio
+async def test_command_center_overview(client):
+    response = await client.get(
+        "/api/v1/command-center/overview",
+        headers={"X-Tenant-Id": "test-tenant"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "totalHeadcount" in data
+    assert "payrollMtd" in data
+
+
+@pytest.mark.asyncio
+async def test_command_center_org_health(client):
+    response = await client.get(
+        "/api/v1/command-center/org-health",
+        headers={"X-Tenant-Id": "test-tenant"},
+    )
+    assert response.status_code == 200
+    assert "overall" in response.json()
+
+
+@pytest.mark.asyncio
+async def test_command_center_activity_feed(client):
+    response = await client.get(
+        "/api/v1/command-center/activity-feed",
+        headers={"X-Tenant-Id": "test-tenant"},
+    )
+    assert response.status_code == 200
+    assert "activities" in response.json()
+
+
+@pytest.mark.asyncio
 async def test_command_center_overview_shape(client):
     resp = await client.get("/api/v1/command-center/overview", headers={"X-Tenant-Id": "test-tenant"})
     assert resp.status_code == 200
