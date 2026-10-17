@@ -219,7 +219,32 @@ app.use(
     credentials: true,
   })
 );
-app.use(morgan('dev'));
+morgan.token('correlation-id', (req) => req.headers['x-correlation-id'] || '-');
+app.use(morgan(':method :url :status :response-time ms - :res[content-length] corr=:correlation-id'));
+
+// Ingress correlation: honor a client-supplied x-correlation-id when it is a
+// sane token, otherwise mint one. The id is echoed on the response and
+// forwarded downstream by proxyService, and auditProxyMiddleware already
+// carries req.headers['x-correlation-id'] into audit events.
+function correlationIdMiddleware(req, res, next) {
+  const incoming = req.headers['x-correlation-id'];
+  let id = null;
+  if (typeof incoming === 'string' && incoming.trim()) {
+    const trimmed = incoming.trim().slice(0, 128);
+    if (/^[A-Za-z0-9\-_:.]{1,128}$/.test(trimmed)) {
+      id = trimmed;
+    }
+  }
+  if (!id) {
+    id = crypto.randomUUID();
+  }
+  req.headers['x-correlation-id'] = id;
+  try {
+    res.setHeader('x-correlation-id', id);
+  } catch {}
+  next();
+}
+app.use(correlationIdMiddleware);
 
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -1380,6 +1405,7 @@ module.exports = {
   services,
   authMiddleware,
   isPublicOrAuthPath,
+  correlationIdMiddleware,
   mfaStepUpMiddleware,
   auditProxyMiddleware,
   deviceTrustHeaderMiddleware,
