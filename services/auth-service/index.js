@@ -1329,6 +1329,10 @@ app.post('/login', createUserRateLimiter('login', 20, 15 * 60 * 1000, { keyByEma
     return res.status(400).json({ message: 'Email and password are required' });
   }
 
+  const emailError = validateEmail(email);
+  if (emailError) {
+    return res.status(400).json({ message: emailError });
+  }
   const normalizedEmail = normalizeEmail(email);
 
   try {
@@ -2572,10 +2576,16 @@ app.post('/auth/passwordless/request', createUserRateLimiter('passwordless_reque
       return res.status(400).json({ message: 'Email is required' });
     }
 
-    const userResult = await pool.query('SELECT id, email FROM users WHERE email = $1 AND active = true', [email]);
+    const emailError = validateEmail(email);
+    if (emailError) {
+      return res.status(400).json({ message: emailError });
+    }
+    const normalizedEmail = normalizeEmail(email);
     const neutralMessage = 'Check your email for the login link';
+
+    const userResult = await pool.query('SELECT id, email FROM users WHERE email = $1 AND active = true', [normalizedEmail]);
     if (!userResult.rows[0]) {
-      await sendAuditEvent('auth.passwordless_requested', null, email, { found: false });
+      await sendAuditEvent('auth.passwordless_requested', null, normalizedEmail, { found: false });
       return res.json({ message: neutralMessage });
     }
 
@@ -2586,10 +2596,10 @@ app.post('/auth/passwordless/request', createUserRateLimiter('passwordless_reque
 
     await pool.query(
       'INSERT INTO passwordless_tokens (token, user_id, email, expires_at) VALUES ($1, $2, $3, $4)',
-      [tokenHash, user.id, email, expiresAt]
+      [tokenHash, user.id, normalizedEmail, expiresAt]
     );
 
-    await sendAuditEvent('auth.passwordless_requested', user.id, email, { found: true });
+    await sendAuditEvent('auth.passwordless_requested', user.id, normalizedEmail, { found: true });
 
     res.json({
       message: neutralMessage
@@ -2654,7 +2664,11 @@ app.post('/auth/password/reset-request', createUserRateLimiter('password_reset_r
       return res.status(400).json({ message: 'Email is required' });
     }
 
-    const normalizedEmail = email.trim();
+    const emailError = validateEmail(email);
+    if (emailError) {
+      return res.status(400).json({ message: emailError });
+    }
+    const normalizedEmail = normalizeEmail(email);
     const genericMessage = 'If an account exists for this email, a reset link has been sent.';
     const frontendUrl = getFrontendUrl();
     if (!frontendUrl) {
