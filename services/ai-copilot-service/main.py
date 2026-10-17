@@ -188,7 +188,9 @@ async def delete_session(session_id: str):
 
 @app.post("/api/v1/predict/attrition-risk", response_model=AttritionRiskResponse, tags=["Predictive Analytics"])
 async def attrition_risk_endpoint(req: AttritionRiskRequest):
-    predictions = [compute_attrition_risk(e.model_dump()) for e in req.employees]
+    if len(req.employees) > 100:
+        raise HTTPException(status_code=400, detail="Batch too large (max 100 employees)")
+    predictions = [compute_attrition_risk(e.model_dump()) for e in req.employees[:100]]
     return AttritionRiskResponse(predictions=predictions)
 
 

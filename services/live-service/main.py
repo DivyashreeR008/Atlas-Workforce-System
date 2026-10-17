@@ -6,17 +6,18 @@ import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 import base64
 import hashlib
 import hmac
+import re
 import time
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 from atlas_observability import (
     AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
@@ -25,9 +26,34 @@ from atlas_observability import (
 
 load_dotenv()
 
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://atlas_rabbit:changeme_rabbit_pass@rabbitmq:5672/")
 INTERNAL_JWT_SECRET = os.environ.get("INTERNAL_JWT_SECRET")
+
+if not INTERNAL_JWT_SECRET:
+    logging.getLogger("live-service").error(
+        "live.auth_secret_missing: INTERNAL_JWT_SECRET is not set; "
+        "internal auth will fail closed with 500/401"
+    )
+
+
+def _cors_config():
+    raw = (CORS_ORIGINS or "").strip()
+    if not raw:
+        raise SystemExit("Missing CORS_ORIGINS: set explicit origins (e.g. http://localhost:3000)")
+    if raw == "*" or "*" in [o.strip() for o in raw.split(",")]:
+        logging.getLogger("live-service").warning(
+            "live.cors_wildcard: wildcard origin requested; "
+            "credentials disabled and failing closed to explicit list"
+        )
+        return ["*"], False
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    if not origins:
+        raise SystemExit("Missing CORS_ORIGINS: set explicit origins (e.g. http://localhost:3000)")
+    return origins, True
+
+
+_CORS_ORIGINS, _CORS_ALLOW_CREDENTIALS = _cors_config()
 
 # ── Eviction Configuration ──────────────────────────────────────────────────
 
@@ -46,7 +72,42 @@ def _strip_internal(data: dict) -> dict:
 def _strip_internal_from_list(items: list[dict]) -> list[dict]:
     return [_strip_internal(item) for item in items]
 
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _utc_now_ts() -> float:
+    return datetime.now(timezone.utc).timestamp()
+
+
+def _parse_timestamp(value: object) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    text = value.strip().replace("Z", "+00:00") if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    try:
+        return parsed.timestamp()
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+
 # ── In-Memory Channel State ─────────────────────────────────────────────────
+
+MAX_CHANNELS = int(os.getenv("MAX_CHANNELS", "100"))
+CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+MAX_EVENT_NAME_LENGTH = 200
+
+
+def _validate_channel(channel: str) -> str:
+    if not channel or len(channel) > 64 or not CHANNEL_RE.match(channel):
+        raise HTTPException(status_code=400, detail="Invalid channel name")
+    return channel
+
 
 class ChannelManager:
     def __init__(self):
@@ -64,8 +125,9 @@ class ChannelManager:
         self.staffing: dict[str, dict] = {}
 
     def evict(self) -> dict[str, int]:
-        now = datetime.now(timezone.utc).timestamp()
+        now = _utc_now_ts()
         removed = {"polls": 0, "chat_rooms": 0, "presence": 0, "incidents": 0}
+        skipped = 0
 
         stale_polls = [
             pid for pid, poll in self.polls.items()
@@ -83,13 +145,15 @@ class ChannelManager:
             else:
                 last_ts = messages[-1].get("timestamp", "")
                 if last_ts:
-                    try:
-                        last_time = datetime.fromisoformat(last_ts).timestamp()
-                        if now - last_time > CHAT_ROOM_TTL_SECONDS:
-                            del self.chat_rooms[room]
-                            removed["chat_rooms"] += 1
-                    except (ValueError, TypeError):
-                        pass
+                    last_time = _parse_timestamp(last_ts)
+                    if last_time is None:
+                        skipped += 1
+                    elif now - last_time > CHAT_ROOM_TTL_SECONDS:
+                        del self.chat_rooms[room]
+                        removed["chat_rooms"] += 1
+        if skipped:
+            logger.warning("eviction.chat_timestamp_skipped", extra={"skipped": skipped})
+            removed["skipped"] = skipped
 
         stale_presence = [
             uid for uid, p in self.presence.items()
@@ -119,13 +183,14 @@ class ChannelManager:
         while True:
             await asyncio.sleep(EVICTION_INTERVAL_SECONDS)
             removed = self.evict()
+            skipped = removed.pop("skipped", 0)
             total = sum(removed.values())
-            if total:
-                logger.info("eviction.cleanup", extra={"removed": removed, "total": total})
+            if total or skipped:
+                logger.info("eviction.cleanup", extra={"removed": removed, "total": total, "skipped": skipped})
 
     async def broadcast_sse(self, channel: str, event: str, data: dict):
         self.event_sequences[channel] += 1
-        message = {"channel": channel, "event": event, "data": data, "timestamp": datetime.now(timezone.utc).isoformat(), "event_id": self.event_sequences[channel]}
+        message = {"channel": channel, "event": event, "data": data, "timestamp": _utc_now_iso(), "event_id": self.event_sequences[channel]}
         self.channel_history[channel].append(message)
         if len(self.channel_history[channel]) > self.max_history:
             self.channel_history[channel] = self.channel_history[channel][-self.max_history:]
@@ -154,164 +219,164 @@ manager = ChannelManager()
 # ── Message Schemas ─────────────────────────────────────────────────────────
 
 class PresenceUpdate(BaseModel):
-    user_id: str
-    name: str
-    status: str
-    department: Optional[str] = None
-    role: Optional[str] = None
+    user_id: str = Field(..., min_length=1, max_length=200)
+    name: str = Field(..., min_length=1, max_length=200)
+    status: Literal["online", "offline", "away", "busy"]
+    department: Optional[str] = Field(default=None, max_length=100)
+    role: Optional[str] = Field(default=None, max_length=100)
 
 class AttendanceEvent(BaseModel):
-    employee_id: str
-    employee_name: str
-    event: str
-    timestamp: str
-    method: Optional[str] = None
+    employee_id: str = Field(..., min_length=1, max_length=100)
+    employee_name: str = Field(..., min_length=1, max_length=200)
+    event: Literal["check_in", "check_out", "break_start", "break_end"]
+    timestamp: str = Field(..., min_length=1, max_length=64)
+    method: Optional[str] = Field(default=None, max_length=50)
 
 class PayrollProgress(BaseModel):
-    batch_id: str
-    period: str
-    status: str
-    progress: int
-    total: int
-    processed: int
+    batch_id: str = Field(..., min_length=1, max_length=100)
+    period: str = Field(..., min_length=1, max_length=20)
+    status: Literal["pending", "processing", "completed", "failed"]
+    progress: int = Field(..., ge=0, le=100)
+    total: int = Field(..., ge=0, le=1000000)
+    processed: int = Field(..., ge=0, le=1000000)
 
 class LeaveApproval(BaseModel):
-    request_id: str
-    employee_name: str
-    type: str
-    status: str
-    start_date: str
-    end_date: str
-    approved_by: Optional[str] = None
+    request_id: str = Field(..., min_length=1, max_length=100)
+    employee_name: str = Field(..., min_length=1, max_length=200)
+    type: str = Field(..., min_length=1, max_length=50)
+    status: Literal["pending", "approved", "rejected", "cancelled"]
+    start_date: str = Field(..., min_length=1, max_length=20)
+    end_date: str = Field(..., min_length=1, max_length=20)
+    approved_by: Optional[str] = Field(default=None, max_length=200)
 
 class KPIUpdate(BaseModel):
-    metric_id: str
-    name: str
+    metric_id: str = Field(..., min_length=1, max_length=100)
+    name: str = Field(..., min_length=1, max_length=200)
     value: float
     target: float
-    unit: str
-    department: Optional[str] = None
+    unit: str = Field(..., min_length=1, max_length=20)
+    department: Optional[str] = Field(default=None, max_length=100)
 
 class ActivityEvent(BaseModel):
-    actor: str
-    action: str
-    resource: str
-    details: Optional[str] = None
-    department: Optional[str] = None
+    actor: str = Field(..., min_length=1, max_length=200)
+    action: str = Field(..., min_length=1, max_length=200)
+    resource: str = Field(..., min_length=1, max_length=200)
+    details: Optional[str] = Field(default=None, max_length=1000)
+    department: Optional[str] = Field(default=None, max_length=100)
 
 class Alert(BaseModel):
-    title: str
-    message: str
-    severity: str
-    category: str
-    source: Optional[str] = None
+    title: str = Field(..., min_length=1, max_length=200)
+    message: str = Field(..., min_length=1, max_length=1000)
+    severity: Literal["low", "medium", "high", "critical"]
+    category: Literal["security", "performance", "attendance", "payroll", "system", "compliance"]
+    source: Optional[str] = Field(default=None, max_length=200)
 
 class Announcement(BaseModel):
-    title: str
-    message: str
-    author: str
-    priority: str
+    title: str = Field(..., min_length=1, max_length=200)
+    message: str = Field(..., min_length=1, max_length=2000)
+    author: str = Field(..., min_length=1, max_length=200)
+    priority: Literal["low", "normal", "high", "urgent"]
 
 class WorkforceHeatmap(BaseModel):
-    department: str
-    metric: str
+    department: str = Field(..., min_length=1, max_length=100)
+    metric: str = Field(..., min_length=1, max_length=100)
     value: float
     change: float
 
 class TaskAssignment(BaseModel):
-    task_id: str
-    title: str
-    assigned_to: str
-    assigned_by: str
-    priority: str
-    due_date: Optional[str] = None
+    task_id: str = Field(..., min_length=1, max_length=100)
+    title: str = Field(..., min_length=1, max_length=200)
+    assigned_to: str = Field(..., min_length=1, max_length=200)
+    assigned_by: str = Field(..., min_length=1, max_length=200)
+    priority: Literal["low", "medium", "high", "urgent"]
+    due_date: Optional[str] = Field(default=None, max_length=20)
 
 class Escalation(BaseModel):
-    escalation_id: str
-    incident: str
-    severity: str
-    escalated_by: str
-    assigned_to: Optional[str] = None
+    escalation_id: str = Field(..., min_length=1, max_length=100)
+    incident: str = Field(..., min_length=1, max_length=500)
+    severity: Literal["low", "medium", "high", "critical"]
+    escalated_by: str = Field(..., min_length=1, max_length=200)
+    assigned_to: Optional[str] = Field(default=None, max_length=200)
 
 class ComplianceViolation(BaseModel):
-    violation_id: str
-    policy: str
-    severity: str
-    description: str
-    affected_entity: str
+    violation_id: str = Field(..., min_length=1, max_length=100)
+    policy: str = Field(..., min_length=1, max_length=200)
+    severity: Literal["low", "medium", "high", "critical"]
+    description: str = Field(..., min_length=1, max_length=2000)
+    affected_entity: str = Field(..., min_length=1, max_length=200)
 
 class OnboardingProgress(BaseModel):
-    employee_id: str
-    employee_name: str
-    stage: str
-    progress: int
-    status: str
+    employee_id: str = Field(..., min_length=1, max_length=100)
+    employee_name: str = Field(..., min_length=1, max_length=200)
+    stage: str = Field(..., min_length=1, max_length=100)
+    progress: int = Field(..., ge=0, le=100)
+    status: Literal["not_started", "in_progress", "completed", "blocked"]
 
 class RecruitmentUpdate(BaseModel):
-    candidate_name: str
-    position: str
-    stage: str
-    status: str
+    candidate_name: str = Field(..., min_length=1, max_length=200)
+    position: str = Field(..., min_length=1, max_length=200)
+    stage: Literal["applied", "screening", "interview", "final", "offer", "hired", "rejected"]
+    status: Literal["active", "inactive", "pending", "completed"]
 
 class ForecastUpdate(BaseModel):
-    department: str
-    metric: str
+    department: str = Field(..., min_length=1, max_length=100)
+    metric: str = Field(..., min_length=1, max_length=100)
     current_value: float
     forecast_value: float
-    confidence: float
+    confidence: float = Field(..., ge=0, le=1)
 
 class SLAUpdate(BaseModel):
-    service: str
-    status: str
-    response_time_ms: int
-    threshold_ms: int
+    service: str = Field(..., min_length=1, max_length=200)
+    status: Literal["healthy", "degraded", "down"]
+    response_time_ms: int = Field(..., ge=0, le=3600000)
+    threshold_ms: int = Field(..., ge=0, le=3600000)
 
 class StaffingUpdate(BaseModel):
-    employee_name: str
-    department: str
-    change_type: str
-    previous_role: Optional[str] = None
-    new_role: Optional[str] = None
+    employee_name: str = Field(..., min_length=1, max_length=200)
+    department: str = Field(..., min_length=1, max_length=100)
+    change_type: Literal["hire", "departure", "transfer", "promotion"]
+    previous_role: Optional[str] = Field(default=None, max_length=200)
+    new_role: Optional[str] = Field(default=None, max_length=200)
 
 class ChatMessage(BaseModel):
-    room: str
-    sender: str
-    message: str
-    message_type: str = "text"
+    room: str = Field(..., min_length=1, max_length=100)
+    sender: str = Field(..., min_length=1, max_length=200)
+    message: str = Field(..., min_length=1, max_length=2000)
+    message_type: Literal["text", "image", "system"] = "text"
 
 class Poll(BaseModel):
-    poll_id: str
-    question: str
-    options: list[str]
-    votes: Optional[dict[str, int]] = None
-    created_by: str
+    poll_id: str = Field(..., min_length=1, max_length=100)
+    question: str = Field(..., min_length=1, max_length=500)
+    options: list[str] = Field(..., min_length=2, max_length=20)
+    votes: Optional[dict[str, int]] = Field(default=None, max_length=20)
+    created_by: str = Field(..., min_length=1, max_length=200)
 
 class PollVote(BaseModel):
-    poll_id: str
-    option: str
-    voter: str
+    poll_id: str = Field(..., min_length=1, max_length=100)
+    option: str = Field(..., min_length=1, max_length=200)
+    voter: str = Field(..., min_length=1, max_length=200)
 
 class EmergencyBroadcast(BaseModel):
-    title: str
-    message: str
-    severity: str
-    author: str
-    targets: Optional[list[str]] = None
+    title: str = Field(..., min_length=1, max_length=200)
+    message: str = Field(..., min_length=1, max_length=2000)
+    severity: Literal["low", "medium", "high", "critical"]
+    author: str = Field(..., min_length=1, max_length=200)
+    targets: Optional[list[str]] = Field(default=None, max_length=50)
 
 class IncidentManagement(BaseModel):
-    incident_id: str
-    title: str
-    severity: str
-    status: str
-    reported_by: str
-    description: Optional[str] = None
+    incident_id: str = Field(..., min_length=1, max_length=100)
+    title: str = Field(..., min_length=1, max_length=200)
+    severity: Literal["low", "medium", "high", "critical"]
+    status: Literal["open", "investigating", "resolved", "closed"]
+    reported_by: str = Field(..., min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=2000)
 
 class ExecutiveUpdate(BaseModel):
-    metric: str
+    metric: str = Field(..., min_length=1, max_length=200)
     value: float
     change: float
-    trend: str
-    category: str
+    trend: Literal["up", "down", "stable"]
+    category: str = Field(..., min_length=1, max_length=100)
 
 # ── Internal Auth ────────────────────────────────────────────────────────────
 
@@ -394,7 +459,7 @@ async def internal_auth_middleware(request: Request, call_next):
 
     return await call_next(request)
 
-app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS.split(",") if CORS_ORIGINS != "*" else ["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_credentials=_CORS_ALLOW_CREDENTIALS, allow_methods=["*"], allow_headers=["*"])
 
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(AtlasLoggingMiddleware)
@@ -627,7 +692,7 @@ async def websocket_chat(websocket: WebSocket, token: Optional[str] = Query(None
         while True:
             data = await websocket.receive_json()
             msg = ChatMessage(**data)
-            entry = {"id": str(uuid.uuid4()), "sender": msg.sender, "message": msg.message, "message_type": msg.message_type, "room": msg.room, "timestamp": datetime.now(timezone.utc).isoformat()}
+            entry = {"id": str(uuid.uuid4()), "sender": msg.sender, "message": msg.message, "message_type": msg.message_type, "room": msg.room, "timestamp": _utc_now_iso()}
             manager.chat_rooms[msg.room].append(entry)
             if len(manager.chat_rooms[msg.room]) > 200:
                 manager.chat_rooms[msg.room] = manager.chat_rooms[msg.room][-200:]
@@ -648,7 +713,7 @@ async def websocket_presence(websocket: WebSocket, token: Optional[str] = Query(
             data = await websocket.receive_json()
             update = PresenceUpdate(**data)
             entry = update.model_dump()
-            entry["_last_seen"] = datetime.now(timezone.utc).timestamp()
+            entry["_last_seen"] = _utc_now_ts()
             manager.presence[update.user_id] = entry
             public = _strip_internal(entry)
             await manager.broadcast_ws("presence", {"event": "presence.update", "data": public})
@@ -661,8 +726,18 @@ async def websocket_presence(websocket: WebSocket, token: Optional[str] = Query(
 # ── REST Endpoints ──────────────────────────────────────────────────────────
 
 @app.post("/api/v1/live/publish/{channel}")
-async def publish_event(channel: str, request: Request, event: str = Query(...)):
-    body = await request.json()
+async def publish_event(channel: str, request: Request, event: str = Query(..., max_length=MAX_EVENT_NAME_LENGTH)):
+    _validate_channel(channel)
+    if not event or len(event) > MAX_EVENT_NAME_LENGTH:
+        raise HTTPException(status_code=400, detail="Invalid event name")
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {type(e).__name__}")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    if channel not in manager.channel_history and len(manager.channel_history) >= MAX_CHANNELS:
+        raise HTTPException(status_code=400, detail="Channel limit reached")
     await manager.broadcast_sse(channel, event, body)
     await manager.broadcast_ws(channel, {"event": event, "data": body})
     return {"status": "published", "channel": channel, "event": event}
@@ -670,7 +745,7 @@ async def publish_event(channel: str, request: Request, event: str = Query(...))
 @app.post("/api/v1/live/presence")
 async def update_presence(update: PresenceUpdate):
     entry = update.model_dump()
-    entry["_last_seen"] = datetime.now(timezone.utc).timestamp()
+    entry["_last_seen"] = _utc_now_ts()
     manager.presence[update.user_id] = entry
     public = _strip_internal(entry)
     await manager.broadcast_sse("presence", "presence.update", public)
@@ -773,7 +848,7 @@ async def create_poll(poll: Poll):
     if not poll.votes:
         poll.votes = {opt: 0 for opt in poll.options}
     entry = poll.model_dump()
-    entry["_created_at"] = datetime.now(timezone.utc).timestamp()
+    entry["_created_at"] = _utc_now_ts()
     manager.polls[poll.poll_id] = entry
     public = _strip_internal(entry)
     await manager.broadcast_ws("poll", {"event": "poll.created", "data": public})
@@ -793,8 +868,11 @@ async def vote_poll(vote: PollVote):
     return _strip_internal(poll)
 
 @app.get("/api/v1/live/polls")
-async def get_polls():
-    return {"polls": _strip_internal_from_list(manager.polls.values())}
+async def get_polls(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+    items = _strip_internal_from_list(list(manager.polls.values()))
+    total = len(items)
+    start = (page - 1) * page_size
+    return {"polls": items[start:start + page_size], "page": page, "page_size": page_size, "total": total}
 
 @app.post("/api/v1/live/emergency")
 async def broadcast_emergency(emergency: EmergencyBroadcast):
@@ -808,7 +886,7 @@ async def report_incident(incident: IncidentManagement):
     if not incident.incident_id:
         incident.incident_id = str(uuid.uuid4())
     entry = incident.model_dump()
-    entry["_created_at"] = datetime.now(timezone.utc).timestamp()
+    entry["_created_at"] = _utc_now_ts()
     inc_id = incident.incident_id
     manager.incidents[inc_id].append(entry)
     if len(manager.incidents[inc_id]) > MAX_INCIDENTS_PER_ID:
@@ -819,22 +897,33 @@ async def report_incident(incident: IncidentManagement):
     return public
 
 @app.get("/api/v1/live/incidents")
-async def get_incidents(status: Optional[str] = None):
+async def get_incidents(status: Optional[str] = Query(None, max_length=50), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
     all_inc = []
     for inc_list in manager.incidents.values():
         for inc in inc_list:
             if not status or inc.get("status") == status:
                 all_inc.append(inc)
     sorted_inc = sorted(all_inc, key=lambda x: x.get("_created_at", 0), reverse=True)
-    return {"incidents": _strip_internal_from_list(sorted_inc)}
+    total = len(sorted_inc)
+    start = (page - 1) * page_size
+    return {"incidents": _strip_internal_from_list(sorted_inc[start:start + page_size]), "page": page, "page_size": page_size, "total": total}
 
 @app.get("/api/v1/live/history/{channel}")
-async def get_channel_history(channel: str):
-    return {"channel": channel, "messages": manager.channel_history.get(channel, [])}
+async def get_channel_history(channel: str, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+    _validate_channel(channel)
+    items = manager.channel_history.get(channel, [])
+    total = len(items)
+    start = (page - 1) * page_size
+    return {"channel": channel, "messages": items[start:start + page_size], "page": page, "page_size": page_size, "total": total}
 
 @app.get("/api/v1/live/chat/{room}")
-async def get_chat_history(room: str):
-    return {"room": room, "messages": manager.chat_rooms.get(room, [])}
+async def get_chat_history(room: str, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+    if not room or len(room) > 64:
+        raise HTTPException(status_code=400, detail="Invalid room name")
+    items = manager.chat_rooms.get(room, [])
+    total = len(items)
+    start = (page - 1) * page_size
+    return {"room": room, "messages": items[start:start + page_size], "page": page, "page_size": page_size, "total": total}
 
 @app.get("/api/v1/live/stats")
 async def get_stats():

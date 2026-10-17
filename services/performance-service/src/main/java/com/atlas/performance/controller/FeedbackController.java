@@ -50,6 +50,9 @@ public class FeedbackController {
         try {
             return ResponseEntity.ok(service.getFeedback(tenantId, id));
         } catch (IllegalArgumentException e) {
+            if (e.getMessage() != null && e.getMessage().toLowerCase().contains("not found")) {
+                return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
+            }
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }

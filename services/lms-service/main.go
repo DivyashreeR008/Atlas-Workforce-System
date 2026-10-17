@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"regexp"
@@ -18,6 +19,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gorm.io/driver/postgres"
@@ -202,25 +204,49 @@ func checkExpiringCertifications() {
 		return
 	}
 
-	cutoff := time.Now().AddDate(0, 0, 30)
+	now := time.Now().UTC()
+	cutoff := now.AddDate(0, 0, 30)
 	var expiring []struct {
 		ID         string
+		TenantID   string
 		EmployeeID string
 		Name       string
 		ExpiryDate *time.Time
 	}
 
 	db.Table("certifications").
-		Select("id, employee_id, name, expiry_date").
+		Select("id, tenant_id, employee_id, name, expiry_date").
 		Where("status = ? AND expiry_date IS NOT NULL AND expiry_date <= ?", "ACTIVE", cutoff).
 		Find(&expiring)
 
 	for _, c := range expiring {
-		if c.ExpiryDate != nil {
-			daysLeft := int(time.Until(*c.ExpiryDate).Hours() / 24)
-			log.Printf("WARNING: Certification '%s' for employee %s expires in %d days (on %s)",
-				c.Name, c.EmployeeID, daysLeft, c.ExpiryDate.Format("2006-01-02"))
+		if c.ExpiryDate == nil {
+			continue
 		}
+		daysLeft := int(math.Ceil(c.ExpiryDate.Sub(now).Hours() / 24))
+		priority := "MEDIUM"
+		if daysLeft <= 7 {
+			priority = "HIGH"
+		}
+		notice := models.LearningRecommendation{
+			ID:              uuid.New().String(),
+			TenantID:        c.TenantID,
+			EmployeeID:      c.EmployeeID,
+			RecommendedType: "CERTIFICATION",
+			RecommendedID:   c.ID,
+			Title:           fmt.Sprintf("Certification '%s' expires in %d days", c.Name, daysLeft),
+			Reason:          fmt.Sprintf("Certification '%s' expires on %s (%d days left)", c.Name, c.ExpiryDate.Format("2006-01-02"), daysLeft),
+			Priority:        priority,
+			Status:          "PENDING",
+		}
+		if err := db.Where("tenant_id = ? AND employee_id = ? AND recommended_id = ? AND status = ?",
+			c.TenantID, c.EmployeeID, c.ID, "PENDING").FirstOrCreate(&notice).Error; err != nil {
+			log.Printf("WARNING: failed to persist expiry notice for certification '%s' employee %s: %v",
+				c.Name, c.EmployeeID, err)
+			continue
+		}
+		log.Printf("WARNING: Certification '%s' for employee %s expires in %d days (on %s)",
+			c.Name, c.EmployeeID, daysLeft, c.ExpiryDate.Format("2006-01-02"))
 	}
 }
 
