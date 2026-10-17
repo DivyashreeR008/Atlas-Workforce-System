@@ -1,99 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Bell, BellRing, CheckCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatDate } from "@/lib/utils";
-import { requiredEnv } from "@/lib/env";
-import { getReconnectDelay } from "@/lib/reconnect";
-
-interface Notification {
-  id: string;
-  title: string;
-  message: string;
-  read: boolean;
-  createdAt: string;
-}
+import { useNotificationSocket } from "@/hooks/use-notification-socket";
 
 export function NotificationBell() {
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const { notifications, connected, markAllRead, markOneRead } =
+    useNotificationSocket();
   const [open, setOpen] = useState(false);
-  const [connected, setConnected] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectRef = useRef<number>(0);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const connectRef = useRef<(() => void) | null>(null);
-
-  const clearPendingReconnect = useCallback(() => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-  }, []);
-
-  const scheduleReconnect = useCallback(() => {
-    clearPendingReconnect();
-    const delay = getReconnectDelay(reconnectRef.current);
-    reconnectRef.current++;
-    timeoutRef.current = setTimeout(() => connectRef.current?.(), delay);
-  }, [clearPendingReconnect]);
-
-  const connect = useCallback(() => {
-    const wsUrl = requiredEnv(
-      "NEXT_PUBLIC_WS_URL",
-      `ws://localhost:8080/api/notification/ws`
-    );
-    try {
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        setConnected(true);
-        reconnectRef.current = 0;
-        clearPendingReconnect();
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const parsed = JSON.parse(event.data);
-          const notif = parsed.data ? JSON.parse(parsed.data) : parsed;
-          setNotifications((prev) => {
-            if (prev.some((n) => n.id === notif.id)) return prev;
-            return [{ ...notif, read: false }, ...prev].slice(0, 50);
-          });
-        } catch {
-          // ignore non-JSON messages
-        }
-      };
-
-      ws.onclose = () => {
-        setConnected(false);
-        wsRef.current = null;
-        scheduleReconnect();
-      };
-
-      ws.onerror = () => ws.close();
-    } catch {
-      scheduleReconnect();
-    }
-  }, [scheduleReconnect]);
-
-  useEffect(() => {
-    connectRef.current = connect;
-  }, [connect]);
-
-  useEffect(() => {
-    connect();
-    return () => {
-      clearPendingReconnect();
-      if (wsRef.current) {
-        wsRef.current.onclose = null;
-        wsRef.current.close();
-      }
-    };
-  }, [connect, clearPendingReconnect]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -106,14 +24,6 @@ export function NotificationBell() {
   }, []);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
-
-  const markAllRead = () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-  };
-
-  const markOneRead = (id: string) => {
-    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
-  };
 
   return (
     <div ref={dropdownRef} className="relative">
