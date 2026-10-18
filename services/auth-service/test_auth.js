@@ -17,7 +17,7 @@ process.env.REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { validatePassword, hashToken, sanitizeUser, authStoreUnavailable, storeMfaChallengeJti, mfaChallengeJtiExists, consumeMfaChallengeJti } = require('./index');
+const { validatePassword, hashToken, sanitizeUser, requireCsrfDoubleSubmit, authStoreUnavailable, storeMfaChallengeJti, mfaChallengeJtiExists, consumeMfaChallengeJti } = require('./index');
 
 // Unit tests for auth service utilities (imported from index.js, not redefined here)
 function testValidatePassword() {
@@ -94,6 +94,46 @@ function testRateLimiterPerIp() {
   assert.strictEqual(checkRateLimit(ip2, 'login'), true, 'ip2 request should be allowed');
 
   console.log('PASS: rateLimiterPerIp');
+}
+
+function testRequireCsrfDoubleSubmit() {
+  function run(req) {
+    let called = false;
+    const res = {
+      statusCode: 0,
+      body: null,
+      status(code) { this.statusCode = code; return this; },
+      json(data) { this.body = data; return this; },
+    };
+    requireCsrfDoubleSubmit(req, res, () => { called = true; });
+    return { called, res };
+  }
+
+  // Bearer-authenticated requests are exempt: a browser cannot attach the
+  // header cross-site, and /refresh and /logout are called that way by the UI.
+  assert.strictEqual(run({ headers: { authorization: 'Bearer abc' }, cookies: {} }).called, true, 'Bearer requests must be exempt');
+
+  // Cookie-authenticated requests need the exact double submit.
+  assert.strictEqual(
+    run({ headers: { 'x-csrf-token': 'token-1' }, cookies: { csrf_token: 'token-1' } }).called,
+    true,
+    'Matching cookie and header must pass'
+  );
+
+  const cookieOnly = run({ headers: {}, cookies: { csrf_token: 'token-1' } });
+  assert.strictEqual(cookieOnly.called, false, 'Cookie without header must be rejected');
+  assert.strictEqual(cookieOnly.res.statusCode, 403, 'Cookie without header must be 403');
+
+  const mismatched = run({ headers: { 'x-csrf-token': 'token-2' }, cookies: { csrf_token: 'token-1' } });
+  assert.strictEqual(mismatched.called, false, 'Mismatched header must be rejected');
+  assert.strictEqual(mismatched.res.statusCode, 403, 'Mismatched header must be 403');
+
+  // The old fail-open path: no cookie at all used to pass unchecked.
+  const noCookie = run({ headers: {}, cookies: {} });
+  assert.strictEqual(noCookie.called, false, 'Missing csrf cookie must fail closed');
+  assert.strictEqual(noCookie.res.statusCode, 403, 'Missing csrf cookie must be 403');
+
+  console.log('PASS: requireCsrfDoubleSubmit keys on the auth scheme and fails closed');
 }
 
 function testGetClientIp() {
@@ -241,6 +281,7 @@ testValidatePassword();
 testHashToken();
 testSanitizeUser();
 testRateLimiterPerIp();
+testRequireCsrfDoubleSubmit();
 testGetClientIp();
 testAuthStoreFailClosed().then(() => {
   console.log('All auth tests passed.');
