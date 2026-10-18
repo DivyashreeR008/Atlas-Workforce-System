@@ -308,6 +308,43 @@ const loginLimiter = rateLimit({
   }),
 });
 
+// Single source of truth for the sensitive route tier (#328). The limiter
+// skip below, the sensitiveLimiter mounts, the RBAC tier and step-up
+// authentication all read this registry, so a new sensitive surface is
+// declared exactly once and cannot drift between the four consumers. `roles`
+// is the RBAC allowlist for the prefix; `message` is the 403 it returns.
+const SENSITIVE_ROUTE_REGISTRY = [
+  {
+    prefix: '/api/payroll',
+    roles: ['admin', 'hr'],
+    message: 'Forbidden: Insufficient privileges for payroll',
+  },
+  {
+    prefix: '/api/compliance',
+    roles: ['admin', 'compliance', 'hr'],
+    message: 'Forbidden: Insufficient privileges for compliance',
+  },
+  {
+    prefix: '/api/audit',
+    roles: ['admin', 'auditor'],
+    message: 'Forbidden: Insufficient privileges for audit',
+  },
+  {
+    prefix: '/api/billing',
+    roles: ['admin', 'hr', 'manager'],
+    message: 'Forbidden: Insufficient privileges for billing',
+  },
+];
+const SENSITIVE_ROUTES = SENSITIVE_ROUTE_REGISTRY.map((entry) => entry.prefix);
+
+function pathMatchesPrefix(path, prefix) {
+  return path === prefix || path.startsWith(prefix + '/');
+}
+
+function isSensitiveRoute(path) {
+  return SENSITIVE_ROUTES.some((prefix) => pathMatchesPrefix(path, prefix));
+}
+
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 500,
@@ -322,10 +359,7 @@ const apiLimiter = rateLimit({
     const p = req.path || '';
     return (
       p.startsWith('/api/auth') ||
-      p.startsWith('/api/payroll') ||
-      p.startsWith('/api/compliance') ||
-      p.startsWith('/api/audit') ||
-      p.startsWith('/api/billing') ||
+      isSensitiveRoute(p) ||
       p.startsWith('/api/ats/career')
     );
   },
@@ -374,10 +408,11 @@ app.use('/api/auth', authLimiter);
 app.use('/api/auth/login', loginLimiter);
 app.use('/api/auth/register', authLimiter);
 
-app.use('/api/payroll', sensitiveLimiter);
-app.use('/api/compliance', sensitiveLimiter);
-app.use('/api/audit', sensitiveLimiter);
-app.use('/api/billing', sensitiveLimiter);
+// Sensitive tier limiter, mounted from the shared registry so the rate-limit
+// classification cannot disagree with step-up and RBAC.
+for (const { prefix } of SENSITIVE_ROUTE_REGISTRY) {
+  app.use(prefix, sensitiveLimiter);
+}
 
 app.use('/api/ats/career', careerLimiter);
 app.use('/api/ats/career/apply', careerApplyLimiter);
@@ -608,7 +643,30 @@ function auditProxyMiddleware(req, res, next) {
   next();
 }
 
-const SENSITIVE_ROUTES = ['/api/payroll', '/api/compliance', '/api/audit'];
+// Freshness window for a read-only MFA stamp. A step-up performed within this
+// window authorises reads of sensitive routes; after it the client must step
+// up again. Writes keep requiring a fresh single-use step-up token.
+const MFA_STAMP_MAX_AGE_MS = 15 * 60 * 1000;
+const MFA_STAMP_CLOCK_SKEW_MS = 60 * 1000;
+
+// The session JWT may carry mfa_validated_at (unix seconds) when the login
+// itself completed MFA. It is signed, so it cannot be forged, and it lets a
+// logged-in user read sensitive data without a second prompt.
+function sessionMfaStampIsFresh(user) {
+  const stampedSeconds = Number(user?.mfa_validated_at);
+  if (!Number.isFinite(stampedSeconds) || stampedSeconds <= 0) return false;
+  const ageMs = Date.now() - stampedSeconds * 1000;
+  return ageMs >= -MFA_STAMP_CLOCK_SKEW_MS && ageMs <= MFA_STAMP_MAX_AGE_MS;
+}
+
+// A step-up token is accepted as a read stamp only while its issued-at is
+// inside the freshness window; the token's own exp is a second, tighter bound.
+function stepUpPayloadIsFresh(payload) {
+  const issuedSeconds = Number(payload?.iat);
+  if (!Number.isFinite(issuedSeconds) || issuedSeconds <= 0) return false;
+  const ageMs = Date.now() - issuedSeconds * 1000;
+  return ageMs >= -MFA_STAMP_CLOCK_SKEW_MS && ageMs <= MFA_STAMP_MAX_AGE_MS;
+}
 
 // Fail-closed policy for auth-store (Redis) checks. When the store cannot be
 // reached we cannot prove a token is not revoked or a step-up jti was not
@@ -681,15 +739,15 @@ async function revokeCheck(redis, payload) {
 }
 
 async function mfaStepUpMiddleware(req, res, next) {
-  if (req.method === 'GET') {
+  if (!isSensitiveRoute(req.path)) {
     return next();
   }
 
-  const isSensitive = SENSITIVE_ROUTES.some(
-    (prefix) => req.path === prefix || req.path.startsWith(prefix + '/')
-  );
-
-  if (!isSensitive) {
+  const safeRead = ['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+  // Reads of sensitive data are sensitive: a recent MFA stamp is required
+  // instead of exempting every GET. Writes still need a fresh single-use
+  // step-up token below.
+  if (safeRead && sessionMfaStampIsFresh(req.user)) {
     return next();
   }
 
@@ -699,7 +757,9 @@ async function mfaStepUpMiddleware(req, res, next) {
       message: 'MFA validation required for this resource',
       mfa_required: true,
       mfa_challenge_url: '/api/auth/mfa/challenge',
-      detail: 'Please validate your identity with MFA before accessing sensitive resources'
+      detail: safeRead
+        ? 'A recent MFA step-up is required to read sensitive resources'
+        : 'Please validate your identity with MFA before accessing sensitive resources'
     });
   }
 
@@ -752,6 +812,24 @@ async function mfaStepUpMiddleware(req, res, next) {
       });
     }
 
+    if (safeRead) {
+      if (!stepUpPayloadIsFresh(payload)) {
+        return res.status(403).json({
+          message: 'MFA step-up is stale',
+          mfa_required: true,
+          mfa_challenge_url: '/api/auth/mfa/challenge',
+          detail: 'The step-up token is older than the freshness window; validate again to read sensitive resources'
+        });
+      }
+      // Reads treat the token as a stamp, so the jti is not consumed and the
+      // same token can carry the next few reads inside the freshness window.
+      req.headers['x-mfa-validated'] = 'true';
+      return next();
+    }
+
+    // Writes need a fresh single-use step-up token: the jti is consumed
+    // through the fail-closed helper so a store outage refuses the request
+    // instead of silently allowing replay (#329).
     const expMs = payload.exp ? payload.exp * 1000 : Date.now() + 5 * 60 * 1000;
     const replayRefusal = await consumeMfaJti(redisClient, jti, expMs);
     if (replayRefusal) {
@@ -922,8 +1000,16 @@ function rbacMiddleware(req, res, next) {
   const role = req.user?.role || 'employee';
   const path = req.path;
 
-  if (path.startsWith('/api/payroll') && !isSelfServicePath(path) && !['admin', 'hr'].includes(role)) {
-    return res.status(403).json({ message: 'Forbidden: Insufficient privileges for payroll' });
+  // Sensitive tier: classification comes from the shared registry so RBAC,
+  // step-up and the limiter wiring cannot drift apart (#328).
+  for (const { prefix, roles, message } of SENSITIVE_ROUTE_REGISTRY) {
+    if (roles && pathMatchesPrefix(path, prefix) && !roles.includes(role)) {
+      // The self-service paths (#496) exempt only the employee acting on
+      // their own record; every other role keeps the registry allowlist.
+      if (!(role === 'employee' && isSelfServicePath(path))) {
+        return res.status(403).json({ message });
+      }
+    }
   }
 
   if (path.startsWith('/api/analytics') && !['admin', 'manager', 'hr'].includes(role)) {
@@ -934,20 +1020,8 @@ function rbacMiddleware(req, res, next) {
     return res.status(403).json({ message: 'Forbidden: Insufficient privileges to modify employees' });
   }
 
-  if (path.startsWith('/api/audit') && !['admin', 'auditor'].includes(role)) {
-    return res.status(403).json({ message: 'Forbidden: Insufficient privileges for audit' });
-  }
-
-  if (path.startsWith('/api/compliance') && !['admin', 'compliance', 'hr'].includes(role)) {
-    return res.status(403).json({ message: 'Forbidden: Insufficient privileges for compliance' });
-  }
-
   if (path.startsWith('/api/security') && !['admin', 'compliance', 'auditor'].includes(role)) {
     return res.status(403).json({ message: 'Forbidden: Insufficient privileges for security' });
-  }
-
-  if (path.startsWith('/api/billing') && !['admin', 'hr', 'manager'].includes(role)) {
-    return res.status(403).json({ message: 'Forbidden: Insufficient privileges for billing' });
   }
 
   if (path.startsWith('/api/command-center') && !['admin', 'manager', 'hr'].includes(role)) {
@@ -1544,6 +1618,12 @@ module.exports = {
   authStoreUnavailable,
   consumeMfaJti,
   revokeCheck,
+  SENSITIVE_ROUTES,
+  SENSITIVE_ROUTE_REGISTRY,
+  isSensitiveRoute,
+  sessionMfaStampIsFresh,
+  stepUpPayloadIsFresh,
+  MFA_STAMP_MAX_AGE_MS,
 };
 
 if (require.main === module) {
