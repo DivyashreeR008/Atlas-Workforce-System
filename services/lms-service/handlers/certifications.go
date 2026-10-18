@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atlas-workforce/lms-service/middleware"
@@ -12,6 +14,35 @@ import (
 	"github.com/lib/pq"
 	"gorm.io/gorm"
 )
+
+// parseCertDate accepts an empty string (meaning no date) or a YYYY-MM-DD
+// date. Anything else is a 400, never a silently dropped value.
+func parseCertDate(field, value string) (*time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	t, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be a YYYY-MM-DD date", field)
+	}
+	utc := t.UTC()
+	return &utc, nil
+}
+
+// validateCertDateOrder rejects an expiry date that precedes the issue date.
+func validateCertDateOrder(issue, expiry *time.Time) error {
+	if issue != nil && expiry != nil && expiry.Before(*issue) {
+		return fmt.Errorf("expiry_date cannot be before issue_date")
+	}
+	return nil
+}
+
+// startOfTodayUTC gives date-only columns a stable "is it past" boundary, so
+// a certificate that expires today still counts as valid today.
+func startOfTodayUTC() time.Time {
+	now := time.Now().UTC()
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+}
 
 type CertificationHandler struct {
 	DB *gorm.DB
@@ -93,18 +124,25 @@ func (h *CertificationHandler) Create(c *fiber.Ctx) error {
 		Skills:           pq.StringArray(req.Skills),
 		Status:           "ACTIVE",
 	}
-	if req.IssueDate != "" {
-		t, err := time.Parse("2006-01-02", req.IssueDate)
-		if err == nil {
-			cert.IssueDate = &t
-		}
+	issueDate, err := parseCertDate("issue_date", req.IssueDate)
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": err.Error(),
+		})
 	}
-	if req.ExpiryDate != "" {
-		t, err := time.Parse("2006-01-02", req.ExpiryDate)
-		if err == nil {
-			cert.ExpiryDate = &t
-		}
+	expiryDate, err := parseCertDate("expiry_date", req.ExpiryDate)
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": err.Error(),
+		})
 	}
+	if err := validateCertDateOrder(issueDate, expiryDate); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
+	cert.IssueDate = issueDate
+	cert.ExpiryDate = expiryDate
 
 	if err := h.DB.Create(&cert).Error; err != nil {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
@@ -137,40 +175,75 @@ func (h *CertificationHandler) Update(c *fiber.Ctx) error {
 	}
 
 	var req struct {
-		Name             string   `json:"name"`
-		IssuingAuthority string   `json:"issuing_authority"`
-		IssueDate        string   `json:"issue_date"`
-		ExpiryDate       string   `json:"expiry_date"`
-		CredentialURL    string   `json:"credential_url"`
+		Name             *string  `json:"name"`
+		IssuingAuthority *string  `json:"issuing_authority"`
+		IssueDate        *string  `json:"issue_date"`
+		ExpiryDate       *string  `json:"expiry_date"`
+		CredentialURL    *string  `json:"credential_url"`
 		Skills           []string `json:"skills"`
-		Status           string   `json:"status"`
+		Status           *string  `json:"status"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid request body",
 		})
 	}
+	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "name cannot be empty",
+		})
+	}
+	if req.Status != nil && strings.TrimSpace(*req.Status) == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "status cannot be empty",
+		})
+	}
 
-	updates := map[string]interface{}{
-		"name":              req.Name,
-		"issuing_authority": req.IssuingAuthority,
-		"credential_url":    req.CredentialURL,
-		"status":            req.Status,
+	// Only fields present in the request are written; omitted fields keep
+	// their stored values instead of being blanked.
+	updates := map[string]interface{}{}
+	if req.Name != nil {
+		updates["name"] = *req.Name
+	}
+	if req.IssuingAuthority != nil {
+		updates["issuing_authority"] = *req.IssuingAuthority
+	}
+	if req.CredentialURL != nil {
+		updates["credential_url"] = *req.CredentialURL
+	}
+	if req.Status != nil {
+		updates["status"] = *req.Status
 	}
 	if req.Skills != nil {
 		updates["skills"] = pq.StringArray(req.Skills)
 	}
-	if req.IssueDate != "" {
-		t, err := time.Parse("2006-01-02", req.IssueDate)
-		if err == nil {
-			updates["issue_date"] = &t
+
+	issue := cert.IssueDate
+	if req.IssueDate != nil {
+		parsed, err := parseCertDate("issue_date", *req.IssueDate)
+		if err != nil {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
+			})
 		}
+		issue = parsed
+		updates["issue_date"] = parsed
 	}
-	if req.ExpiryDate != "" {
-		t, err := time.Parse("2006-01-02", req.ExpiryDate)
-		if err == nil {
-			updates["expiry_date"] = &t
+	expiry := cert.ExpiryDate
+	if req.ExpiryDate != nil {
+		parsed, err := parseCertDate("expiry_date", *req.ExpiryDate)
+		if err != nil {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
+			})
 		}
+		expiry = parsed
+		updates["expiry_date"] = parsed
+	}
+	if err := validateCertDateOrder(issue, expiry); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": err.Error(),
+		})
 	}
 
 	if err := h.DB.Model(&cert).Updates(updates).Error; err != nil {
@@ -179,7 +252,7 @@ func (h *CertificationHandler) Update(c *fiber.Ctx) error {
 		})
 	}
 
-	h.DB.First(&cert, "id = ?", id)
+	h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).First(&cert)
 	return c.JSON(fiber.Map{
 		"data": cert,
 	})
@@ -206,6 +279,17 @@ func (h *CertificationHandler) Verify(c *fiber.Ctx) error {
 		})
 	}
 
+	if cert.Verified {
+		return c.Status(http.StatusConflict).JSON(fiber.Map{
+			"error": "Certification is already verified",
+		})
+	}
+	if cert.ExpiryDate != nil && cert.ExpiryDate.Before(startOfTodayUTC()) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "Cannot verify an expired certification",
+		})
+	}
+
 	if err := h.DB.Model(&cert).Update("verified", true).Error; err != nil {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to verify certification",
@@ -227,18 +311,38 @@ func (h *CertificationHandler) Expiring(c *fiber.Ctx) error {
 		days = 30
 	}
 
-	cutoff := time.Now().UTC().AddDate(0, 0, days)
+	today := startOfTodayUTC()
+	cutoff := today.AddDate(0, 0, days)
+
+	page := c.QueryInt("page", 1)
+	pageSize := c.QueryInt("page_size", 20)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	offset := (page - 1) * pageSize
+
+	// Lower bound keeps long-expired certificates out of the expiring-soon
+	// view; today's expiries stay in.
+	where := "tenant_id = ? AND status = ? AND expiry_date IS NOT NULL AND expiry_date >= ? AND expiry_date <= ?"
+	var total int64
+	h.DB.Model(&models.Certification{}).Where(where, tenantID, "ACTIVE", today, cutoff).Count(&total)
 
 	var certifications []models.Certification
-	if err := h.DB.Where("tenant_id = ? AND status = ? AND expiry_date IS NOT NULL AND expiry_date <= ?",
-		tenantID, "ACTIVE", cutoff).Order("expiry_date ASC").Find(&certifications).Error; err != nil {
+	if err := h.DB.Where(where, tenantID, "ACTIVE", today, cutoff).
+		Order("expiry_date ASC").Offset(offset).Limit(pageSize).Find(&certifications).Error; err != nil {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to fetch expiring certifications",
 		})
 	}
 
 	return c.JSON(fiber.Map{
-		"data":           certifications,
+		"data":            certifications,
+		"total":           total,
+		"page":            page,
+		"page_size":       pageSize,
 		"expiring_within": days,
 	})
 }

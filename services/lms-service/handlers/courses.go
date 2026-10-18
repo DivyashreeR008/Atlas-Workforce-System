@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/atlas-workforce/lms-service/middleware"
 	"github.com/atlas-workforce/lms-service/models"
@@ -135,6 +137,16 @@ func (h *CourseHandler) Create(c *fiber.Ctx) error {
 			"error": "Title is required",
 		})
 	}
+	if req.DurationMinutes < 0 {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "duration_minutes cannot be negative",
+		})
+	}
+	if req.CompletionThresholdPct != nil && (*req.CompletionThresholdPct < 0 || *req.CompletionThresholdPct > 100) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "completion_threshold_pct must be between 0 and 100",
+		})
+	}
 
 	course := models.Course{
 		ID:       uuid.New().String(),
@@ -204,14 +216,14 @@ func (h *CourseHandler) Update(c *fiber.Ctx) error {
 	}
 
 	var req struct {
-		Title                  string   `json:"title"`
-		Description            string   `json:"description"`
-		Category               string   `json:"category"`
-		Level                  string   `json:"level"`
-		DurationMinutes        int      `json:"duration_minutes"`
-		Instructor             string   `json:"instructor"`
-		ThumbnailURL           string   `json:"thumbnail_url"`
-		ContentURL             string   `json:"content_url"`
+		Title                  *string  `json:"title"`
+		Description            *string  `json:"description"`
+		Category               *string  `json:"category"`
+		Level                  *string  `json:"level"`
+		DurationMinutes        *int     `json:"duration_minutes"`
+		Instructor             *string  `json:"instructor"`
+		ThumbnailURL           *string  `json:"thumbnail_url"`
+		ContentURL             *string  `json:"content_url"`
 		Skills                 []string `json:"skills"`
 		IsMandatory            *bool    `json:"is_mandatory"`
 		CompletionThresholdPct *float64 `json:"completion_threshold_pct"`
@@ -221,18 +233,48 @@ func (h *CourseHandler) Update(c *fiber.Ctx) error {
 			"error": "Invalid request body",
 		})
 	}
-
-	updates := map[string]interface{}{
-		"title":        req.Title,
-		"description":  req.Description,
-		"category":     req.Category,
-		"level":        req.Level,
-		"instructor":   req.Instructor,
-		"thumbnail_url": req.ThumbnailURL,
-		"content_url":  req.ContentURL,
+	if req.Title != nil && strings.TrimSpace(*req.Title) == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "title cannot be empty",
+		})
 	}
-	if req.DurationMinutes > 0 {
-		updates["duration_minutes"] = req.DurationMinutes
+	if req.DurationMinutes != nil && *req.DurationMinutes < 0 {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "duration_minutes cannot be negative",
+		})
+	}
+	if req.CompletionThresholdPct != nil && (*req.CompletionThresholdPct < 0 || *req.CompletionThresholdPct > 100) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "completion_threshold_pct must be between 0 and 100",
+		})
+	}
+
+	// Only fields present in the request are written; omitted fields keep
+	// their stored values instead of being blanked.
+	updates := map[string]interface{}{}
+	if req.Title != nil {
+		updates["title"] = *req.Title
+	}
+	if req.Description != nil {
+		updates["description"] = *req.Description
+	}
+	if req.Category != nil {
+		updates["category"] = *req.Category
+	}
+	if req.Level != nil {
+		updates["level"] = *req.Level
+	}
+	if req.DurationMinutes != nil {
+		updates["duration_minutes"] = *req.DurationMinutes
+	}
+	if req.Instructor != nil {
+		updates["instructor"] = *req.Instructor
+	}
+	if req.ThumbnailURL != nil {
+		updates["thumbnail_url"] = *req.ThumbnailURL
+	}
+	if req.ContentURL != nil {
+		updates["content_url"] = *req.ContentURL
 	}
 	if req.Skills != nil {
 		updates["skills"] = pq.StringArray(req.Skills)
@@ -250,7 +292,7 @@ func (h *CourseHandler) Update(c *fiber.Ctx) error {
 		})
 	}
 
-	h.DB.First(&course, "id = ?", id)
+	h.DB.Where("id = ? AND tenant_id = ?", id, tenantID).First(&course)
 	return c.JSON(fiber.Map{
 		"data": course,
 	})
@@ -272,6 +314,20 @@ func (h *CourseHandler) Delete(c *fiber.Ctx) error {
 		}
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to fetch course",
+		})
+	}
+
+	// A course with enrolled employees cannot be deleted: the enrollment rows
+	// would be orphaned and progress history lost.
+	var enrollmentCount int64
+	if err := h.DB.Model(&models.Enrollment{}).Where("course_id = ? AND tenant_id = ?", id, tenantID).Count(&enrollmentCount).Error; err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to check course enrollments",
+		})
+	}
+	if enrollmentCount > 0 {
+		return c.Status(http.StatusConflict).JSON(fiber.Map{
+			"error": fmt.Sprintf("Course has %d enrolled employees and cannot be deleted", enrollmentCount),
 		})
 	}
 
@@ -310,16 +366,32 @@ func (h *CourseHandler) GetEnrollments(c *fiber.Ctx) error {
 		})
 	}
 
+	page := c.QueryInt("page", 1)
+	pageSize := c.QueryInt("page_size", 20)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	offset := (page - 1) * pageSize
+
+	var total int64
+	h.DB.Model(&models.Enrollment{}).Where("course_id = ? AND tenant_id = ?", courseID, tenantID).Count(&total)
+
 	var enrollments []models.Enrollment
 	if err := h.DB.Where("course_id = ? AND tenant_id = ?", courseID, tenantID).
-		Order("created_at DESC").Find(&enrollments).Error; err != nil {
+		Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&enrollments).Error; err != nil {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to fetch enrollments",
 		})
 	}
 
 	return c.JSON(fiber.Map{
-		"data": enrollments,
+		"data":      enrollments,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
 	})
 }
 
