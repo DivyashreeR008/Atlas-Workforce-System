@@ -1,6 +1,8 @@
 import logging
 import hashlib
 import re
+import contextlib
+import functools
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +18,7 @@ import time
 import threading
 import pika
 import requests
+from prometheus_client import Counter, Gauge, Histogram
 from urllib.parse import urljoin
 from atlas_observability import (
     AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
@@ -72,6 +75,233 @@ def safe_divide(numerator, denominator, default=0):
         return numerator / denominator
     except (ZeroDivisionError, TypeError, ValueError):
         return default
+
+
+def _env_int(name, default, minimum=1):
+    try:
+        value = int(os.environ.get(name, str(default)))
+        if value < minimum:
+            raise ValueError(f"must be >= {minimum}")
+        return value
+    except ValueError as e:
+        logger.warning("config.invalid_env_value", extra={"name": name, "error": str(e), "fallback": default})
+        return default
+
+
+def _env_float(name, default, minimum=0.0):
+    try:
+        value = float(os.environ.get(name, str(default)))
+        if value < minimum:
+            raise ValueError(f"must be >= {minimum}")
+        return value
+    except ValueError as e:
+        logger.warning("config.invalid_env_value", extra={"name": name, "error": str(e), "fallback": default})
+        return default
+
+
+class OverloadedError(Exception):
+    """Raised when a heavy endpoint is at capacity and the queue cannot absorb it."""
+
+    def __init__(self, retry_after):
+        super().__init__("heavy endpoint at capacity")
+        self.retry_after = retry_after
+
+
+class HeavyEndpointGate:
+    """Bounded concurrency gate for expensive analytics computations.
+
+    A request admits immediately while the endpoint is under both the global
+    cost budget and the per-tenant request cap. Once the budget is exhausted
+    the request waits in a bounded queue for wait_seconds; when the queue is
+    full or the wait elapses it is rejected with a retry hint, because fast
+    rejection beats slow degradation from one tenant stacking full sweeps.
+
+    Each endpoint declares a cost (a payroll table scan costs more than one
+    upstream fetch), and admission is budget-weighted so heavy computations
+    consume proportionally more of the capacity.
+    """
+
+    def __init__(self, name, budget, cost=1, per_tenant_limit=2, queue_limit=32,
+                 wait_seconds=5.0, retry_after=2):
+        self.name = name
+        self.budget = max(1, int(budget))
+        self.cost = max(1, min(int(cost), self.budget))
+        self.per_tenant_limit = max(1, int(per_tenant_limit))
+        self.queue_limit = max(0, int(queue_limit))
+        self.wait_seconds = max(0.0, float(wait_seconds))
+        self.retry_after = max(1, int(retry_after))
+        self._condition = threading.Condition()
+        self._active_cost = 0
+        self._queued = 0
+        self._active_by_tenant = {}
+        self._metrics_lock = threading.Lock()
+        self._metrics = {
+            "admitted": 0,
+            "rejected": 0,
+            "timed_out": 0,
+            "queued_waits": 0,
+            "queued_wait_seconds": 0.0,
+        }
+
+    def _record(self, **deltas):
+        with self._metrics_lock:
+            for key, value in deltas.items():
+                self._metrics[key] = self._metrics.get(key, 0) + value
+
+    def metrics(self):
+        with self._condition:
+            with self._metrics_lock:
+                snapshot = dict(self._metrics)
+                snapshot["active_cost"] = self._active_cost
+                snapshot["queued"] = self._queued
+                snapshot["active_tenants"] = len(self._active_by_tenant)
+        snapshot["budget"] = self.budget
+        snapshot["cost"] = self.cost
+        snapshot["perTenantLimit"] = self.per_tenant_limit
+        snapshot["queueLimit"] = self.queue_limit
+        snapshot["waitSeconds"] = self.wait_seconds
+        return snapshot
+
+    def _record_rejection(self, outcome):
+        self._record(rejected=1)
+        HEAVY_REQUESTS_TOTAL.labels(endpoint=self.name, outcome=outcome).inc()
+        HEAVY_QUEUE_DEPTH.labels(endpoint=self.name).set(self._queued)
+
+    @contextlib.contextmanager
+    def slot(self, tenant_id):
+        start = time.monotonic()
+        with self._condition:
+            tenant_active = self._active_by_tenant.get(tenant_id, 0)
+            if tenant_active >= self.per_tenant_limit:
+                self._record_rejection("rejected_tenant_cap")
+                raise OverloadedError(self.retry_after)
+            if self._active_cost + self.cost > self.budget or self._queued > 0:
+                if self._queued >= self.queue_limit:
+                    self._record_rejection("rejected_queue_full")
+                    raise OverloadedError(self.retry_after)
+                self._queued += 1
+                HEAVY_QUEUE_DEPTH.labels(endpoint=self.name).set(self._queued)
+                try:
+                    deadline = start + self.wait_seconds
+                    while self._active_cost + self.cost > self.budget:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            self._record(timed_out=1)
+                            raise OverloadedError(self.retry_after)
+                        self._condition.wait(remaining)
+                finally:
+                    self._queued -= 1
+                    HEAVY_QUEUE_DEPTH.labels(endpoint=self.name).set(self._queued)
+                wait_seconds = time.monotonic() - start
+                self._record(queued_waits=1, queued_wait_seconds=wait_seconds)
+                HEAVY_QUEUE_WAIT_SECONDS.labels(endpoint=self.name).observe(wait_seconds)
+            self._active_cost += self.cost
+            self._active_by_tenant[tenant_id] = tenant_active + 1
+            self._record(admitted=1)
+            HEAVY_REQUESTS_TOTAL.labels(endpoint=self.name, outcome="admitted").inc()
+            HEAVY_IN_FLIGHT.labels(endpoint=self.name).inc()
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._active_cost = max(0, self._active_cost - self.cost)
+                tenant_remaining = self._active_by_tenant.get(tenant_id, 1) - 1
+                if tenant_remaining > 0:
+                    self._active_by_tenant[tenant_id] = tenant_remaining
+                else:
+                    self._active_by_tenant.pop(tenant_id, None)
+                self._condition.notify()
+            HEAVY_IN_FLIGHT.labels(endpoint=self.name).dec()
+
+
+# Concurrency configuration. Defaults are sized for a single worker process
+# (uvicorn's threadpool), documented in .env.example and overridable per
+# deployment: ANALYTICS_HEAVY_MAX_CONCURRENCY is a global cost budget shared
+# by the heavy endpoints, ANALYTICS_HEAVY_MAX_PER_TENANT caps one tenant's
+# concurrent heavy requests, and over-limit requests wait in a queue of
+# ANALYTICS_HEAVY_QUEUE_LIMIT for at most ANALYTICS_HEAVY_QUEUE_WAIT_SECONDS
+# before a 503 with Retry-After (ANALYTICS_HEAVY_RETRY_AFTER_SECONDS).
+HEAVY_ENDPOINT_GLOBAL_BUDGET = _env_int("ANALYTICS_HEAVY_MAX_CONCURRENCY", 8)
+HEAVY_ENDPOINT_PER_TENANT_LIMIT = _env_int("ANALYTICS_HEAVY_MAX_PER_TENANT", 2)
+HEAVY_ENDPOINT_QUEUE_LIMIT = _env_int("ANALYTICS_HEAVY_QUEUE_LIMIT", 32, minimum=0)
+HEAVY_ENDPOINT_QUEUE_WAIT_SECONDS = _env_float("ANALYTICS_HEAVY_QUEUE_WAIT_SECONDS", 5.0)
+HEAVY_ENDPOINT_RETRY_AFTER_SECONDS = _env_int("ANALYTICS_HEAVY_RETRY_AFTER_SECONDS", 2)
+
+# Relative cost of each heavy computation within the global budget.
+HEAVY_ENDPOINT_COSTS = {
+    "analytics.department": 1,
+    "analytics.payroll": 2,
+    "analytics.payroll-verify": 2,
+    "analytics.ai-insights": 3,
+}
+
+HEAVY_REQUESTS_TOTAL = Counter(
+    "atlas_analytics_heavy_requests_total",
+    "Heavy analytics endpoint admissions and rejections",
+    labelnames=["endpoint", "outcome"],
+)
+HEAVY_IN_FLIGHT = Gauge(
+    "atlas_analytics_heavy_requests_in_flight",
+    "Heavy analytics computations currently running",
+    labelnames=["endpoint"],
+)
+HEAVY_QUEUE_DEPTH = Gauge(
+    "atlas_analytics_heavy_queue_depth",
+    "Heavy analytics requests waiting for capacity",
+    labelnames=["endpoint"],
+)
+HEAVY_QUEUE_WAIT_SECONDS = Histogram(
+    "atlas_analytics_heavy_queue_wait_seconds",
+    "Time heavy analytics requests spent waiting for capacity",
+    labelnames=["endpoint"],
+    buckets=(0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+)
+
+HEAVY_ENDPOINT_GATES = {
+    name: HeavyEndpointGate(
+        name,
+        budget=HEAVY_ENDPOINT_GLOBAL_BUDGET,
+        cost=cost,
+        per_tenant_limit=HEAVY_ENDPOINT_PER_TENANT_LIMIT,
+        queue_limit=HEAVY_ENDPOINT_QUEUE_LIMIT,
+        wait_seconds=HEAVY_ENDPOINT_QUEUE_WAIT_SECONDS,
+        retry_after=HEAVY_ENDPOINT_RETRY_AFTER_SECONDS,
+    )
+    for name, cost in HEAVY_ENDPOINT_COSTS.items()
+}
+
+
+def heavy_endpoint(name):
+    """Wrap a heavy endpoint with its concurrency gate.
+
+    Over-capacity requests get a 503 plus Retry-After instead of queueing
+    without bound. Interactive endpoints (health, single-row lookups, the
+    cheap command-center reads) stay unthrottled by design; the caps target
+    the full-sweep computations and external calls that share the worker.
+    """
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            gate = HEAVY_ENDPOINT_GATES[name]
+            tenant_id = kwargs.get("x_tenant_id") or "default"
+            try:
+                with gate.slot(tenant_id):
+                    return func(*args, **kwargs)
+            except OverloadedError as e:
+                logger.warning(
+                    "analytics.heavy_endpoint_overloaded",
+                    extra={"endpoint": name, "tenant_id": tenant_id},
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Service busy: {name} at capacity, retry shortly",
+                    headers={"Retry-After": str(e.retry_after)},
+                )
+
+        return wrapper
+
+    return decorator
 
 
 def custom_openapi():
@@ -443,6 +673,7 @@ def fetch_payroll_by_period(tenant_id, limit=6):
 
 
 @app.get("/analytics/department", tags=["analytics"], summary="Department headcount breakdown")
+@heavy_endpoint("analytics.department")
 def get_department_analytics(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Returns headcount grouped by department for the given tenant."""
     now = time.time()
@@ -484,6 +715,7 @@ def get_department_analytics(x_tenant_id: str = Header("default", alias="X-Tenan
 
 
 @app.get("/analytics/payroll", tags=["analytics"], summary="Payroll trends")
+@heavy_endpoint("analytics.payroll")
 def get_payroll_analytics(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Returns aggregated payroll data grouped by period."""
     if not engine:
@@ -540,6 +772,7 @@ def get_performance_prediction():
 
 
 @app.post("/analytics/ai-insights", tags=["ai"], summary="AI-powered workforce insights")
+@heavy_endpoint("analytics.ai-insights")
 def get_ai_insights(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Generates strategic HR insights using AI based on current workforce data."""
     try:
@@ -579,6 +812,32 @@ def get_ai_insights(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     except Exception:
         logger.exception("analytics.ai_insights_failed", extra={"tenant_id": x_tenant_id})
         raise HTTPException(status_code=500, detail="Failed to generate AI insights")
+
+
+@app.get("/analytics/concurrency/status", tags=["analytics"],
+         summary="Heavy endpoint concurrency status")
+def get_concurrency_status(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
+    """Current in-flight cost, queue depth and admission counters per heavy endpoint.
+
+    The same numbers are exported to Prometheus on /metrics as
+    atlas_analytics_heavy_requests_total, atlas_analytics_heavy_requests_in_flight,
+    atlas_analytics_heavy_queue_depth and atlas_analytics_heavy_queue_wait_seconds.
+    """
+    return {
+        "endpoints": {name: gate.metrics() for name, gate in HEAVY_ENDPOINT_GATES.items()},
+        "thresholds": {
+            "maxConcurrency": HEAVY_ENDPOINT_GLOBAL_BUDGET,
+            "maxPerTenant": HEAVY_ENDPOINT_PER_TENANT_LIMIT,
+            "queueLimit": HEAVY_ENDPOINT_QUEUE_LIMIT,
+            "queueWaitSeconds": HEAVY_ENDPOINT_QUEUE_WAIT_SECONDS,
+            "retryAfterSeconds": HEAVY_ENDPOINT_RETRY_AFTER_SECONDS,
+        },
+        "unthrottled_note": (
+            "Interactive endpoints (health, performance, command-center reads) are "
+            "intentionally unthrottled; only full-sweep computations and external "
+            "calls carry a concurrency gate."
+        ),
+    }
 
 
 @app.get("/api/v1/command-center/overview", tags=["command-center"], summary="Command Center overview")
@@ -1118,6 +1377,7 @@ def get_risk_dashboard(x_tenant_id: str = Header("default", alias="X-Tenant-Id")
 
 @app.get("/api/v1/payroll/verify/{period}", tags=["analytics"],
          summary="Verify payroll amounts against attendance records")
+@heavy_endpoint("analytics.payroll-verify")
 def verify_payroll_consistency(
     period: str,
     x_tenant_id: str = Header("default", alias="X-Tenant-Id")
