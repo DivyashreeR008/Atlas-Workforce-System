@@ -151,6 +151,10 @@ async def internal_auth_middleware(request: Request, call_next):
         request.state.tenant_id = claims.get("tenant_id", "default")
         request.state.user_id = claims.get("user_id", "")
         request.state.user_role = claims.get("user_role", "employee")
+        # Verified caller email, used only by self-service endpoints. The
+        # gateway mints this claim from the authenticated session, so it can
+        # never be supplied (or overridden) by the client.
+        request.state.user_email = str(claims.get("email") or "").strip().lower()
     except HTTPException as e:
         return JSONResponse(status_code=e.status_code, content={"detail": e.detail})
     except (ValueError, KeyError, AttributeError, TypeError, UnicodeError) as e:
@@ -193,6 +197,19 @@ def validate_search_param(search: Optional[str]) -> Optional[str]:
 # ------------------------------------------------
 # verify_internal_key removed - all endpoints now require x-internal-auth JWT
 # tenant is bound from verified claims (request.state.tenant_id) instead of X-Tenant-Id header
+
+
+def require_self_identity(request: Request) -> str:
+    """Return the verified caller email for self-service endpoints.
+
+    Self-service reads and writes are bound to the identity in the verified
+    internal token; the request body/path/query is never consulted for it.
+    Calls without an email claim (service-to-service tokens) fail closed.
+    """
+    email = getattr(request.state, "user_email", "")
+    if not email:
+        raise HTTPException(status_code=401, detail="Missing verified identity claim")
+    return email
 
 
 # ------------------------------------------------
@@ -250,6 +267,14 @@ class EmployeeSchema(BaseModel):
         pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
         description="Employee email address (unique per tenant)",
     )
+    phone: Optional[str] = Field(
+        None,
+        min_length=7,
+        max_length=20,
+        pattern=r"^\+?[0-9 ()\-]+$",
+        description="Contact phone number",
+    )
+    location: Optional[str] = Field(None, min_length=1, max_length=200, description="Work location")
     tenant_id: Optional[str] = Field(None, description="Multi-tenant identifier")
 
     class Config:
@@ -288,6 +313,24 @@ class EmployeeUpdateSchema(BaseModel):
         pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
         description="Updated email",
     )
+
+
+class EmployeeSelfUpdateSchema(BaseModel):
+    """Fields an employee may change on their own profile.
+
+    Department, position, email and reporting line stay HR-managed through the
+    directory endpoints; self-service edits are limited to personal details.
+    """
+
+    name: Optional[str] = Field(None, min_length=1, max_length=200, description="Updated full name")
+    phone: Optional[str] = Field(
+        None,
+        min_length=7,
+        max_length=20,
+        pattern=r"^\+?[0-9 ()\-]+$",
+        description="Updated contact phone number",
+    )
+    location: Optional[str] = Field(None, min_length=1, max_length=200, description="Updated work location")
 
 
 # ------------------------------------------------
@@ -338,6 +381,50 @@ async def get_employees(
         "page_size": page_size,
         "total_pages": total_pages,
     }
+
+
+@app.get("/employees/me", response_model=EmployeeSchema, tags=["employees"], summary="Get my employee profile")
+async def get_my_employee(request: Request):
+    """Return the employee record linked to the verified caller identity.
+
+    The lookup key comes exclusively from the verified internal token claims;
+    no email, id or tenant may be supplied through the request.
+    """
+    email = require_self_identity(request)
+    tenant_id = getattr(request.state, "tenant_id", "default")
+    employee = await employees_collection.find_one({"email": email, "tenant_id": tenant_id})
+    if employee:
+        return serialize_employee(employee)
+    raise HTTPException(status_code=404, detail="No employee profile linked to this account")
+
+
+@app.put("/employees/me", response_model=EmployeeSchema, tags=["employees"], summary="Update my employee profile")
+async def update_my_employee(
+    request: Request,
+    employee: EmployeeSelfUpdateSchema = Body(...),
+):
+    """Update the caller's own profile details.
+
+    The record is located by the verified identity only, so a caller can never
+    edit somebody else's profile.
+    """
+    email = require_self_identity(request)
+    tenant_id = getattr(request.state, "tenant_id", "default")
+    existing = await employees_collection.find_one({"email": email, "tenant_id": tenant_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="No employee profile linked to this account")
+
+    update_data = employee.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    await employees_collection.update_one(
+        {"email": email, "tenant_id": tenant_id},
+        {"$set": update_data},
+    )
+    updated = await employees_collection.find_one({"email": email, "tenant_id": tenant_id})
+    log_event("info", "employee.self_updated", tenant_id=tenant_id, fields=sorted(update_data.keys()))
+    return serialize_employee(updated)
 
 
 @app.get("/employees/{email}", response_model=EmployeeSchema, tags=["employees"], summary="Get employee by email")

@@ -272,6 +272,8 @@ const employeeSchema = z.looseObject({
   email: z.string().email(),
   department: z.string().min(1),
   position: z.string().min(1),
+  phone: z.string().optional(),
+  location: z.string().optional(),
   tenant_id: z.string().optional(),
 });
 
@@ -520,6 +522,96 @@ export const payrollApi = {
       list: () => api.get("/payroll/enterprise/anomalies"),
       resolve: (id: number) => api.post(`/payroll/enterprise/anomalies/${id}/resolve`),
     },
+  },
+};
+
+// === Employee self-service ===
+// Every endpoint below is scoped server-side to the caller's verified
+// identity claim. No employee id is ever sent from the client, so these
+// calls cannot be pointed at another employee's data.
+
+const myPayslipSchema = z.looseObject({
+  id: z.number(),
+  payrollId: z.number().nullable().optional(),
+  employeeId: z.string().optional(),
+  tenantId: z.string().optional(),
+  period: z.string().optional(),
+  pdfContent: z.string().nullable().optional(),
+  pdfUrl: z.string().nullable().optional(),
+  generatedAt: z.string().nullable().optional(),
+});
+
+const myPayslipListSchema = z.array(myPayslipSchema);
+
+const myLeaveRecordSchema = z.looseObject({
+  id: z.number(),
+  employeeId: z.string().optional(),
+  tenantId: z.string().optional(),
+  startDate: z.string(),
+  endDate: z.string(),
+  leaveType: z.string(),
+  reason: z.string().nullable().optional(),
+  status: z.string(),
+});
+
+const myLeavePageSchema = z.looseObject({
+  content: z.array(myLeaveRecordSchema),
+  totalElements: z.number().optional(),
+  totalPages: z.number().optional(),
+  number: z.number().optional(),
+  size: z.number().optional(),
+});
+
+const myLeaveBalanceRowSchema = z.looseObject({
+  leaveType: z.string(),
+  entitlementDays: z.number(),
+  usedDays: z.number(),
+  remainingDays: z.number(),
+});
+
+const myLeaveBalancesSchema = z.looseObject({
+  employeeId: z.string(),
+  balances: z.array(myLeaveBalanceRowSchema),
+});
+
+export const selfServiceApi = {
+  profile: {
+    get: async () => {
+      const res = await api.get("/employee/me");
+      res.data = validateResponse(employeeSchema, res.data, "profile");
+      return res;
+    },
+    update: async (data: { name: string; phone?: string; location?: string }) => {
+      const res = await api.put("/employee/me", data);
+      res.data = validateResponse(employeeSchema, res.data, "profile");
+      return res;
+    },
+  },
+  leave: {
+    list: async (params?: { page?: number; size?: number }) => {
+      const res = await api.get("/leave/me", { params });
+      res.data = validateResponse(myLeavePageSchema, res.data, "leave");
+      return res;
+    },
+    balances: async () => {
+      const res = await api.get("/leave/me/balances");
+      res.data = validateResponse(myLeaveBalancesSchema, res.data, "leave balances");
+      return res;
+    },
+  },
+  payslips: {
+    list: async () => {
+      const res = await api.get("/payroll/me/payslips");
+      res.data = validateResponse(myPayslipListSchema, res.data, "payslips");
+      return res;
+    },
+    get: async (id: number) => {
+      const res = await api.get(`/payroll/me/payslips/${id}`);
+      res.data = validateResponse(myPayslipSchema, res.data, "payslip");
+      return res;
+    },
+    download: (id: number) =>
+      api.get(`/payroll/me/payslips/${id}/download`, { responseType: "blob" }),
   },
 };
 

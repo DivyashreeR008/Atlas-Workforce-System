@@ -18,12 +18,15 @@ from main import app, lifespan
 INTERNAL_JWT_SECRET = os.environ.get("INTERNAL_JWT_SECRET", "test-secret")
 
 
-def _make_internal_token(secret: str, tenant_id: str = "test-tenant") -> str:
+def _make_internal_token(secret: str, tenant_id: str = "test-tenant", email: str = None) -> str:
+    claims = {"sub": "test", "tenant_id": tenant_id, "exp": int(time.time()) + 3600}
+    if email is not None:
+        claims["email"] = email
     hdr = base64.urlsafe_b64encode(
         json.dumps({"alg": "HS256", "typ": "JWT"}).encode()
     ).rstrip(b"=").decode()
     payload = base64.urlsafe_b64encode(
-        json.dumps({"sub": "test", "tenant_id": tenant_id, "exp": int(time.time()) + 3600}).encode()
+        json.dumps(claims).encode()
     ).rstrip(b"=").decode()
     sig = base64.urlsafe_b64encode(
         hmac.new(secret.encode(), f"{hdr}.{payload}".encode(), hashlib.sha256).digest()
@@ -253,3 +256,101 @@ async def test_lifespan_migrates_email_index_to_per_tenant():
     for args, kwargs in created:
         assert not (args == "email" and kwargs.get("unique") is True), \
             "global unique email index must not be created"
+
+
+# ---------------------------------------------------------------------------
+# Self-service profile endpoints (/employees/me)
+#
+# The caller identity must come from the verified internal token only. A
+# client-supplied email (path, query or body) must never widen or redirect
+# the lookup, so a forged identity returns nothing belonging to another user.
+# ---------------------------------------------------------------------------
+
+JANE_DOC = {
+    "_id": "fake-jane-id",
+    "name": "Jane Doe",
+    "department": "Engineering",
+    "position": "Developer",
+    "email": "jane@acme.io",
+    "tenant_id": "test-tenant",
+}
+
+
+def _self_client(email=None, tenant_id="test-tenant"):
+    token = _make_internal_token(INTERNAL_JWT_SECRET, tenant_id=tenant_id, email=email)
+    transport = ASGITransport(app=app)
+    return AsyncClient(transport=transport, base_url="http://test", headers={"x-internal-auth": token})
+
+
+@pytest.mark.asyncio
+async def test_my_profile_requires_verified_identity_claim():
+    # A token without an email claim (service-to-service style) must fail
+    # closed instead of falling back to request-supplied identifiers.
+    async with _self_client(email=None) as c:
+        resp = await c.get("/employees/me")
+        assert resp.status_code == 401
+        assert "identity" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_my_profile_reads_only_the_verified_identity(mock_mongodb):
+    mock_mongodb.find_one = AsyncMock(return_value=dict(JANE_DOC))
+    async with _self_client(email="jane@acme.io") as c:
+        # Forged identity in the query string must be ignored.
+        resp = await c.get("/employees/me?email=mallory@acme.io")
+    assert resp.status_code == 200
+    assert resp.json()["email"] == "jane@acme.io"
+    query = mock_mongodb.find_one.call_args[0][0]
+    assert query == {"email": "jane@acme.io", "tenant_id": "test-tenant"}
+
+
+@pytest.mark.asyncio
+async def test_my_profile_unknown_identity_returns_404(mock_mongodb):
+    mock_mongodb.find_one = AsyncMock(return_value=None)
+    async with _self_client(email="ghost@acme.io") as c:
+        resp = await c.get("/employees/me")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_my_profile_update_is_scoped_to_the_verified_identity(mock_mongodb):
+    mock_mongodb.find_one = AsyncMock(side_effect=[
+        dict(JANE_DOC),
+        {**JANE_DOC, "name": "Jane D.", "phone": "+1 555 0100"},
+    ])
+    async with _self_client(email="jane@acme.io") as c:
+        resp = await c.put(
+            "/employees/me",
+            json={
+                "name": "Jane D.",
+                "phone": "+1 555 0100",
+                # Fields outside the self-service allowlist must not land.
+                "email": "mallory@acme.io",
+                "department": "Sales",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Jane D."
+
+    filter_arg = mock_mongodb.update_one.call_args[0][0]
+    update_arg = mock_mongodb.update_one.call_args[0][1]
+    assert filter_arg == {"email": "jane@acme.io", "tenant_id": "test-tenant"}
+    assert set(update_arg["$set"].keys()) == {"name", "phone"}
+
+
+@pytest.mark.asyncio
+async def test_my_profile_update_rejects_invalid_phone(mock_mongodb):
+    mock_mongodb.find_one = AsyncMock(return_value=dict(JANE_DOC))
+    async with _self_client(email="jane@acme.io") as c:
+        resp = await c.put("/employees/me", json={"phone": "not-a-phone"})
+    assert resp.status_code == 422
+    assert not mock_mongodb.update_one.called
+
+
+@pytest.mark.asyncio
+async def test_my_profile_update_requires_at_least_one_field(mock_mongodb):
+    mock_mongodb.find_one = AsyncMock(return_value=dict(JANE_DOC))
+    async with _self_client(email="jane@acme.io") as c:
+        resp = await c.put("/employees/me", json={})
+    assert resp.status_code == 400
+    assert not mock_mongodb.update_one.called

@@ -47,6 +47,40 @@ public class LeaveController {
         return ResponseEntity.ok(service.getLeaveByEmployeeId(tenantId, employeeId, pageable));
     }
 
+    /**
+     * Self-service: the caller's own leave requests. The employee id is the
+     * verified email claim from the internal token (x-user-email), never a
+     * request parameter, so one employee can never read another's records
+     * through this path.
+     */
+    @RequiresRole({"admin", "hr", "manager", "employee"})
+    @GetMapping("/me")
+    public ResponseEntity<?> getMyLeaveRequests(
+            @TenantId String tenantId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        String email = currentUserEmail();
+        if (email.isBlank()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Missing verified identity claim"));
+        }
+        Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 100));
+        return ResponseEntity.ok(service.getLeaveByEmployeeId(tenantId, email, pageable));
+    }
+
+    /**
+     * Self-service: leave balances for the caller, derived from the verified
+     * email claim as above.
+     */
+    @RequiresRole({"admin", "hr", "manager", "employee"})
+    @GetMapping("/me/balances")
+    public ResponseEntity<?> getMyLeaveBalances(@TenantId String tenantId) {
+        String email = currentUserEmail();
+        if (email.isBlank()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Missing verified identity claim"));
+        }
+        return ResponseEntity.ok(service.getLeaveBalances(tenantId, email));
+    }
+
     @RequiresRole({"admin", "hr", "manager", "employee"})
     @PostMapping("/request")
     public ResponseEntity<?> requestLeave(
@@ -103,5 +137,19 @@ public class LeaveController {
         } catch (Exception e) {
             return ResponseEntity.internalServerError().body(Map.of("error", "Error updating leave status"));
         }
+    }
+
+    /**
+     * Email from the verified internal auth claims, set by InternalAuthFilter.
+     * Empty for tokens that carry no email (service-to-service calls); callers
+     * must treat that as unauthenticated rather than trusting request input.
+     */
+    private static String currentUserEmail() {
+        ServletRequestAttributes attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        if (attrs == null) {
+            return "";
+        }
+        Object email = attrs.getRequest().getAttribute("x-user-email");
+        return email == null ? "" : email.toString().trim().toLowerCase();
     }
 }

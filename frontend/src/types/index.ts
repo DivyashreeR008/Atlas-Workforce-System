@@ -21,6 +21,8 @@ export interface Employee {
   department: string;
   position: string;
   email: string;
+  phone?: string;
+  location?: string;
 }
 
 export interface PaginatedEmployees {
@@ -259,6 +261,31 @@ export interface LeaveRequest {
   endDate: string;
   status: "pending" | "approved" | "rejected";
   days: number;
+}
+
+// === Employee self-service leave types ===
+
+export interface MyLeaveRecord {
+  id: number;
+  employeeId?: string;
+  tenantId?: string;
+  startDate: string;
+  endDate: string;
+  leaveType: string;
+  reason?: string | null;
+  status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED" | string;
+}
+
+export interface MyLeaveBalanceRow {
+  leaveType: string;
+  entitlementDays: number;
+  usedDays: number;
+  remainingDays: number;
+}
+
+export interface MyLeaveBalances {
+  employeeId: string;
+  balances: MyLeaveBalanceRow[];
 }
 
 export interface PayrollRecord {
@@ -1432,6 +1459,20 @@ export interface Payslip {
   pdfContent: string;
   pdfUrl: string;
   generatedAt: string;
+}
+
+// === Employee self-service payslip type ===
+// Fields the self-service endpoints may leave unset are optional here.
+
+export interface MyPayslip {
+  id: number;
+  payrollId?: number | null;
+  employeeId?: string;
+  tenantId?: string;
+  period?: string;
+  pdfContent?: string | null;
+  pdfUrl?: string | null;
+  generatedAt?: string | null;
 }
 
 export interface PayrollDashboardSummary {
