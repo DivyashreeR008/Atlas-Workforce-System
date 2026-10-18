@@ -759,9 +759,15 @@ func processMessage(body []byte) {
 		return
 	}
 
-	tenantID := "default"
-	if val, ok := rawData["tenant_id"].(string); ok {
-		tenantID = val
+	// The broker message is the only identity source here: there is no signed
+	// caller to compare against, so normalize and reject rather than defaulting
+	// to a shared tenant that would deliver another tenant's notification into
+	// every subscriber's view.
+	tenantID, _ := rawData["tenant_id"].(string)
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		log.Printf("Rejecting notification with no tenant_id; refusing to attribute it to the shared default tenant")
+		return
 	}
 
 	title := "System Notification"

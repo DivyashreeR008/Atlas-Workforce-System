@@ -284,6 +284,23 @@ async def internal_auth_middleware(request: Request, call_next):
 
 # ── Health ──────────────────────────────────────────────────────
 
+def check_body_tenant(request: Request, body_tenant: Optional[str]) -> None:
+    """Reject a body tenant that disagrees with the verified identity tenant.
+
+    The middleware verifies x-internal-auth and stores the trusted tenant on
+    request.state, but it can only rewrite headers and query params - a JSON
+    body is opaque to it. Any route that reads a tenant out of the body must
+    call this so a caller cannot retarget another tenant by editing JSON.
+    """
+    context_tenant = getattr(request.state, "tenant_id", None)
+    if context_tenant and body_tenant and body_tenant != context_tenant:
+        logger.warning(
+            "auth.body_tenant_mismatch",
+            extra={"body_tenant": body_tenant, "verified_tenant": context_tenant},
+        )
+        raise HTTPException(status_code=403, detail="Tenant mismatch")
+
+
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
     return HealthResponse(status="healthy", service="integration-service", version="1.0.0")
@@ -505,10 +522,19 @@ async def list_integration_outbox(
 @app.post("/api/v1/integration/events", status_code=202, tags=["Event Publishing"])
 async def publish_internal_event(
     payload: EventPublishRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
-    route_event(payload.event_type, payload.tenant_id, payload.payload, payload.source_service)
-    return {"message": "Event accepted for routing", "event_type": payload.event_type, "tenant_id": payload.tenant_id}
+    # The middleware verified identity and stored the trusted tenant; routing on
+    # payload.tenant_id instead would let any caller aim events (and the webhook
+    # fan-out they trigger) at another tenant. The verified claim wins, and a
+    # conflicting body tenant is rejected rather than silently overridden.
+    verified_tenant = getattr(request.state, "tenant_id", None)
+    if not verified_tenant:
+        raise HTTPException(status_code=403, detail="Missing tenant context")
+    check_body_tenant(request, payload.tenant_id)
+    route_event(payload.event_type, verified_tenant, payload.payload, payload.source_service)
+    return {"message": "Event accepted for routing", "event_type": payload.event_type, "tenant_id": verified_tenant}
 
 
 # ── Integration Config ──────────────────────────────────────────
