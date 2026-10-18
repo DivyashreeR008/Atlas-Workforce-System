@@ -135,6 +135,14 @@ function isGroup(item: NavItem): item is NavGroupItem {
 
 const navSections: NavSection[] = [
   {
+    label: "My Workspace",
+    items: [
+      { kind: "link", href: "/dashboard/me", label: "My Profile", icon: User },
+      { kind: "link", href: "/dashboard/me/payslips", label: "My Payslips", icon: Wallet },
+      { kind: "link", href: "/dashboard/me/leave", label: "My Leave", icon: Calendar },
+    ],
+  },
+  {
     label: "Core",
     items: [
       { kind: "link", href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -283,7 +291,7 @@ function NavLink({
 }) {
   const active = item.href === "/dashboard"
     ? pathname === "/dashboard"
-    : pathname.startsWith(item.href);
+    : pathname === item.href || pathname.startsWith(`${item.href}/`);
 
   const link = (
     <Link
