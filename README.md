@@ -307,6 +307,17 @@ Atlas is a full‑stack HRMS platform built with **4 backend runtimes** (Node.js
 - `POST /scim/v2/Users` — SCIM create user
 - `POST /saml/acs` — SAML assertion consumer
 - `POST /auth/passwordless/request` — Request magic link
+- `GET /auth/admin/password-policy` — Read the tenant password policy (admin)
+- `PUT /auth/admin/password-policy` — Update the tenant password policy (admin)
+
+Password policy is per tenant: an 8-character floor is compiled in, and tenants
+may tighten min length (up to 128), complexity toggles, reuse count (up to the
+last 24 passwords), and advisory expiry days (up to 730). Register, password
+reset, admin reset, and SCIM provisioning all enforce the policy; login reports
+`password_expired` and `days_until_password_expiry` so clients can prompt a
+rotation without blocking sign-in. An embedded common-password denylist
+(`denylist_version` is returned by the policy API) is always enforced at set
+time.
 
 ---
 
