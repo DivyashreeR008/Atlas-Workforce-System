@@ -19,6 +19,8 @@ from atlas_observability import (
 
 from crud import (
     MassAssignmentError,
+    backfill_audit_sequences,
+    configure_anchor_signing_key,
     configure_hash_salt,
     create_audit_log,
     create_policy,
@@ -39,11 +41,13 @@ from crud import (
     list_violations,
     record_consent,
     right_to_be_forgotten,
+    sync_chain_anchors,
     trigger_compliance_scan,
     update_policy,
     update_violation_status,
+    verify_audit_chain,
 )
-from models import AuditLog, Base
+from models import Base
 from schemas import (
     AuditLogCreate,
     AuditLogPaginated,
@@ -75,6 +79,7 @@ DATABASE_URL = os.getenv(
 HASH_SALT = os.getenv(
     "HASH_SALT", "a8f3b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"
 )
+ANCHOR_SIGNING_KEY = os.getenv("ANCHOR_SIGNING_KEY", HASH_SALT)
 MAX_PAGE_SIZE = int(os.getenv("MAX_AUDIT_PAGE_SIZE", "100"))
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 
@@ -82,6 +87,7 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 configure_hash_salt(HASH_SALT)
+configure_anchor_signing_key(ANCHOR_SIGNING_KEY)
 
 
 def get_db() -> Session:
@@ -95,6 +101,23 @@ def get_db() -> Session:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    # One-time, idempotent maintenance for databases written before the
+    # sequence column / anchor table existed: number legacy rows and record a
+    # signed baseline anchor so tail deletions become detectable.
+    try:
+        db = SessionLocal()
+        try:
+            backfilled = backfill_audit_sequences(db)
+            anchored = sync_chain_anchors(db)
+            if backfilled or anchored:
+                logger.info(
+                    "audit.chain_metadata_backfill",
+                    extra={"sequences_backfilled": backfilled, "anchors_created": anchored},
+                )
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("audit.chain_metadata_backfill_failed")
     yield
 
 
@@ -773,73 +796,16 @@ async def data_portability_endpoint(
     "/api/v1/audit/verify-chain",
     tags=["Audit Logs"],
     summary="Verify hash chain integrity",
-    description="Verifies the integrity of the audit log hash chain for a given tenant. "
-    "Returns whether the chain is intact and details of any break.",
+    description="Verifies the integrity of the audit log hash chain for a given tenant, "
+    "including the signed head anchor that detects entries removed from the end. "
+    "Requires x-internal-auth JWT with the audit-writer audience.",
 )
 async def verify_chain_integrity(
     request: Request,
     tenant_id: Optional[str] = Query(None),
     verified_tenant: str = Depends(get_tenant),
+    _: bool = Depends(require_audit_writer),
     db: Session = Depends(get_db),
 ):
     effective_tenant = resolve_tenant(tenant_id, verified_tenant)
-    from crud import _compute_hash
-
-    VERIFY_BATCH_SIZE = 500
-
-    issues = []
-    index = 0
-    total_entries = 0
-    expected_prev_hash = ""
-    offset = 0
-    while True:
-        batch = (
-            db.query(AuditLog)
-            .filter(AuditLog.tenant_id == effective_tenant)
-            .order_by(AuditLog.created_at.asc())
-            .offset(offset)
-            .limit(VERIFY_BATCH_SIZE)
-            .all()
-        )
-        if not batch:
-            break
-        for entry in batch:
-            if (entry.previous_hash or "") != expected_prev_hash:
-                issues.append({
-                    "index": index,
-                    "id": str(entry.id),
-                    "issue": "previous_hash mismatch",
-                    "expected": expected_prev_hash,
-                    "found": entry.previous_hash or "",
-                })
-
-            expected_hash = _compute_hash(
-                previous_hash=expected_prev_hash,
-                event_type=entry.event_type,
-                actor_id=entry.actor_id,
-                action=entry.action,
-                resource_type=entry.resource_type,
-                resource_id=entry.resource_id,
-                created_at=entry.created_at,
-            )
-            if entry.hash != expected_hash:
-                issues.append({
-                    "index": index,
-                    "id": str(entry.id),
-                    "issue": "hash mismatch — entry has been tampered with",
-                    "expected": expected_hash,
-                    "found": entry.hash,
-                })
-            expected_prev_hash = entry.hash
-            index += 1
-        total_entries += len(batch)
-        if len(batch) < VERIFY_BATCH_SIZE:
-            break
-        offset += len(batch)
-
-    return {
-        "tenant_id": effective_tenant,
-        "total_entries": total_entries,
-        "chain_intact": len(issues) == 0,
-        "issues": issues,
-    }
+    return verify_audit_chain(db, effective_tenant)

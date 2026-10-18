@@ -34,6 +34,10 @@ class AuditLog(Base):
     device_fingerprint = Column(String(255), nullable=True)
     hash = Column(String(64), nullable=False)
     previous_hash = Column(String(64), nullable=True)
+    # Monotonic per-tenant position in the hash chain. created_at alone has
+    # ties (app-assigned clock) and the primary key is a random uuid, so the
+    # sequence is the deterministic order used by every chain read.
+    sequence = Column(Integer, nullable=True)
     metadata_json = Column("metadata", JSONB, nullable=True)
     created_at = Column(
         DateTime(timezone=True),
@@ -46,6 +50,29 @@ class AuditLog(Base):
         Index("idx_audit_event_type", "event_type"),
         Index("idx_audit_actor_id", "actor_id"),
         Index("idx_audit_resource", "resource_type", "resource_id"),
+        UniqueConstraint("tenant_id", "sequence", name="uq_audit_tenant_sequence"),
+    )
+
+
+class AuditChainAnchor(Base):
+    """Signed per-tenant head anchor for the audit hash chain.
+
+    Verification compares the walked chain against the stored anchor, so
+    deleting entries from the newest end (which still leaves a
+    self-consistent suffix) is detected instead of reporting intact.
+    """
+
+    __tablename__ = "audit_chain_anchors"
+
+    tenant_id = Column(String(50), primary_key=True)
+    head_hash = Column(String(64), nullable=False)
+    last_sequence = Column(Integer, nullable=False)
+    entry_count = Column(Integer, nullable=False, default=0)
+    signature = Column(String(64), nullable=False)
+    anchored_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
     )
 
 
