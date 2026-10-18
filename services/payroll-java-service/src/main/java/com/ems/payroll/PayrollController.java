@@ -43,12 +43,17 @@ public class PayrollController {
             @RequestBody Map<String, Object> request,
             @TenantId String tenantId) {
 
+        String missingField = missingMoneyField(request);
+        if (missingField != null) {
+            return ResponseEntity.badRequest().body(Map.of("message", missingField + " is required"));
+        }
+
         try {
             String employeeId = (String) request.get("employeeId");
             String period = (String) request.get("period");
-            BigDecimal baseSalary = Money.of(request.getOrDefault("baseSalary", "0"));
-            BigDecimal allowances = Money.of(request.getOrDefault("allowances", "0"));
-            BigDecimal deductions = Money.of(request.getOrDefault("deductions", "0"));
+            BigDecimal baseSalary = Money.of(request.get("baseSalary"));
+            BigDecimal allowances = Money.of(request.get("allowances"));
+            BigDecimal deductions = Money.of(request.get("deductions"));
 
             PayrollRecord record = service.runPayroll(tenantId, employeeId, period, baseSalary, allowances, deductions);
             return ResponseEntity.ok(record);
@@ -57,5 +62,20 @@ public class PayrollController {
         } catch (Exception e) {
             return ResponseEntity.internalServerError().body(Map.of("message", "Error processing payroll"));
         }
+    }
+
+    /**
+     * Money fields are required. A missing component used to be coerced to
+     * zero, which silently paid the employee the wrong amount; reject it with
+     * a clear message before any arithmetic happens.
+     */
+    private static String missingMoneyField(Map<String, Object> request) {
+        for (String field : List.of("baseSalary", "allowances", "deductions")) {
+            Object value = request.get(field);
+            if (value == null || value.toString().isBlank()) {
+                return field;
+            }
+        }
+        return null;
     }
 }
