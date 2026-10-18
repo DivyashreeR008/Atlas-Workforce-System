@@ -83,6 +83,7 @@ type Assessment struct {
 	PassingScore     float64         `gorm:"type:decimal(5,2);default:70.00" json:"passing_score"`
 	MaxScore         float64         `gorm:"type:decimal(5,2);default:100.00" json:"max_score"`
 	TimeLimitMinutes int             `gorm:"type:int" json:"time_limit_minutes,omitempty"`
+	MaxAttempts      int             `gorm:"type:int;default:3" json:"max_attempts"`
 	Questions        datatypes.JSON  `gorm:"type:jsonb" json:"questions,omitempty"`
 	CreatedAt        time.Time       `json:"created_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`
@@ -97,14 +98,15 @@ func (Assessment) TableName() string {
 type AssessmentAttempt struct {
 	ID              string          `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 	TenantID        string          `gorm:"type:varchar(50);not null;index:idx_attempts_tenant;index" json:"tenant_id"`
-	AssessmentID    string          `gorm:"type:uuid;not null;index:idx_attempts_assessment" json:"assessment_id"`
-	EmployeeID      string          `gorm:"type:varchar(100);not null;index:idx_attempts_employee" json:"employee_id"`
+	AssessmentID    string          `gorm:"type:uuid;not null;index:idx_attempts_assessment;uniqueIndex:idx_attempt_numbering,priority:1" json:"assessment_id"`
+	EmployeeID      string          `gorm:"type:varchar(100);not null;index:idx_attempts_employee;uniqueIndex:idx_attempt_numbering,priority:2" json:"employee_id"`
 	Score           *float64        `gorm:"type:decimal(5,2)" json:"score,omitempty"`
 	Passed          *bool           `json:"passed,omitempty"`
 	Answers         datatypes.JSON  `gorm:"type:jsonb" json:"answers,omitempty"`
 	StartedAt       *time.Time      `json:"started_at,omitempty"`
+	ExpiresAt       *time.Time      `json:"expires_at,omitempty"`
 	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
-	AttemptNumber   int             `gorm:"default:1" json:"attempt_number"`
+	AttemptNumber   int             `gorm:"default:1;uniqueIndex:idx_attempt_numbering,priority:3" json:"attempt_number"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 
