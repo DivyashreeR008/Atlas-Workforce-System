@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getAccessToken } from "@/lib/auth";
 import { requiredEnv } from "@/lib/env";
 import { getReconnectDelay } from "@/lib/reconnect";
 
@@ -59,7 +60,11 @@ export function useNotificationSocket() {
 
   const connect = useCallback(() => {
     try {
-      const ws = new WebSocket(NOTIFICATION_WS_URL);
+      const token = getAccessToken();
+      const url = token
+        ? `${NOTIFICATION_WS_URL}?token=${encodeURIComponent(token)}`
+        : NOTIFICATION_WS_URL;
+      const ws = new WebSocket(url);
       wsRef.current = ws;
 
       ws.onopen = () => {

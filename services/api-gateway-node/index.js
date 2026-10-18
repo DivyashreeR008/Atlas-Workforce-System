@@ -741,6 +741,9 @@ const PUBLIC_PREFIXES = [
   '/api/auth/oauth/login',
   '/api/auth/oauth/callback',
   '/api/ats/career',
+  // One-click email unsubscribe: authenticated by its own signed token, so it
+  // must be reachable without a session.
+  '/api/notification/unsubscribe',
 ];
 
 function isPublicOrAuthPath(path) {
