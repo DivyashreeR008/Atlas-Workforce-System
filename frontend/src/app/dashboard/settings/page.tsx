@@ -1,6 +1,7 @@
 "use client";
 
 
+import Link from "next/link";
 import { useState } from "react";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -195,6 +196,19 @@ export default function SettingsPage() {
                   onClick={() => addToast({ title: "Password updated successfully" })}
                 >
                   Update Password
+                </Button>
+              </div>
+              <Separator />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-medium">Sessions &amp; devices</p>
+                  <p className="text-xs text-muted-foreground">
+                    Review where you are signed in, revoke sessions, and manage
+                    trusted devices
+                  </p>
+                </div>
+                <Button variant="outline" size="sm" asChild>
+                  <Link href="/dashboard/settings/security">Manage</Link>
                 </Button>
               </div>
             </CardContent>
