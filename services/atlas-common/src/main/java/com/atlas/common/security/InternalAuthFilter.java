@@ -103,6 +103,12 @@ public class InternalAuthFilter implements Filter {
 			request.setAttribute("x-tenant-id", tenantId);
 			request.setAttribute("x-user-role", claims.getOrDefault("user_role", "employee"));
 			request.setAttribute("x-user-id", claims.getOrDefault("user_id", ""));
+			// Verified caller email, used by self-service endpoints only. The
+			// gateway mints it from the authenticated session; it is empty for
+			// service-to-service tokens, and self-service endpoints must then
+			// fail closed rather than trusting a request-supplied value.
+			Object emailClaim = claims.get("email");
+			request.setAttribute("x-user-email", emailClaim == null ? "" : emailClaim.toString());
 
 			filterChain.doFilter(request, response);
 		} catch (Exception e) {

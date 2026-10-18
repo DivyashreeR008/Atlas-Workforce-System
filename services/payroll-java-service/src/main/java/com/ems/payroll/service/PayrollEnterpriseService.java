@@ -1049,6 +1049,22 @@ public class PayrollEnterpriseService {
         return payslipRepo.findByTenantIdAndEmployeeId(tenantId, employeeId);
     }
 
+    /**
+     * Fetch one payslip owned by the given employee in the given tenant.
+     *
+     * Used by the self-service endpoints, where employeeId comes from the
+     * verified internal token. A payslip id belonging to a different employee
+     * or tenant yields an empty result, so a forged id reads nothing.
+     */
+    public Optional<Payslip> getEmployeePayslip(String tenantId, String employeeId, Long payslipId) {
+        if (tenantId == null || payslipId == null || employeeId == null || employeeId.isBlank()) {
+            return Optional.empty();
+        }
+        return payslipRepo.findById(payslipId)
+                .filter(p -> tenantId.equals(p.getTenantId()))
+                .filter(p -> employeeId.equalsIgnoreCase(p.getEmployeeId()));
+    }
+
     private static String toJson(Map<String, Object> payload) {
         try {
             return MAPPER.writeValueAsString(payload);

@@ -9,6 +9,7 @@ import org.springframework.data.domain.Pageable;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,6 +32,37 @@ public class LeaveService {
 
     public Page<LeaveRecord> getLeaveByEmployeeId(String tenantId, String employeeId, Pageable pageable) {
         return repository.findByTenantIdAndEmployeeId(tenantId, employeeId, pageable);
+    }
+
+    /**
+     * Leave balances for one employee, computed from the policy entitlement
+     * minus days already approved or waiting for approval. The employee
+     * argument always comes from the verified caller identity for the
+     * self-service endpoints, never from the request.
+     */
+    public Map<String, Object> getLeaveBalances(String tenantId, String employeeId) {
+        List<LeaveRecord> active = repository.findByTenantIdAndEmployeeIdAndStatusIn(
+                tenantId, employeeId, List.of(LeaveStatus.APPROVED, LeaveStatus.PENDING));
+
+        List<Map<String, Object>> balances = new ArrayList<>();
+        for (String leaveType : List.of("VACATION", "SICK", "PERSONAL")) {
+            int entitlement = getEmployeeLeaveBalance(employeeId, leaveType);
+            int used = active.stream()
+                    .filter(r -> leaveType.equalsIgnoreCase(r.getLeaveType()))
+                    .mapToInt(r -> calculateLeaveDays(r.getStartDate(), r.getEndDate()))
+                    .sum();
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("leaveType", leaveType);
+            row.put("entitlementDays", entitlement);
+            row.put("usedDays", used);
+            row.put("remainingDays", Math.max(0, entitlement - used));
+            balances.add(row);
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("employeeId", employeeId);
+        result.put("balances", balances);
+        return result;
     }
 
     @Transactional

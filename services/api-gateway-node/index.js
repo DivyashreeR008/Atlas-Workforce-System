@@ -847,6 +847,16 @@ async function authMiddleware(req, res, next) {
 
 app.use(authMiddleware);
 
+// Self-service paths let an employee read their own data through routes that
+// are otherwise HR-only. What keeps this safe is not the path check but the
+// downstream services: they resolve the identity from the verified internal
+// token and never from the request (see employee-service /employees/me,
+// leave-service /api/leave/me and payroll-service /api/payroll/me).
+function isSelfServicePath(path) {
+  return path === '/api/payroll/me' || path.startsWith('/api/payroll/me/')
+    || path === '/api/employee/me' || path.startsWith('/api/employee/me/');
+}
+
 function rbacMiddleware(req, res, next) {
   if (isPublicOrAuthPath(req.path)) {
     return next();
@@ -855,7 +865,7 @@ function rbacMiddleware(req, res, next) {
   const role = req.user?.role || 'employee';
   const path = req.path;
 
-  if (path.startsWith('/api/payroll') && !['admin', 'hr'].includes(role)) {
+  if (path.startsWith('/api/payroll') && !isSelfServicePath(path) && !['admin', 'hr'].includes(role)) {
     return res.status(403).json({ message: 'Forbidden: Insufficient privileges for payroll' });
   }
 
@@ -863,7 +873,7 @@ function rbacMiddleware(req, res, next) {
     return res.status(403).json({ message: 'Forbidden: Insufficient privileges for analytics' });
   }
 
-  if (path.startsWith('/api/employee') && req.method !== 'GET' && !['admin', 'hr'].includes(role)) {
+  if (path.startsWith('/api/employee') && !isSelfServicePath(path) && req.method !== 'GET' && !['admin', 'hr'].includes(role)) {
     return res.status(403).json({ message: 'Forbidden: Insufficient privileges to modify employees' });
   }
 

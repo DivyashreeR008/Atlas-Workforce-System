@@ -151,6 +151,38 @@ function testRbacMiddleware() {
   assert.strictEqual(called, false, 'Employee should not modify employees');
   assert.strictEqual(blocked, true, 'Should return 403');
   console.log('PASS: rbacMiddleware blocks employee from modifying employees');
+
+  // Test 8: Employee can read their own payslips through the self-service path
+  called = false;
+  const req8 = { path: '/api/payroll/me/payslips', method: 'GET', user: { role: 'employee' } };
+  rbacMiddleware(req8, res1, () => { called = true; });
+  assert.strictEqual(called, true, 'Employee should reach /api/payroll/me/*');
+  console.log('PASS: rbacMiddleware allows employee self-service payslips');
+
+  // Test 9: The self-service exemption must not leak to the rest of payroll
+  called = false;
+  blocked = false;
+  const req9 = { path: '/api/payroll/me/payslips/1/download', method: 'GET', user: { role: 'manager' } };
+  rbacMiddleware(req9, res2, () => { called = true; });
+  assert.strictEqual(called, false, 'Manager should not read payslips for everyone');
+  assert.strictEqual(blocked, true, 'Should return 403');
+  console.log('PASS: rbacMiddleware keeps non-self payroll HR-only');
+
+  // Test 10: Employee can edit their own profile
+  called = false;
+  const req10 = { path: '/api/employee/me', method: 'PUT', user: { role: 'employee' } };
+  rbacMiddleware(req10, res1, () => { called = true; });
+  assert.strictEqual(called, true, 'Employee should edit their own profile');
+  console.log('PASS: rbacMiddleware allows employee profile self-edit');
+
+  // Test 11: Profile edits for other employees stay HR-only
+  called = false;
+  blocked = false;
+  const req11 = { path: '/api/employee/jane@acme.io', method: 'PUT', user: { role: 'employee' } };
+  rbacMiddleware(req11, res2, () => { called = true; });
+  assert.strictEqual(called, false, 'Employee should not edit other profiles');
+  assert.strictEqual(blocked, true, 'Should return 403');
+  console.log('PASS: rbacMiddleware blocks employee edits outside /me');
 }
 
 // Proxy rewrite table tests
