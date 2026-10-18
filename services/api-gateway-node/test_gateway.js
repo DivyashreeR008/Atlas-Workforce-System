@@ -9,7 +9,7 @@ const assert = require('assert');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const path = require('path');
-const { csrfMiddleware, rbacMiddleware, services, isPublicOrAuthPath, authMiddleware, mfaStepUpMiddleware, auditProxyMiddleware, deviceTrustHeaderMiddleware, checkCache, cacheInvalidationMiddleware, verifySlackRequest, isWsPath, globalErrorHandler } = require('./index');
+const { csrfMiddleware, rbacMiddleware, services, isPublicOrAuthPath, authMiddleware, mfaStepUpMiddleware, auditProxyMiddleware, deviceTrustHeaderMiddleware, checkCache, cacheInvalidationMiddleware, verifySlackRequest, isWsPath, globalErrorHandler, SENSITIVE_ROUTES, SENSITIVE_ROUTE_REGISTRY, isSensitiveRoute, sessionMfaStampIsFresh, stepUpPayloadIsFresh, MFA_STAMP_MAX_AGE_MS } = require('./index');
 
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:8080';
 
@@ -237,52 +237,189 @@ function testAuthMiddleware() {
 }
 
 // MFA step-up middleware tests
-async function testMfaStepUpMiddleware() {
-  // GET bypasses step-up
-  let called = false;
-  await mfaStepUpMiddleware(
-    { method: 'GET', path: '/api/payroll', headers: {} },
-    { status() { return this; }, json() { return this; } },
-    () => { called = true; }
-  );
-  assert.strictEqual(called, true, 'GET should bypass step-up');
-  console.log('PASS: mfaStepUpMiddleware bypasses GET');
+const STEPUP_SECRET = () => process.env.MFA_STEPUP_SECRET || process.env.MFA_JWT_SECRET || process.env.JWT_SECRET;
 
-  // Non-sensitive POST bypasses step-up
-  called = false;
-  await mfaStepUpMiddleware(
-    { method: 'POST', path: '/api/employee', headers: {} },
-    { status() { return this; }, json() { return this; } },
-    () => { called = true; }
+function stepUpToken(overrides = {}) {
+  return jwt.sign(
+    {
+      sub: '7',
+      user_id: '7',
+      tenant_id: 'default',
+      mfa_validated: true,
+      purpose: 'mfa_step_up',
+      jti: 'jti-' + Math.random().toString(36).slice(2),
+      ...overrides,
+    },
+    STEPUP_SECRET(),
+    { algorithm: 'HS256', audience: 'mfa-step-up', issuer: 'atlas-auth', expiresIn: '5m' }
   );
-  assert.strictEqual(called, true, 'Non-sensitive route should bypass');
+}
+
+function staleStepUpToken(overrides = {}) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  return jwt.sign(
+    {
+      sub: '7',
+      tenant_id: 'default',
+      mfa_validated: true,
+      purpose: 'mfa_step_up',
+      jti: 'jti-' + Math.random().toString(36).slice(2),
+      iat: nowSec - Math.ceil((MFA_STAMP_MAX_AGE_MS + 5 * 60 * 1000) / 1000),
+      exp: nowSec + 60,
+      ...overrides,
+    },
+    STEPUP_SECRET(),
+    { algorithm: 'HS256', audience: 'mfa-step-up', issuer: 'atlas-auth', noTimestamp: true }
+  );
+}
+
+function stepUpRes() {
+  const res = {
+    statusCode: 200,
+    body: null,
+    status(code) { this.statusCode = code; return this; },
+    json(data) { this.body = data; return this; },
+  };
+  return res;
+}
+
+async function runStepUp(req) {
+  const res = stepUpRes();
+  let called = false;
+  await mfaStepUpMiddleware(req, res, () => { called = true; });
+  return { called, res };
+}
+
+async function testMfaStepUpMiddleware() {
+  // Non-sensitive routes bypass step-up entirely, reads included.
+  for (const req of [
+    { method: 'GET', path: '/api/employee', headers: {} },
+    { method: 'POST', path: '/api/employee', headers: {} },
+  ]) {
+    const { called } = await runStepUp(req);
+    assert.strictEqual(called, true, `${req.method} ${req.path} should bypass step-up`);
+  }
   console.log('PASS: mfaStepUpMiddleware bypasses non-sensitive routes');
 
-  // Sensitive route without token is 403 with mfa_required
-  called = false;
-  let statusCode = 0;
-  let body = null;
-  await mfaStepUpMiddleware(
-    { method: 'POST', path: '/api/payroll', headers: {} },
-    { status(c) { statusCode = c; return this; }, json(d) { body = d; return this; } },
-    () => { called = true; }
-  );
-  assert.strictEqual(called, false, 'Sensitive route without MFA should block');
-  assert.strictEqual(statusCode, 403, 'Missing MFA token should be 403');
-  assert.strictEqual(body.mfa_required, true, 'Response should flag mfa_required');
-  console.log('PASS: mfaStepUpMiddleware blocks sensitive routes without step-up token');
+  // Table-driven over the registry: both reads and writes of every sensitive
+  // prefix require a fresh MFA stamp.
+  for (const prefix of SENSITIVE_ROUTES) {
+    for (const method of ['GET', 'POST']) {
+      const blocked = await runStepUp({ method, path: `${prefix}/records`, headers: {}, user: { id: '7', tenant_id: 'default' } });
+      assert.strictEqual(blocked.called, false, `${method} ${prefix} must require step-up`);
+      assert.strictEqual(blocked.res.statusCode, 403, `${method} ${prefix} must be 403`);
+      assert.strictEqual(blocked.res.body.mfa_required, true, `${method} ${prefix} must flag mfa_required`);
+    }
+  }
+  console.log('PASS: every sensitive prefix requires step-up on reads and writes');
 
-  // Sensitive route with garbage token is 403
-  called = false;
-  statusCode = 0;
-  await mfaStepUpMiddleware(
-    { method: 'POST', path: '/api/payroll', headers: { 'x-mfa-token': 'garbage' } },
-    { status(c) { statusCode = c; return this; }, json(d) { body = d; return this; } },
-    () => { called = true; }
+  // A fresh step-up token carries reads and writes for the same user/tenant.
+  const freshGet = await runStepUp({
+    method: 'GET', path: '/api/payroll/records',
+    headers: { 'x-mfa-token': stepUpToken() },
+    user: { id: '7', tenant_id: 'default' },
+  });
+  assert.strictEqual(freshGet.called, true, 'Fresh step-up token should authorise a read');
+  const freshPost = await runStepUp({
+    method: 'POST', path: '/api/billing/create-checkout-session',
+    headers: { 'x-mfa-token': stepUpToken() },
+    user: { id: '7', tenant_id: 'default' },
+  });
+  assert.strictEqual(freshPost.called, true, 'Fresh step-up token should authorise a write');
+  console.log('PASS: fresh step-up tokens authorise sensitive reads and writes');
+
+  // A stale step-up token is refused for reads (the stamp is expired).
+  const staleGet = await runStepUp({
+    method: 'GET', path: '/api/audit/logs',
+    headers: { 'x-mfa-token': staleStepUpToken() },
+    user: { id: '7', tenant_id: 'default' },
+  });
+  assert.strictEqual(staleGet.called, false, 'Stale step-up token must not authorise a read');
+  assert.strictEqual(staleGet.res.statusCode, 403, 'Stale step-up token should be 403');
+  assert.ok(String(staleGet.res.body.message).includes('stale'), 'Stale response should say the stamp is stale');
+  console.log('PASS: stale step-up tokens are refused for sensitive reads');
+
+  // A session claim from an MFA-completed login is a valid read stamp until it
+  // ages out; a missing or stale claim falls back to the step-up token.
+  const nowSec = Math.floor(Date.now() / 1000);
+  const sessionStamp = await runStepUp({
+    method: 'GET', path: '/api/compliance/policies',
+    headers: {},
+    user: { id: '7', tenant_id: 'default', mfa_validated_at: nowSec - 60 },
+  });
+  assert.strictEqual(sessionStamp.called, true, 'Fresh session MFA stamp should authorise a read');
+  const staleSessionStamp = await runStepUp({
+    method: 'GET', path: '/api/compliance/policies',
+    headers: {},
+    user: { id: '7', tenant_id: 'default', mfa_validated_at: nowSec - 3600 },
+  });
+  assert.strictEqual(staleSessionStamp.called, false, 'Stale session MFA stamp must not authorise a read');
+  console.log('PASS: session MFA stamps are honoured while fresh');
+
+  // Sensitive route without token is 403 with mfa_required (kept from before).
+  const noToken = await runStepUp({ method: 'POST', path: '/api/payroll', headers: {}, user: { id: '7', tenant_id: 'default' } });
+  assert.strictEqual(noToken.called, false, 'Sensitive route without MFA should block');
+  assert.strictEqual(noToken.res.statusCode, 403, 'Missing MFA token should be 403');
+  assert.strictEqual(noToken.res.body.mfa_required, true, 'Response should flag mfa_required');
+
+  // Garbage token is still rejected.
+  const garbage = await runStepUp({ method: 'POST', path: '/api/payroll', headers: { 'x-mfa-token': 'garbage' }, user: { id: '7', tenant_id: 'default' } });
+  assert.strictEqual(garbage.called, false, 'Garbage MFA token should block');
+  assert.strictEqual(garbage.res.statusCode, 403, 'Garbage MFA token should be 403');
+  console.log('PASS: mfaStepUpMiddleware rejects missing and invalid step-up tokens');
+}
+
+// Sensitive route registry tests: one list feeds limiter skip, step-up and RBAC
+function testSensitiveRouteRegistry() {
+  assert.deepStrictEqual(
+    SENSITIVE_ROUTES.slice().sort(),
+    ['/api/audit', '/api/billing', '/api/compliance', '/api/payroll'],
+    'Registry must carry exactly the four sensitive prefixes'
   );
-  assert.strictEqual(called, false, 'Garbage MFA token should block');
-  assert.strictEqual(statusCode, 403, 'Garbage MFA token should be 403');
-  console.log('PASS: mfaStepUpMiddleware rejects invalid step-up tokens');
+  assert.ok(isSensitiveRoute('/api/payroll'), 'Prefix root is sensitive');
+  assert.ok(isSensitiveRoute('/api/billing/create-checkout-session'), 'Billing subpath is sensitive');
+  assert.strictEqual(isSensitiveRoute('/api/payrollX'), false, 'Near-miss path must not be sensitive');
+  assert.strictEqual(isSensitiveRoute('/api/employee'), false, 'Ordinary routes are not sensitive');
+  console.log('PASS: sensitive route registry covers payroll, compliance, audit and billing');
+
+  // RBAC classification reads the same registry: a role outside the allowlist
+  // is refused, a role inside it passes.
+  for (const entry of SENSITIVE_ROUTE_REGISTRY) {
+    let denied = 0;
+    let allowed = false;
+    rbacMiddleware(
+      { path: `${entry.prefix}/thing`, method: 'POST', user: { role: 'contractor' } },
+      { status(c) { denied = c; return this; }, json() { return this; } },
+      () => {}
+    );
+    assert.strictEqual(denied, 403, `${entry.prefix} must deny a role outside ${entry.roles.join('/')}`);
+    rbacMiddleware(
+      { path: `${entry.prefix}/thing`, method: 'POST', user: { role: entry.roles[0] } },
+      { status() { return this; }, json() { return this; } },
+      () => { allowed = true; }
+    );
+    assert.strictEqual(allowed, true, `${entry.prefix} must allow ${entry.roles[0]}`);
+  }
+  console.log('PASS: RBAC sensitive tier reads the registry');
+
+  // The limiter skip and the step-up gate must not drift from the registry.
+  const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+  assert.ok(source.includes('isSensitiveRoute(p)'), 'apiLimiter skip must use isSensitiveRoute');
+  assert.ok(source.includes('for (const { prefix } of SENSITIVE_ROUTE_REGISTRY)'), 'sensitiveLimiter mounts must come from the registry');
+  assert.ok(source.includes('for (const { prefix, roles, message } of SENSITIVE_ROUTE_REGISTRY)'), 'RBAC tier must come from the registry');
+  assert.ok(!source.includes("'/api/billing', sensitiveLimiter"), 'limiter mounts must not be hand-listed again');
+  console.log('PASS: limiter and step-up wiring read the shared registry');
+
+  // Freshness helpers behave at the window boundary.
+  const nowSec = Math.floor(Date.now() / 1000);
+  assert.strictEqual(sessionMfaStampIsFresh({ mfa_validated_at: nowSec - 30 }), true, 'Fresh stamp accepted');
+  assert.strictEqual(sessionMfaStampIsFresh({ mfa_validated_at: nowSec - 3600 }), false, 'Old stamp rejected');
+  assert.strictEqual(sessionMfaStampIsFresh({}), false, 'Missing stamp rejected');
+  assert.strictEqual(sessionMfaStampIsFresh(null), false, 'No user rejected');
+  assert.strictEqual(stepUpPayloadIsFresh({ iat: nowSec - 30, exp: nowSec + 60 }), true, 'Fresh step-up accepted');
+  assert.strictEqual(stepUpPayloadIsFresh({ iat: nowSec - 3600, exp: nowSec + 60 }), false, 'Stale step-up rejected');
+  assert.strictEqual(stepUpPayloadIsFresh({}), false, 'Step-up without iat rejected');
+  console.log('PASS: MFA stamp freshness helpers enforce the window');
 }
 
 // Audit proxy middleware tests
@@ -423,6 +560,7 @@ async function run() {
   testPublicPathDetection();
   testAuthMiddleware();
   await testMfaStepUpMiddleware();
+  testSensitiveRouteRegistry();
   testAuditProxyMiddleware();
   testDeviceTrustMiddleware();
   await testCachingPair();
