@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
 
@@ -15,6 +15,7 @@ from models import (
     WebhookDeliveryLog,
 )
 from ssrf_guard import SSRFBlockedError, validate_webhook_headers, validate_webhook_url
+from webhook_engine import DEFAULT_ROTATION_GRACE_SEC, generate_webhook_secret, serialize_payload
 
 
 class MassAssignmentError(ValueError):
@@ -39,7 +40,9 @@ def filter_create_data(data: dict, allowed_fields: set) -> dict:
 
 
 WEBHOOK_CREATE_FIELDS = frozenset({"name", "url", "secret", "event_types", "headers", "retry_count", "retry_interval_sec", "timeout_sec"})
-WEBHOOK_UPDATE_FIELDS = frozenset({"name", "url", "secret", "event_types", "headers", "retry_count", "retry_interval_sec", "timeout_sec", "enabled", "last_triggered_at"})
+# "secret" is intentionally absent: rotate through the rotation endpoint so the
+# grace window is recorded. A direct PUT would swap the key with no overlap.
+WEBHOOK_UPDATE_FIELDS = frozenset({"name", "url", "event_types", "headers", "retry_count", "retry_interval_sec", "timeout_sec", "enabled", "last_triggered_at"})
 
 EVENT_SUB_CREATE_FIELDS = frozenset({"event_type", "source_service", "kafka_topic", "transform_template"})
 EVENT_SUB_UPDATE_FIELDS = frozenset({"event_type", "source_service", "kafka_topic", "transform_template", "enabled"})
@@ -47,7 +50,7 @@ EVENT_SUB_UPDATE_FIELDS = frozenset({"event_type", "source_service", "kafka_topi
 INTEGRATION_CONFIG_CREATE_FIELDS = frozenset({"key", "value", "description"})
 INTEGRATION_CONFIG_UPDATE_FIELDS = frozenset({"value", "description"})
 
-DELIVERY_LOG_UPDATE_FIELDS = frozenset({"status", "status_code", "response_body", "attempts", "max_attempts", "next_retry_at", "delivered_at"})
+DELIVERY_LOG_UPDATE_FIELDS = frozenset({"status", "status_code", "response_body", "attempts", "max_attempts", "next_retry_at", "delivered_at", "signature", "signature_timestamp", "request_body"})
 
 
 def list_webhooks(
@@ -77,11 +80,42 @@ def create_webhook(db: Session, tenant_id: str, data: dict) -> Webhook:
         validate_webhook_headers(filtered.get("headers"))
     except SSRFBlockedError as e:
         raise ValueError(str(e))
+    if not filtered.get("secret"):
+        # Generated once here; the create response is the only place the
+        # plaintext secret is ever returned.
+        filtered["secret"] = generate_webhook_secret()
     webhook = Webhook(tenant_id=tenant_id, **filtered)
     db.add(webhook)
     db.commit()
     db.refresh(webhook)
     return webhook
+
+
+def rotate_webhook_secret(
+    db: Session,
+    webhook_id: UUID,
+    tenant_id: str,
+    grace_seconds: int = DEFAULT_ROTATION_GRACE_SEC,
+) -> Optional[tuple[Webhook, str]]:
+    """Generate a new signing secret and keep the old one valid for grace_seconds.
+
+    Returns (webhook, new_secret) so the caller can surface the secret once.
+    Webhooks that predate signing have no old secret; rotation simply enables
+    signing for them.
+    """
+    webhook = get_webhook(db, webhook_id, tenant_id)
+    if not webhook:
+        return None
+    now = datetime.now(timezone.utc)
+    new_secret = generate_webhook_secret()
+    webhook.previous_secret = webhook.secret if webhook.secret else None
+    webhook.secret = new_secret
+    webhook.secret_rotated_at = now
+    webhook.secret_grace_expires_at = now + timedelta(seconds=max(int(grace_seconds), 0)) if webhook.previous_secret else None
+    webhook.updated_at = now
+    db.commit()
+    db.refresh(webhook)
+    return webhook, new_secret
 
 
 def update_webhook(db: Session, webhook_id: UUID, tenant_id: str, data: dict) -> Optional[Webhook]:
@@ -145,6 +179,55 @@ def create_delivery_log(db: Session, tenant_id: str, webhook_id: UUID, event_typ
     db.commit()
     db.refresh(log)
     return log
+
+
+def get_delivery_log(db: Session, delivery_id: UUID, tenant_id: str) -> Optional[WebhookDeliveryLog]:
+    return (
+        db.query(WebhookDeliveryLog)
+        .filter(WebhookDeliveryLog.id == delivery_id, WebhookDeliveryLog.tenant_id == tenant_id)
+        .first()
+    )
+
+
+def build_delivery_detail(db: Session, log: WebhookDeliveryLog) -> dict:
+    """Assemble the debugging view for one delivery attempt.
+
+    Exposes the exact body and signature headers that were signed so an
+    integrator can reproduce the request with curl and check their verifier.
+    Falls back to re-serializing the stored payload for deliveries recorded
+    before signing artifacts were persisted.
+    """
+    from webhook_engine import build_curl_example
+
+    webhook = db.query(Webhook).filter(Webhook.id == log.webhook_id).first()
+    target_url = webhook.url if webhook else None
+    body_reconstructed = log.request_body is None
+    signed_payload = log.request_body if log.request_body is not None else serialize_payload(log.payload).decode("utf-8", errors="replace")
+    curl_example = None
+    if target_url and log.signature and log.signature_timestamp is not None:
+        curl_example = build_curl_example(target_url, log.signature_timestamp, log.signature, signed_payload)
+    return {
+        "id": log.id,
+        "webhook_id": log.webhook_id,
+        "tenant_id": log.tenant_id,
+        "event_type": log.event_type,
+        "status": log.status,
+        "status_code": log.status_code,
+        "response_body": log.response_body,
+        "attempts": log.attempts,
+        "max_attempts": log.max_attempts,
+        "next_retry_at": log.next_retry_at,
+        "delivered_at": log.delivered_at,
+        "created_at": log.created_at,
+        "payload": log.payload,
+        "signature": log.signature,
+        "signature_timestamp": log.signature_timestamp,
+        "signature_version": "v1",
+        "signed_payload": signed_payload,
+        "body_reconstructed": body_reconstructed,
+        "target_url": target_url,
+        "curl_example": curl_example,
+    }
 
 
 def update_delivery_log(db: Session, log_id: UUID, data: dict) -> Optional[WebhookDeliveryLog]:

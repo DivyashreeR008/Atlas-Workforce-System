@@ -31,6 +31,7 @@ BLOCKED_HEADER_PREFIXES = (
     "x-internal-",
     "x-tenant-id",
     "x-webhook-",
+    "x-atlas-",
     "proxy-",
 )
 

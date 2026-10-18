@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import declarative_base, relationship
@@ -10,6 +11,16 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
+def as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    # SQLite hands back naive datetimes; treat stored timestamps as UTC so
+    # comparisons with datetime.now(timezone.utc) never raise.
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 class Webhook(Base):
     __tablename__ = "integration_webhooks"
 
@@ -18,6 +29,9 @@ class Webhook(Base):
     name = Column(String(200), nullable=False)
     url = Column(String(500), nullable=False)
     secret = Column(String(255), nullable=True)
+    previous_secret = Column(String(255), nullable=True)
+    secret_rotated_at = Column(DateTime(timezone=True), nullable=True)
+    secret_grace_expires_at = Column(DateTime(timezone=True), nullable=True)
     event_types = Column(JSONB, nullable=False, default=list)
     headers = Column(JSONB, nullable=True, default=dict)
     retry_count = Column(Integer, nullable=False, default=3)
@@ -35,6 +49,33 @@ class Webhook(Base):
         Index("idx_webhook_event_types", "event_types", postgresql_using="gin"),
     )
 
+    @property
+    def secret_set(self) -> bool:
+        return bool(self.secret)
+
+    @property
+    def previous_secret_valid_until(self):
+        # Operators can see when the rotation grace window closes without ever
+        # seeing the secret material itself.
+        if not self.previous_secret:
+            return None
+        return as_utc(self.secret_grace_expires_at)
+
+    def previous_secret_usable(self, now: Optional[datetime] = None) -> bool:
+        if not self.previous_secret:
+            return False
+        expires = as_utc(self.secret_grace_expires_at)
+        if expires is None:
+            return False
+        current = as_utc(now) if now is not None else utcnow()
+        return current < expires
+
+    def signing_secrets(self, now: Optional[datetime] = None) -> list:
+        secrets = [self.secret] if self.secret else []
+        if self.previous_secret_usable(now):
+            secrets.append(self.previous_secret)
+        return secrets
+
 
 class WebhookDeliveryLog(Base):
     __tablename__ = "integration_webhook_delivery_logs"
@@ -44,6 +85,9 @@ class WebhookDeliveryLog(Base):
     tenant_id = Column(String(50), nullable=False)
     event_type = Column(String(100), nullable=False)
     payload = Column(JSONB, nullable=False)
+    signature = Column(String(255), nullable=True)
+    signature_timestamp = Column(Integer, nullable=True)
+    request_body = Column(Text, nullable=True)
     status = Column(String(20), nullable=False, default="PENDING")
     status_code = Column(Integer, nullable=True)
     response_body = Column(Text, nullable=True)

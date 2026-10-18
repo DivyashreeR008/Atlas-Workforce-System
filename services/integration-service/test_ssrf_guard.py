@@ -78,7 +78,7 @@ def test_dns_rebinding_rejected(monkeypatch):
 
 
 def test_blocked_headers_rejected():
-    for header in ("Host", "Content-Length", "Transfer-Encoding", "Authorization", "X-Internal-Key", "X-Tenant-Id", "Content-Type", "X-Webhook-Event"):
+    for header in ("Host", "Content-Length", "Transfer-Encoding", "Authorization", "X-Internal-Key", "X-Tenant-Id", "Content-Type", "X-Webhook-Event", "X-Atlas-Signature", "X-Atlas-Timestamp"):
         with pytest.raises(SSRFBlockedError):
             validate_webhook_headers({header: "evil"})
 
