@@ -12,6 +12,39 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// The broker fan-in used to default a missing tenant_id to "default" and store
+// and broadcast under it, so an event with no tenant landed in the shared
+// default feed that every subscriber without an explicit tenant sees.
+func TestProcessMessage_RejectsMissingTenant(t *testing.T) {
+	before := len(store.List(""))
+	body := []byte(`{"title":"System Alert","message":"no tenant here"}`)
+	processMessage(body)
+	if after := len(store.List("")); after != before {
+		t.Errorf("expected no notification stored for a message without tenant_id, before=%d after=%d", before, after)
+	}
+}
+
+func TestProcessMessage_RejectsNonStringTenant(t *testing.T) {
+	before := len(store.List(""))
+	body := []byte(`{"tenant_id":123,"title":"System Alert"}`)
+	processMessage(body)
+	if after := len(store.List("")); after != before {
+		t.Errorf("expected no notification stored for a non-string tenant_id, before=%d after=%d", before, after)
+	}
+}
+
+func TestProcessMessage_StoresUnderDeclaredTenant(t *testing.T) {
+	body := []byte(`{"tenant_id":"tenant-a","title":"System Alert","message":"hello"}`)
+	processMessage(body)
+	items := store.List("tenant-a")
+	if len(items) != 1 {
+		t.Fatalf("expected exactly 1 notification under tenant-a, got %d", len(items))
+	}
+	if items[0].Title != "System Alert" {
+		t.Errorf("expected title to round-trip, got %q", items[0].Title)
+	}
+}
+
 func TestValidateJWT_NoSecret(t *testing.T) {
 	os.Unsetenv("JWT_SECRET")
 	_, err := validateJWT("some-token")
