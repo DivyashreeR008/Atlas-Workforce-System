@@ -20,7 +20,7 @@ from urllib.parse import urljoin
 from atlas_observability import (
     AtlasLoggingMiddleware, AtlasMetricsMiddleware, CorrelationIdMiddleware,
     SecurityHeadersMiddleware,
-    configure_logging, get_logger, verify_internal_auth
+    configure_logging, get_logger, mint_internal_auth, verify_internal_auth
 )
 
 INTERNAL_JWT_SECRET = os.environ.get("INTERNAL_JWT_SECRET", "")
@@ -34,6 +34,21 @@ payroll_cache = {}
 payroll_cache_timestamp = {}
 PAYROLL_CACHE_TTL = 300
 payroll_cache_lock = threading.Lock()
+
+department_cache = {}
+department_cache_timestamp = {}
+DEPARTMENT_CACHE_TTL = 300
+department_cache_lock = threading.Lock()
+
+
+def invalidate_department_cache(tenant_id=None):
+    with department_cache_lock:
+        if tenant_id:
+            department_cache.pop(tenant_id, None)
+            department_cache_timestamp.pop(tenant_id, None)
+        else:
+            department_cache.clear()
+            department_cache_timestamp.clear()
 
 
 def invalidate_payroll_cache(tenant_id=None):
@@ -203,31 +218,109 @@ def _rabbitmq_params():
     )
 
 EMPLOYEE_SERVICE_URL = os.environ.get("EMPLOYEE_SERVICE_URL", "http://employee-service:8001")
+# The employee service caps page_size at 100 (employee-python-service/main.py:313)
+# and reports a `total` plus `total_pages`; walk pages until the reported total.
+EMPLOYEE_PAGE_SIZE = 100
+EMPLOYEE_MAX_PAGES = 500
+EMPLOYEE_SERVICE_AUDIENCE = "employee-service"
+
+
+def build_employee_service_headers(tenant_id):
+    """Headers for an internal call to the employee service.
+
+    The internal JWT is minted with the shared credential helper so the
+    signature format cannot drift from verify_internal_auth; the employee
+    service binds the tenant from these claims, not from the header value.
+    """
+    try:
+        token = mint_internal_auth(
+            INTERNAL_JWT_SECRET, "analytics-service",
+            tenant_id=tenant_id, audience=EMPLOYEE_SERVICE_AUDIENCE, ttl_seconds=60,
+        )
+    except ValueError:
+        logger.error("analytics.employee_service_auth_not_configured")
+        raise HTTPException(
+            status_code=502,
+            detail="Employee service unavailable (internal auth not configured)",
+        )
+    return {"X-Tenant-Id": tenant_id, "x-internal-auth": token}
+
+
+def fetch_tenant_employees(tenant_id):
+    """Fetch every employee for a tenant across all upstream pages.
+
+    Follows the employee service contract: page (1-based), page_size (max
+    100), `total` and `total_pages` in the response. A non-200 upstream is an
+    error (502 naming the dependency), never an empty result.
+    """
+    items = []
+    page = 1
+    while page <= EMPLOYEE_MAX_PAGES:
+        resp = requests.get(
+            urljoin(EMPLOYEE_SERVICE_URL, "/employees"),
+            params={"page": page, "page_size": EMPLOYEE_PAGE_SIZE},
+            headers=build_employee_service_headers(tenant_id),
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Employee service unavailable (upstream status {resp.status_code})",
+            )
+        try:
+            payload = resp.json()
+        except ValueError:
+            raise HTTPException(status_code=502, detail="Employee service returned an invalid payload")
+
+        if isinstance(payload, list):
+            # Legacy response shape without pagination metadata.
+            items.extend(payload)
+            return items
+
+        batch = payload.get("items", [])
+        items.extend(batch)
+        if not batch:
+            break
+        total = payload.get("total")
+        if isinstance(total, int) and len(items) >= total:
+            break
+        total_pages = payload.get("total_pages")
+        if isinstance(total_pages, int) and page >= total_pages:
+            break
+        page += 1
+    else:
+        logger.warning("analytics.department_pagination_cap_reached",
+                       extra={"tenant_id": tenant_id, "max_pages": EMPLOYEE_MAX_PAGES})
+    return items
 
 
 @app.get("/analytics/department", tags=["analytics"], summary="Department headcount breakdown")
 def get_department_analytics(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Returns headcount grouped by department for the given tenant."""
+    now = time.time()
+    with department_cache_lock:
+        cached = department_cache.get(x_tenant_id)
+        if cached is not None and (now - department_cache_timestamp.get(x_tenant_id, 0)) < DEPARTMENT_CACHE_TTL:
+            return cached
     try:
-        resp = requests.get(
-            urljoin(EMPLOYEE_SERVICE_URL, "/employees?limit=1000"),
-            headers={"X-Tenant-Id": x_tenant_id},
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            return []
-        employees = resp.json()
-        items = employees if isinstance(employees, list) else employees.get("items", [])
+        items = fetch_tenant_employees(x_tenant_id)
         if not items:
-            return []
-        dept_counts = {}
-        for emp in items:
-            dept = emp.get("department", "Unknown")
-            dept_counts[dept] = dept_counts.get(dept, 0) + 1
-        return [
-            {"department": dept, "headcount": count}
-            for dept, count in sorted(dept_counts.items(), key=lambda x: -x[1])
-        ]
+            result = []
+        else:
+            dept_counts = {}
+            for emp in items:
+                dept = emp.get("department", "Unknown")
+                dept_counts[dept] = dept_counts.get(dept, 0) + 1
+            result = [
+                {"department": dept, "headcount": count}
+                for dept, count in sorted(dept_counts.items(), key=lambda x: -x[1])
+            ]
+        with department_cache_lock:
+            department_cache[x_tenant_id] = result
+            department_cache_timestamp[x_tenant_id] = time.time()
+        return result
+    except HTTPException:
+        raise
     except requests.Timeout as e:
         logger.warning("analytics.department_analytics_timeout", extra={"error": str(e), "tenant_id": x_tenant_id})
         raise HTTPException(status_code=504, detail="Employee service timed out")
@@ -236,7 +329,7 @@ def get_department_analytics(x_tenant_id: str = Header("default", alias="X-Tenan
         raise HTTPException(status_code=502, detail="Employee service unavailable")
     except (ValueError, KeyError, AttributeError, TypeError) as e:
         logger.warning("analytics.department_analytics_bad_payload", extra={"error": str(e), "tenant_id": x_tenant_id})
-        raise HTTPException(status_code=500, detail="Failed to retrieve department analytics")
+        raise HTTPException(status_code=502, detail="Employee service returned an invalid payload")
     except Exception:
         logger.exception("analytics.department_analytics_failed", extra={"tenant_id": x_tenant_id})
         raise HTTPException(status_code=500, detail="Failed to retrieve department analytics")
@@ -921,6 +1014,8 @@ def employee_deletion_consumer():
             if event.get("event") == "employee.deleted":
                 email = event.get("email", "")
                 tenant_id = event.get("tenant_id", "")
+                if tenant_id:
+                    invalidate_department_cache(tenant_id)
                 logger.info(
                     "employee.deleted.cascade",
                     extra={"email": email, "tenant_id": tenant_id,

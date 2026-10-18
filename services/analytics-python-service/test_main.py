@@ -4,13 +4,17 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import time
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from main import app
 
 INTERNAL_JWT_SECRET = "test-secret"
+os.environ.setdefault("INTERNAL_JWT_SECRET", INTERNAL_JWT_SECRET)
+
+import main
+from main import app
 
 
 def _make_internal_token(secret: str, tenant_id: str = "test-tenant") -> str:
@@ -31,6 +35,66 @@ def client():
     transport = ASGITransport(app=app)
     token = _make_internal_token(INTERNAL_JWT_SECRET, tenant_id="test-tenant")
     return AsyncClient(transport=transport, base_url="http://test", headers={"x-internal-auth": token})
+
+
+@pytest.fixture(autouse=True)
+def clear_department_cache():
+    main.invalidate_department_cache()
+    yield
+    main.invalidate_department_cache()
+
+
+def _decode_internal_token(token):
+    hdr, payload, sig = token.split(".")
+    expected = base64.urlsafe_b64encode(
+        hmac.new(INTERNAL_JWT_SECRET.encode(), f"{hdr}.{payload}".encode(), hashlib.sha256).digest()
+    ).rstrip(b"=").decode()
+    assert hmac.compare_digest(expected, sig), "outbound token must be signed with INTERNAL_JWT_SECRET"
+    padded = payload + "=" * (4 - len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(padded))
+
+
+class FakeEmployeeService:
+    """Stand-in for the employee service pagination contract.
+
+    Serves employees in page/page_size windows and reports total/total_pages
+    the way employee-python-service/main.py does. Records every request so
+    tests can assert the auth header and pagination parameters.
+    """
+
+    def __init__(self, employees_by_tenant):
+        self.employees_by_tenant = employees_by_tenant
+        self.calls = []
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.calls.append({"url": url, "params": dict(params or {}), "headers": dict(headers or {})})
+        tenant_id = (headers or {}).get("X-Tenant-Id", "")
+        employees = self.employees_by_tenant.get(tenant_id, [])
+        page = int((params or {}).get("page", 1))
+        page_size = int((params or {}).get("page_size", 100))
+        start = (page - 1) * page_size
+        items = employees[start:start + page_size]
+        total = len(employees)
+        total_pages = max(1, -(-total // page_size))
+        return FakeResponse(200, {
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+        })
+
+
+class FakeResponse:
+    def __init__(self, status_code, payload=None):
+        self.status_code = status_code
+        self._payload = payload
+        self.json_error = None
+
+    def json(self):
+        if self.json_error:
+            raise self.json_error
+        return self._payload
 
 
 @pytest.mark.asyncio
@@ -54,14 +118,78 @@ async def test_performance_prediction(client):
 
 @pytest.mark.asyncio
 async def test_department_analytics_no_data(client):
-    """Should return empty list when employee service is unreachable."""
+    """An unreachable employee service is a 502, never an empty tenant."""
     response = await client.get(
         "/analytics/department",
         headers={"X-Tenant-Id": "test-tenant"},
     )
-    # 200 with empty list when reachable-but-empty, 502 when the employee
-    # service is unreachable (its designed unavailable signal).
-    assert response.status_code in (200, 502)
+    assert response.status_code == 502
+    assert "Employee service" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_department_analytics_paginates_and_aggregates(client, monkeypatch):
+    """Multi-page tenants are counted in full, capped pages never truncate silently."""
+    employees = (
+        [{"department": "Engineering"} for _ in range(120)]
+        + [{"department": "Sales"} for _ in range(30)]
+    )
+    backend = FakeEmployeeService({"test-tenant": employees})
+    monkeypatch.setattr("main.requests.get", backend.get)
+
+    response = await client.get("/analytics/department", headers={"X-Tenant-Id": "test-tenant"})
+    assert response.status_code == 200
+    data = response.json()
+    assert {d["department"]: d["headcount"] for d in data} == {"Engineering": 120, "Sales": 30}
+    assert sum(d["headcount"] for d in data) == 150
+
+    assert len(backend.calls) == 2, "150 rows at page_size 100 needs two upstream pages"
+    assert [c["params"]["page"] for c in backend.calls] == [1, 2]
+    for call in backend.calls:
+        assert call["params"]["page_size"] == 100
+        token = call["headers"].get("x-internal-auth", "")
+        assert token, "outbound call must carry the internal auth header"
+        claims = _decode_internal_token(token)
+        assert claims["tenant_id"] == "test-tenant"
+        assert claims["sub"] == "analytics-service"
+
+
+@pytest.mark.asyncio
+async def test_department_analytics_credentials_rejected_by_upstream(client, monkeypatch):
+    """A 401 from the employee service surfaces as 502 naming the dependency."""
+    def unauthorized(url, params=None, headers=None, timeout=None):
+        return FakeResponse(401, {"detail": "Missing internal authentication"})
+
+    monkeypatch.setattr("main.requests.get", unauthorized)
+    response = await client.get("/analytics/department", headers={"X-Tenant-Id": "test-tenant"})
+    assert response.status_code == 502
+    assert "status 401" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_department_analytics_empty_tenant_is_200(client, monkeypatch):
+    """A reachable tenant with no employees is a genuine empty result."""
+    backend = FakeEmployeeService({"test-tenant": []})
+    monkeypatch.setattr("main.requests.get", backend.get)
+    response = await client.get("/analytics/department", headers={"X-Tenant-Id": "test-tenant"})
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_department_analytics_uses_ttl_cache(client, monkeypatch):
+    """Repeated reads within the TTL are served from the cache, not upstream."""
+    backend = FakeEmployeeService({"test-tenant": [{"department": "Engineering"}]})
+    monkeypatch.setattr("main.requests.get", backend.get)
+    first = await client.get("/analytics/department", headers={"X-Tenant-Id": "test-tenant"})
+    second = await client.get("/analytics/department", headers={"X-Tenant-Id": "test-tenant"})
+    assert first.json() == second.json() == [{"department": "Engineering", "headcount": 1}]
+    assert len(backend.calls) == 1
+
+    main.invalidate_department_cache("test-tenant")
+    third = await client.get("/analytics/department", headers={"X-Tenant-Id": "test-tenant"})
+    assert third.status_code == 200
+    assert len(backend.calls) == 2
 
 
 @pytest.mark.asyncio
