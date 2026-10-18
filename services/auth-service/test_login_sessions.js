@@ -56,6 +56,35 @@ function testLoginRoutesUseHelper() {
   console.log('PASS: POST /refresh reads cookie, rotates it, and returns new access token');
 }
 
+function testSessionRevocationScoping() {
+  const revokeOne = sliceRoute("app.delete('/sessions/:id'");
+  assert.ok(revokeOne.includes('requireRole()'), 'single-session revoke must require authentication');
+  assert.ok(
+    revokeOne.includes('WHERE id = $1::uuid AND user_id = $2'),
+    'single-session revoke must update only the caller own session row'
+  );
+  assert.ok(
+    revokeOne.includes('[req.params.id, userId]'),
+    'single-session revoke must pass the session id and the caller user id'
+  );
+
+  const revokeOthers = sliceRoute("app.delete('/sessions'");
+  assert.ok(revokeOthers.includes('requireRole()'), 'bulk revoke must require authentication');
+  assert.ok(
+    revokeOthers.includes("req.headers['x-session-id']"),
+    'bulk revoke must read the current session id from the request header'
+  );
+  assert.ok(
+    revokeOthers.includes('WHERE user_id = $1 AND id != $2::uuid'),
+    'bulk revoke must keep the current session and touch only the caller rows'
+  );
+  assert.ok(
+    revokeOthers.includes('WHERE user_id = $1 RETURNING'),
+    'bulk revoke without a session header must still scope to the caller'
+  );
+  console.log('PASS: session revocation is scoped to the authenticated user');
+}
+
 async function testHelperSetsCookieAndSessionRow() {
   const helperSrc = extractHelper();
 
@@ -123,6 +152,7 @@ async function testHelperSetsCookieAndSessionRow() {
 (async () => {
   testHelperExists();
   testLoginRoutesUseHelper();
+  testSessionRevocationScoping();
   await testHelperSetsCookieAndSessionRow();
   console.log('All login session tests passed.');
 })().catch((err) => {

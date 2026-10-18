@@ -26,6 +26,7 @@ import {
   Settings,
   Shield,
   ShieldCheck,
+  Smartphone,
   Target,
   Users,
   User,
@@ -231,6 +232,7 @@ const navSections: NavSection[] = [
     label: "System",
     items: [
       { kind: "link", href: "/dashboard/settings", label: "Settings", icon: Settings },
+      { kind: "link", href: "/dashboard/settings/security", label: "Sessions & Devices", icon: Smartphone },
       { kind: "link", href: "/dashboard/notifications", label: "Notifications", icon: Bell },
     ],
   },

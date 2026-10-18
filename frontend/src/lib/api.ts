@@ -210,6 +210,61 @@ export const authApi = {
     api.post("/auth/password/reset", { token, password }),
 };
 
+const sessionSchema = z.looseObject({
+  id: z.string(),
+  ip_address: z.string().nullable().optional(),
+  user_agent: z.string().nullable().optional(),
+  device_id: z.string().nullable().optional(),
+  is_active: z.boolean().optional(),
+  created_at: z.string().optional(),
+  expires_at: z.string().nullable().optional(),
+});
+
+const deviceSchema = z.looseObject({
+  id: z.number(),
+  device_id: z.string(),
+  device_name: z.string().nullable().optional(),
+  device_type: z.string().nullable().optional(),
+  os: z.string().nullable().optional(),
+  browser: z.string().nullable().optional(),
+  ip_address: z.string().nullable().optional(),
+  is_trusted: z.boolean().optional(),
+  last_used_at: z.string().nullable().optional(),
+  created_at: z.string().nullable().optional(),
+});
+
+export type SessionRecord = z.infer<typeof sessionSchema>;
+export type TrustedDevice = z.infer<typeof deviceSchema>;
+
+// Sign-in sessions and registered devices for the authenticated user
+// (auth-service /sessions and /devices routes through the /api/auth proxy).
+export const sessionsApi = {
+  list: async (params?: { limit?: number; offset?: number }) => {
+    const res = await api.get("/auth/sessions", { params });
+    res.data = validateResponse(z.array(sessionSchema), res.data, "sessions");
+    return res;
+  },
+  revoke: (id: string) => api.delete(`/auth/sessions/${id}`),
+  revokeOthers: (currentSessionId: string) =>
+    api.delete("/auth/sessions", {
+      headers: { "x-session-id": currentSessionId },
+    }),
+};
+
+export const devicesApi = {
+  list: async (params?: { limit?: number; offset?: number }) => {
+    const res = await api.get("/auth/devices", { params });
+    res.data = validateResponse(z.array(deviceSchema), res.data, "devices");
+    return res;
+  },
+  toggleTrust: async (id: number) => {
+    const res = await api.put(`/auth/devices/${id}/trust`);
+    res.data = validateResponse(deviceSchema, res.data, "device");
+    return res;
+  },
+  remove: (id: number) => api.delete(`/auth/devices/${id}`),
+};
+
 const employeeSchema = z.looseObject({
   _id: z.string().optional(),
   id: z.union([z.string(), z.number()]).optional(),
