@@ -223,6 +223,79 @@ function isAllowedScimRole(role) {
   return typeof role === 'string' && SCIM_ALLOWED_ROLES.includes(role);
 }
 
+// ---- Scoped API keys (issue #472) ----
+
+// Format: atlas_<16-hex key id>_<64-hex secret>. The key id is a public
+// lookup handle stored in the row; only the secret is bcrypt hashed, so a
+// database dump does not yield usable credentials.
+const API_KEY_PREFIX = 'atlas';
+const API_KEY_SCOPES = ['scim:read', 'scim:write'];
+const API_KEY_DEFAULT_EXPIRY_DAYS = 90;
+const API_KEY_MAX_EXPIRY_DAYS = 730;
+const API_KEY_SECRET_BYTES = 32;
+
+function generateApiKey() {
+  const keyId = crypto.randomBytes(8).toString('hex');
+  const secret = crypto.randomBytes(API_KEY_SECRET_BYTES).toString('hex');
+  return { keyId, secret, apiKey: `${API_KEY_PREFIX}_${keyId}_${secret}` };
+}
+
+function parseApiKeyFormat(apiKey) {
+  const match = String(apiKey || '').match(/^atlas_([0-9a-f]{16})_([0-9a-f]{64})$/);
+  if (!match) return null;
+  return { keyId: match[1], secret: match[2] };
+}
+
+function validateApiKeyScopes(scopes) {
+  if (!Array.isArray(scopes) || scopes.length === 0) {
+    return 'scopes must be a non-empty array';
+  }
+  const unknown = [...new Set(scopes)].filter((scope) => !API_KEY_SCOPES.includes(scope));
+  if (unknown.length > 0) {
+    return `Unsupported scope: ${unknown[0]}`;
+  }
+  return null;
+}
+
+// Scope required for a SCIM request: reads need scim:read, everything else
+// (create/update/patch/delete) needs scim:write.
+function scimScopeForRequest(method) {
+  const upper = String(method || '').toUpperCase();
+  return upper === 'GET' || upper === 'HEAD' ? 'scim:read' : 'scim:write';
+}
+
+// scim:write implies scim:read: a key trusted to modify users can list them.
+function apiKeyHasScope(scopes, required) {
+  const list = Array.isArray(scopes) ? scopes : [];
+  if (list.includes(required)) return true;
+  if (required === 'scim:read' && list.includes('scim:write')) return true;
+  return false;
+}
+
+// pg returns jsonb as a JS array; tolerate a stringified array from older
+// drivers or fixtures.
+function normalizeApiKeyScopes(scopes) {
+  if (Array.isArray(scopes)) return scopes;
+  if (typeof scopes === 'string') {
+    try {
+      const parsed = JSON.parse(scopes);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+// State error for an authenticated key, or null when usable. Revocation wins
+// over expiry so an explicitly revoked key reports the stronger signal.
+function apiKeyStateError(keyRow, now = Date.now()) {
+  if (!keyRow) return 'Invalid API key';
+  if (keyRow.revoked_at) return 'API key has been revoked';
+  if (keyRow.expires_at && new Date(keyRow.expires_at).getTime() <= now) return 'API key has expired';
+  return null;
+}
+
 function isValidScimUserId(id) {
   const s = String(id || '');
   if (/^[0-9]+$/.test(s)) return true;
@@ -736,17 +809,62 @@ function requireRole(...roles) {
   };
 }
 
-function requireScimAuth(req, res, next) {
+async function requireScimAuth(req, res, next) {
   // SCIM provisioning must use a dedicated provisioning credential.
   // Regular user JWTs are rejected here so an employee session can never
   // list or modify users through the SCIM surface.
   const apiKey = req.headers['x-api-key'];
   if (typeof apiKey === 'string' && apiKey.length > 0) {
+    // Legacy shared keys keep working during the migration window (no flag
+    // day): they carry the full SCIM scope for their mapped tenant.
     const tenant = resolveScimTenant(apiKey);
     if (tenant) {
       req.scimTenant = tenant;
       req.scimKeyId = getScimKeyId(apiKey, tenant);
+      req.apiKeyScopes = [...API_KEY_SCOPES];
       return next();
+    }
+
+    // Scoped API keys: look up by the public key id, then verify the secret
+    // against the stored bcrypt hash. State and scope errors are revealed
+    // only after the secret matches, so a guessed key id learns nothing.
+    const parsed = parseApiKeyFormat(apiKey);
+    if (parsed) {
+      try {
+        const result = await pool.query('SELECT * FROM api_keys WHERE key_id = $1', [parsed.keyId]);
+        const keyRow = result.rows[0];
+        const secretMatches = keyRow ? await bcrypt.compare(parsed.secret, keyRow.key_hash) : false;
+        if (!keyRow || !secretMatches) {
+          return res.status(401).json({
+            schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+            detail: 'Authentication required',
+            status: '401'
+          });
+        }
+        const stateError = apiKeyStateError(keyRow);
+        if (stateError) {
+          return sendScimError(res, 401, stateError);
+        }
+        const scopes = normalizeApiKeyScopes(keyRow.scopes);
+        const requiredScope = scimScopeForRequest(req.method);
+        if (!apiKeyHasScope(scopes, requiredScope)) {
+          return sendScimError(res, 403, `API key is missing the required scope: ${requiredScope}`);
+        }
+        req.scimTenant = keyRow.tenant_id || 'default';
+        req.scimKeyId = `apikey:${parsed.keyId}`;
+        req.apiKeyScopes = scopes;
+        // Usage tracking is fire-and-forget and throttled to at most one
+        // write per key per minute so read-heavy syncs stay cheap.
+        pool.query(
+          `UPDATE api_keys SET last_used_at = NOW()
+           WHERE key_id = $1 AND (last_used_at IS NULL OR last_used_at < NOW() - INTERVAL '1 minute')`,
+          [parsed.keyId]
+        ).catch(() => {});
+        return next();
+      } catch (err) {
+        safeLog(console.error, 'Scoped API key verification failed:', err);
+        return sendScimError(res, 503, 'Authentication temporarily unavailable');
+      }
     }
   }
 
@@ -1211,6 +1329,29 @@ async function initDB() {
       UNIQUE(provider, provider_user_id)
     );
   `);
+
+  // Scoped, expiring, individually revocable API keys (issue #472). Only the
+  // bcrypt hash of the secret is stored; key_id is the public lookup handle.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id SERIAL PRIMARY KEY,
+      key_id VARCHAR(32) NOT NULL UNIQUE,
+      key_hash VARCHAR(255) NOT NULL,
+      label VARCHAR(120) NOT NULL,
+      scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+      tenant_id VARCHAR(50) DEFAULT 'default',
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      revoked_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      expires_at TIMESTAMP,
+      revoked_at TIMESTAMP,
+      last_used_at TIMESTAMP
+    );
+  `);
+  try {
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_api_keys_key_id ON api_keys (key_id);');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys (tenant_id, created_at DESC);');
+  } catch (err) { /* index may exist */ }
 
   // Harden oauth_providers client_secret column to TEXT and migrate plaintext secrets to encrypted at-rest values
   try {
@@ -2799,6 +2940,118 @@ app.post('/auth/admin/password-reset', requireRole('admin'), createUserRateLimit
   }
 });
 
+// Admin-only scoped API key surface. The plaintext key is returned exactly
+// once at creation and never logged or stored.
+app.post('/auth/admin/api-keys', requireRole('admin'), createUserRateLimiter('api_key_issue', 20), async (req, res) => {
+  try {
+    const { label, scopes, expires_in_days } = req.body || {};
+    if (!label || typeof label !== 'string' || !label.trim() || label.trim().length > 120) {
+      return res.status(400).json({ message: 'label is required (max 120 characters)', field: 'label' });
+    }
+    const scopeError = validateApiKeyScopes(scopes);
+    if (scopeError) {
+      return res.status(400).json({ message: scopeError, field: 'scopes' });
+    }
+    let expiresInDays = API_KEY_DEFAULT_EXPIRY_DAYS;
+    if (expires_in_days !== undefined && expires_in_days !== null) {
+      if (!Number.isInteger(expires_in_days) || expires_in_days < 1 || expires_in_days > API_KEY_MAX_EXPIRY_DAYS) {
+        return res.status(400).json({
+          message: `expires_in_days must be an integer between 1 and ${API_KEY_MAX_EXPIRY_DAYS}`,
+          field: 'expires_in_days'
+        });
+      }
+      expiresInDays = expires_in_days;
+    }
+
+    const tenantId = req.user.tenant_id || 'default';
+    const uniqueScopes = [...new Set(scopes)];
+    const { keyId, secret, apiKey } = generateApiKey();
+    const keyHash = await bcrypt.hash(secret, BCRYPT_COST);
+    const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000);
+
+    const result = await pool.query(
+      `INSERT INTO api_keys (key_id, key_hash, label, scopes, tenant_id, created_by, expires_at)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+       RETURNING id, key_id, label, scopes, tenant_id, created_at, expires_at`,
+      [keyId, keyHash, label.trim(), JSON.stringify(uniqueScopes), tenantId, req.user.id, expiresAt]
+    );
+
+    await sendAuditEvent('auth.api_key_issued', req.user.id, req.user.email, {
+      key_id: keyId,
+      label: label.trim(),
+      scopes: uniqueScopes,
+      tenant_id: tenantId,
+      expires_at: expiresAt.toISOString()
+    });
+
+    res.status(201).json({
+      message: 'API key created. Store it now; it will never be shown again.',
+      api_key: apiKey,
+      key: result.rows[0]
+    });
+  } catch (err) {
+    safeLog(console.error, 'Request failed', err);
+    res.status(500).json({ message: 'Failed to create API key' });
+  }
+});
+
+app.get('/auth/admin/api-keys', requireRole('admin'), createUserRateLimiter('api_key_list', 60), async (req, res) => {
+  try {
+    const tenantId = req.user.tenant_id || 'default';
+    const result = await pool.query(
+      `SELECT key_id, label, scopes, tenant_id, created_by, created_at, expires_at, revoked_at, last_used_at
+       FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 100`,
+      [tenantId]
+    );
+    res.json({ api_keys: result.rows });
+  } catch (err) {
+    safeLog(console.error, 'Request failed', err);
+    res.status(500).json({ message: 'Failed to list API keys' });
+  }
+});
+
+app.delete('/auth/admin/api-keys/:keyId', requireRole('admin'), createUserRateLimiter('api_key_revoke', 20), async (req, res) => {
+  try {
+    const keyId = String(req.params.keyId || '');
+    if (!/^[0-9a-f]{16}$/.test(keyId)) {
+      return res.status(400).json({ message: 'Invalid key id' });
+    }
+    const tenantId = req.user.tenant_id || 'default';
+    const result = await pool.query(
+      `UPDATE api_keys SET revoked_at = NOW(), revoked_by = $1
+       WHERE key_id = $2 AND tenant_id = $3 AND revoked_at IS NULL
+       RETURNING key_id, label, scopes, revoked_at`,
+      [req.user.id, keyId, tenantId]
+    );
+    if (!result.rows[0]) {
+      const existing = await pool.query(
+        'SELECT key_id, revoked_at FROM api_keys WHERE key_id = $1 AND tenant_id = $2',
+        [keyId, tenantId]
+      );
+      if (!existing.rows[0]) {
+        return res.status(404).json({ message: 'API key not found' });
+      }
+      return res.json({ message: 'API key was already revoked', revoked_at: existing.rows[0].revoked_at });
+    }
+
+    await sendAuditEvent('auth.api_key_revoked', req.user.id, req.user.email, {
+      key_id: keyId,
+      label: result.rows[0].label,
+      scopes: result.rows[0].scopes,
+      tenant_id: tenantId
+    });
+
+    res.json({
+      message: 'API key revoked',
+      key_id: keyId,
+      revoked_at: result.rows[0].revoked_at
+    });
+  } catch (err) {
+    safeLog(console.error, 'Request failed', err);
+    res.status(500).json({ message: 'Failed to revoke API key' });
+  }
+});
+
 app.get('/sessions', requireRole(), createUserRateLimiter('sessions_list', 60), async (req, res) => {
   try {
     const userId = req.user.id;
@@ -3627,6 +3880,16 @@ module.exports = {
   isAllowedScimRole,
   isValidScimUserId,
   SCIM_TENANT_KEYS,
+  generateApiKey,
+  parseApiKeyFormat,
+  validateApiKeyScopes,
+  scimScopeForRequest,
+  apiKeyHasScope,
+  normalizeApiKeyScopes,
+  apiKeyStateError,
+  API_KEY_SCOPES,
+  API_KEY_DEFAULT_EXPIRY_DAYS,
+  API_KEY_MAX_EXPIRY_DAYS,
   storeWebauthnChallenge,
   getLatestWebauthnChallenge,
   consumeWebauthnChallenge,
