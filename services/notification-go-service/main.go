@@ -103,6 +103,8 @@ type Notification struct {
 	Title     string `json:"title"`
 	Message   string `json:"message"`
 	TenantID  string `json:"tenant_id"`
+	UserID    string `json:"user_id,omitempty"`
+	Category  string `json:"category,omitempty"`
 	Read      bool   `json:"read"`
 	CreatedAt string `json:"created_at"`
 }
@@ -112,11 +114,17 @@ type Client struct {
 	conn     *websocket.Conn
 	send     chan []byte
 	tenantID string
+	userID   string
 	clientIP string
 }
 
 type BroadcastMessage struct {
 	TenantID string
+	// UserID is set for directed events; empty means tenant-wide.
+	UserID string
+	// Realtime is false when the target user's preferences opted the event
+	// down from immediate delivery (it stays in the persisted list).
+	Realtime bool
 	Payload  []byte
 }
 
@@ -185,16 +193,50 @@ var (
 	mutex         = &sync.Mutex{}
 	ipConnections = make(map[string]int)
 	ipMutex       = &sync.Mutex{}
+	prefsStore    = newPreferenceStore()
+	digestQueue   = newDigestQueue()
+	sendKeys      = newSendKeyStore()
 )
 
 type wsClaims struct {
 	jwt.RegisteredClaims
 	TenantID string `json:"tenant_id"`
+	UserID   any    `json:"user_id"`
+	ID       any    `json:"id"`
+	Email    string `json:"email"`
+}
+
+// claimID normalizes the several shapes id claims take across services
+// (strings from Java/Python producers, JSON numbers from auth-service).
+func claimID(values ...any) string {
+	for _, value := range values {
+		switch v := value.(type) {
+		case string:
+			if v != "" {
+				return v
+			}
+		case float64:
+			return strconv.FormatInt(int64(v), 10)
+		case json.Number:
+			return v.String()
+		}
+	}
+	return ""
+}
+
+func (c *wsClaims) userID() string {
+	return claimID(c.UserID, c.ID, c.Subject)
 }
 
 type internalAuthClaims struct {
 	jwt.RegisteredClaims
 	TenantID string `json:"tenant_id"`
+	UserID   any    `json:"user_id"`
+	Email    string `json:"email"`
+}
+
+func (c *internalAuthClaims) userID() string {
+	return claimID(c.UserID, c.Subject)
 }
 
 func validateJWT(tokenString string) (*wsClaims, error) {
@@ -261,6 +303,10 @@ func internalAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		if claims.TenantID != "" {
 			r.Header.Set("X-Tenant-Id", claims.TenantID)
 		}
+		// Always overwrite: a client-supplied user identity header must never
+		// survive into a handler.
+		r.Header.Set("X-User-Id", claims.userID())
+		r.Header.Set("X-User-Email", claims.Email)
 
 		next(w, r)
 	}
@@ -400,7 +446,7 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := &Client{conn: ws, send: make(chan []byte, 256), tenantID: tenantID, clientIP: clientIP}
+	client := &Client{conn: ws, send: make(chan []byte, 256), tenantID: tenantID, userID: claims.userID(), clientIP: clientIP}
 
 	mutex.Lock()
 	if len(clients) >= maxClients {
@@ -418,29 +464,44 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	client.readPump()
 }
 
+// dispatchBroadcast delivers one message to every client it targets and
+// returns how many slow clients were skipped. Directed events only reach the
+// addressed user's connections, and events their preferences opted down from
+// realtime reach nobody (they remain in the persisted list).
+func dispatchBroadcast(msg BroadcastMessage) int {
+	if !msg.Realtime {
+		return 0
+	}
+	mutex.Lock()
+	targets := make([]*Client, 0, len(clients))
+	for client := range clients {
+		if client.tenantID != msg.TenantID {
+			continue
+		}
+		if msg.UserID != "" && client.userID != msg.UserID {
+			continue
+		}
+		targets = append(targets, client)
+	}
+	mutex.Unlock()
+	skipped := 0
+	for _, client := range targets {
+		select {
+		case client.send <- msg.Payload:
+		default:
+			skipped++
+		}
+	}
+	return skipped
+}
+
 func handleMessages(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case msg := <-broadcast:
-			mutex.Lock()
-			targets := make([]*Client, 0, len(clients))
-			for client := range clients {
-				if client.tenantID == msg.TenantID {
-					targets = append(targets, client)
-				}
-			}
-			mutex.Unlock()
-			skipped := 0
-			for _, client := range targets {
-				select {
-				case client.send <- msg.Payload:
-				default:
-					skipped++
-				}
-			}
-			if skipped > 0 {
+			if skipped := dispatchBroadcast(msg); skipped > 0 {
 				log.Printf("Broadcast to tenant %s skipped %d slow clients", msg.TenantID, skipped)
 			}
 		}
@@ -651,6 +712,38 @@ func setupRabbitMQConsumer(ctx context.Context) {
 	}
 }
 
+// eventFieldID reads the first present id field from a broker event. Only
+// directed events (user_id) get per-user preference routing; tenant-wide
+// payloads that carry other identifiers (leave-service employeeId) stay
+// broadcasts, matching the previous behaviour.
+func eventFieldID(rawData map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := rawData[key]; ok {
+			if id := claimID(value); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+func eventCategory(rawData map[string]interface{}) string {
+	if c, ok := rawData["category"].(string); ok && strings.TrimSpace(c) != "" {
+		return c
+	}
+	if e, ok := rawData["event"].(string); ok {
+		return e
+	}
+	return ""
+}
+
+// sendNotificationEmail mirrors the log-only email abstraction used elsewhere
+// in this repo (auth-service logs password reset mail the same way); a real
+// transport plugs in here.
+func sendNotificationEmail(to string, n Notification) {
+	log.Printf("[email] to=%s subject=%s", sanitizeLogArg(to), sanitizeLogArg(n.Title))
+}
+
 func processMessage(body []byte) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -680,16 +773,42 @@ func processMessage(body []byte) {
 		message = m
 	}
 
+	userID := eventFieldID(rawData, "user_id", "userId")
+	category := normalizeCategory(eventCategory(rawData))
+
 	notif := Notification{
 		ID:        uuid.New().String(),
 		Title:     title,
 		Message:   message,
 		TenantID:  tenantID,
+		UserID:    userID,
+		Category:  category,
 		Read:      false,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
 	store.Add(notif)
+
+	// Realtime is the default; a directed event is only pushed when the
+	// target user's preferences allow it. Tenant-wide broadcasts (no user id)
+	// keep the old fan-out because there is no per-user target to consult.
+	decision := deliveryDecision{Realtime: true}
+	if userID != "" {
+		prefs := prefsStore.Get(tenantID, userID)
+		decision = decideDelivery(prefs, category, time.Now().UTC())
+		if decision.Email && prefs.Email != "" {
+			sendNotificationEmail(prefs.Email, notif)
+		}
+		if decision.Digest {
+			queueDigest(prefsKey(tenantID, userID), DigestItem{
+				ID:        notif.ID,
+				Title:     notif.Title,
+				Message:   notif.Message,
+				Category:  category,
+				CreatedAt: notif.CreatedAt,
+			})
+		}
+	}
 
 	msgWrapper := map[string]interface{}{
 		"type":      "notification",
@@ -697,8 +816,9 @@ func processMessage(body []byte) {
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	}
 	jsonMsg, _ := json.Marshal(msgWrapper)
-	log.Printf("Stored notification %s for tenant %s (%d bytes payload, %d bytes wire)", notif.ID, tenantID, len(body), len(jsonMsg))
-	broadcast <- BroadcastMessage{TenantID: tenantID, Payload: jsonMsg}
+	log.Printf("Stored notification %s for tenant %s user %s category %s (%d bytes payload, %d bytes wire)",
+		sanitizeLogArg(notif.ID), sanitizeLogArg(tenantID), sanitizeLogArg(userID), sanitizeLogArg(category), len(body), len(jsonMsg))
+	broadcast <- BroadcastMessage{TenantID: tenantID, UserID: userID, Realtime: decision.Realtime, Payload: jsonMsg}
 }
 
 func metricsMiddleware(next http.Handler) http.Handler {
@@ -746,6 +866,7 @@ func main() {
 
 	go handleMessages(ctx)
 	go setupRabbitMQConsumer(ctx)
+	go startDigestScheduler(ctx)
 
 	mux := http.NewServeMux()
 
@@ -754,6 +875,12 @@ func main() {
 	mux.HandleFunc("/health", healthHandler)
 
 	mux.HandleFunc("/ws", handleConnections)
+
+	mux.HandleFunc("/preferences", internalAuthMiddleware(handlePreferences))
+
+	// One-click unsubscribe arrives from an email link without a session, so it
+	// authenticates with its own signed token instead of the internal JWT.
+	mux.HandleFunc("/unsubscribe", handleUnsubscribe)
 
 	mux.HandleFunc("/api/notifications", internalAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
