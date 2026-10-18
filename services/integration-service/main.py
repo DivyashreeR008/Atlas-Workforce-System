@@ -19,6 +19,7 @@ from atlas_observability import (
 
 from crud import (
     MassAssignmentError,
+    build_delivery_detail,
     create_event_subscription,
     create_integration_config,
     create_webhook,
@@ -26,6 +27,7 @@ from crud import (
     delete_integration_config,
     delete_webhook,
     get_dashboard_stats,
+    get_delivery_log,
     get_event_subscription,
     get_integration_config,
     get_webhook,
@@ -34,6 +36,7 @@ from crud import (
     list_integration_configs,
     list_webhook_delivery_logs,
     list_webhooks,
+    rotate_webhook_secret,
     update_event_subscription,
     update_integration_config,
     update_webhook,
@@ -59,10 +62,15 @@ from schemas import (
     IntegrationDashboardResponse,
     MessageResponse,
     WebhookCreate,
+    WebhookCreatedResponse,
+    WebhookDeliveryDetailResponse,
     WebhookDeliveryLogResponse,
+    WebhookListResponse,
     WebhookResponse,
+    WebhookSecretRotationResponse,
     WebhookUpdate,
 )
+from webhook_engine import DEFAULT_ROTATION_GRACE_SEC
 
 load_dotenv()
 
@@ -120,6 +128,36 @@ def _migrate_delivery_retry_constraint():
 
 
 
+def _migrate_webhook_signing_columns():
+    # Add signing/rotation columns to databases created before webhook
+    # signing existed. Fresh databases get them from create_all. Best effort:
+    # never block startup.
+    additions = (
+        ("integration_webhooks", "previous_secret", "VARCHAR(255)"),
+        ("integration_webhooks", "secret_rotated_at", "TIMESTAMP WITH TIME ZONE"),
+        ("integration_webhooks", "secret_grace_expires_at", "TIMESTAMP WITH TIME ZONE"),
+        ("integration_webhook_delivery_logs", "signature", "VARCHAR(255)"),
+        ("integration_webhook_delivery_logs", "signature_timestamp", "INTEGER"),
+        ("integration_webhook_delivery_logs", "request_body", "TEXT"),
+    )
+    try:
+        from sqlalchemy import inspect, text
+
+        inspector = inspect(engine)
+        for table, column, ddl_type in additions:
+            try:
+                existing = {c["name"] for c in inspector.get_columns(table)}
+            except Exception:
+                continue
+            if column in existing:
+                continue
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
+    except Exception as e:
+        logger.warning(f"Webhook signing column migration skipped: {e}")
+
+
+
 # verify_internal_key removed - all endpoints now require x-internal-auth JWT
 # (same as employee-python-service); tenant is bound from verified claims.
 
@@ -128,6 +166,7 @@ def _migrate_delivery_retry_constraint():
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     _migrate_delivery_retry_constraint()
+    _migrate_webhook_signing_columns()
     start_rabbitmq_consumer()
 
     def _background_loop():
@@ -262,7 +301,7 @@ async def integration_dashboard(
 
 # ── Webhooks ────────────────────────────────────────────────────
 
-@app.get("/api/v1/integration/webhooks", tags=["Webhooks"])
+@app.get("/api/v1/integration/webhooks", response_model=WebhookListResponse, tags=["Webhooks"])
 async def list_integration_webhooks(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=MAX_PAGE_SIZE),
@@ -273,16 +312,45 @@ async def list_integration_webhooks(
     return list_webhooks(db, x_tenant_id, page, page_size, enabled)
 
 
-@app.post("/api/v1/integration/webhooks", response_model=WebhookResponse, status_code=201, tags=["Webhooks"])
+@app.post("/api/v1/integration/webhooks", response_model=WebhookCreatedResponse, status_code=201, tags=["Webhooks"])
 async def create_integration_webhook(
     payload: WebhookCreate,
     x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
     db: Session = Depends(get_db),
 ):
     try:
-        return create_webhook(db, x_tenant_id, payload.model_dump())
+        webhook = create_webhook(db, x_tenant_id, payload.model_dump())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    return WebhookCreatedResponse(
+        **WebhookResponse.model_validate(webhook).model_dump(),
+        secret=webhook.secret,
+    )
+
+
+@app.post("/api/v1/integration/webhooks/{webhook_id}/rotate-secret", response_model=WebhookSecretRotationResponse, tags=["Webhooks"])
+async def rotate_integration_webhook_secret(
+    webhook_id: UUID,
+    grace_seconds: int | None = Query(None, ge=0, le=30 * 24 * 3600),
+    x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
+    db: Session = Depends(get_db),
+):
+    result = rotate_webhook_secret(
+        db, webhook_id, x_tenant_id,
+        grace_seconds if grace_seconds is not None else DEFAULT_ROTATION_GRACE_SEC,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    webhook, new_secret = result
+    return WebhookSecretRotationResponse(
+        webhook_id=webhook.id,
+        secret=new_secret,
+        previous_secret_valid_until=webhook.previous_secret_valid_until,
+        message=(
+            "Store this secret now; it will not be shown again. Until the grace window closes, "
+            "deliveries carry a signature for both the new and the previous secret."
+        ),
+    )
 
 
 @app.get("/api/v1/integration/webhooks/{webhook_id}", response_model=WebhookResponse, tags=["Webhooks"])
@@ -336,6 +404,23 @@ async def list_webhook_deliveries(
     db: Session = Depends(get_db),
 ):
     return list_webhook_delivery_logs(db, x_tenant_id, webhook_id, status, page, page_size)
+
+
+@app.get(
+    "/api/v1/integration/webhooks/{webhook_id}/deliveries/{delivery_id}",
+    response_model=WebhookDeliveryDetailResponse,
+    tags=["Webhook Delivery Logs"],
+)
+async def get_webhook_delivery_detail(
+    webhook_id: UUID,
+    delivery_id: UUID,
+    x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
+    db: Session = Depends(get_db),
+):
+    log = get_delivery_log(db, delivery_id, x_tenant_id)
+    if not log or log.webhook_id != webhook_id:
+        raise HTTPException(status_code=404, detail="Delivery log not found")
+    return build_delivery_detail(db, log)
 
 
 # ── Event Subscriptions ─────────────────────────────────────────

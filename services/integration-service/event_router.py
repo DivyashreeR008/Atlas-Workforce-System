@@ -125,7 +125,7 @@ def route_event(event_type: str, tenant_id: str, payload: dict, source_service: 
                 log = create_delivery_log(db, tenant_id, wh.id, event_type, payload, wh.retry_count + 1)
                 asyncio_thread = threading.Thread(
                     target=_deliver_sync,
-                    args=(wh.url, payload, event_type, wh.id, log.id, wh.secret, wh.headers or {}, wh.timeout_sec, tenant_id),
+                    args=(wh.url, payload, event_type, wh.id, log.id, wh.secret, wh.headers or {}, wh.timeout_sec, tenant_id, _active_previous_secret(wh)),
                     daemon=True,
                 )
                 asyncio_thread.start()
@@ -166,14 +166,26 @@ def _mark_delivery_failed(log_id, error):
         db.close()
 
 
-def _deliver_sync(url, payload, event_type, webhook_id, log_id, secret, headers, timeout, tenant_id):
+def _active_previous_secret(webhook) -> Optional[str]:
+    # Only advertise the old secret while its rotation grace window is open.
+    if webhook is not None and webhook.previous_secret_usable():
+        return webhook.previous_secret
+    return None
+
+
+def _deliver_sync(url, payload, event_type, webhook_id, log_id, secret, headers, timeout, tenant_id, previous_secret=None):
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    signing_out = {}
     try:
         status_code, response_body = loop.run_until_complete(
-            deliver_webhook(url, payload, event_type, webhook_id, log_id, secret, headers, timeout)
+            deliver_webhook(
+                url, payload, event_type, webhook_id, log_id, secret, headers, timeout,
+                previous_secret=previous_secret, signing_out=signing_out,
+            )
         )
+        signing_fields = {key: signing_out[key] for key in ("signature", "signature_timestamp", "request_body") if signing_out.get(key) is not None}
         db = get_db()
         if db:
             try:
@@ -182,12 +194,14 @@ def _deliver_sync(url, payload, event_type, webhook_id, log_id, secret, headers,
                         "status": "FAILED",
                         "status_code": status_code,
                         "response_body": response_body,
+                        **signing_fields,
                     })
                 elif isinstance(response_body, str) and response_body.startswith("Blocked headers:"):
                     update_delivery_log(db, log_id, {
                         "status": "FAILED",
                         "status_code": status_code,
                         "response_body": response_body,
+                        **signing_fields,
                     })
                 elif 200 <= status_code < 300:
                     update_delivery_log(db, log_id, {
@@ -195,6 +209,7 @@ def _deliver_sync(url, payload, event_type, webhook_id, log_id, secret, headers,
                         "status_code": status_code,
                         "response_body": response_body,
                         "delivered_at": datetime.now(timezone.utc),
+                        **signing_fields,
                     })
                     update_webhook(db, webhook_id, tenant_id, {"last_triggered_at": datetime.now(timezone.utc)})
                 else:
@@ -206,6 +221,7 @@ def _deliver_sync(url, payload, event_type, webhook_id, log_id, secret, headers,
                     retry_data = build_retry_update(attempts, max_attempts, base_interval)
                     retry_data["status_code"] = status_code
                     retry_data["response_body"] = response_body
+                    retry_data.update(signing_fields)
                     update_delivery_log(db, log_id, retry_data)
             finally:
                 db.close()
@@ -283,7 +299,7 @@ def retry_failed_deliveries():
                 args=(
                     webhook.url, log_entry.payload, log_entry.event_type,
                     webhook.id, log_entry.id, webhook.secret,
-                    webhook.headers or {}, webhook.timeout_sec, log_entry.tenant_id,
+                    webhook.headers or {}, webhook.timeout_sec, log_entry.tenant_id, _active_previous_secret(webhook),
                 ),
                 daemon=True,
             )

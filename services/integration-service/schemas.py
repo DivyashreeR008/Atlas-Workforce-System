@@ -98,12 +98,38 @@ class WebhookResponse(BaseModel):
     retry_interval_sec: int
     timeout_sec: int
     enabled: bool
+    secret_set: bool = False
+    secret_rotated_at: Optional[datetime] = None
+    previous_secret_valid_until: Optional[datetime] = None
     last_triggered_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class WebhookCreatedResponse(WebhookResponse):
+    # The plaintext secret is returned exactly once, here. List and get
+    # responses only expose secret_set and the rotation metadata.
+    secret: str
+    secret_shown_once: bool = True
+
+
+class WebhookListResponse(BaseModel):
+    items: list[WebhookResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class WebhookSecretRotationResponse(BaseModel):
+    webhook_id: UUID
+    secret: str
+    secret_shown_once: bool = True
+    signature_version: str = "v1"
+    previous_secret_valid_until: Optional[datetime] = None
+    message: str
 
 
 class WebhookDeliveryLogResponse(BaseModel):
@@ -122,6 +148,29 @@ class WebhookDeliveryLogResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class WebhookDeliveryDetailResponse(BaseModel):
+    id: UUID
+    webhook_id: UUID
+    tenant_id: str
+    event_type: str
+    status: str
+    status_code: Optional[int]
+    response_body: Optional[str]
+    attempts: int
+    max_attempts: int
+    next_retry_at: Optional[datetime]
+    delivered_at: Optional[datetime]
+    created_at: datetime
+    payload: dict[str, Any]
+    signature: Optional[str] = None
+    signature_timestamp: Optional[int] = None
+    signature_version: str = "v1"
+    signed_payload: str
+    body_reconstructed: bool = False
+    target_url: Optional[str] = None
+    curl_example: Optional[str] = None
 
 
 class EventSubscriptionCreate(BaseModel):

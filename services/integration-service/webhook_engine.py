@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import threading
 import time
 from datetime import datetime, timezone
@@ -60,8 +61,110 @@ def get_client() -> httpx.AsyncClient:
         return client
 
 
+SIGNATURE_VERSION = "v1"
+SIGNATURE_HEADER = "X-Atlas-Signature"
+TIMESTAMP_HEADER = "X-Atlas-Timestamp"
+# Receivers reject deliveries whose timestamp is outside this window, which
+# makes a captured payload useless for replay once the window passes.
+DEFAULT_TOLERANCE_SEC = 300
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+# How long the previous secret keeps producing a valid signature after a
+# rotation. Operators can shorten or extend it per rotation call.
+DEFAULT_ROTATION_GRACE_SEC = _env_int("WEBHOOK_SECRET_ROTATION_GRACE_SEC", 24 * 3600)
+
+
+def generate_webhook_secret() -> str:
+    return "whsec_" + secrets.token_urlsafe(32)
+
+
 def compute_signature(payload: bytes, secret: str) -> str:
     return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+
+def signed_content(timestamp: int, body: bytes) -> bytes:
+    return str(int(timestamp)).encode("utf-8") + b"." + body
+
+
+def compute_timestamped_signature(body: bytes, secret: str, timestamp: int) -> str:
+    return compute_signature(signed_content(timestamp, body), secret)
+
+
+def format_signature_header(signatures: list[str]) -> str:
+    # During a rotation grace window the header lists one entry per active
+    # secret, newest first; receivers accept the request when any entry
+    # matches (same convention as Stripe's multi-signature header).
+    return " ".join(f"{SIGNATURE_VERSION}={signature}" for signature in signatures)
+
+
+def parse_signature_header(header: Optional[str]) -> list[str]:
+    if not header:
+        return []
+    entries = []
+    for part in header.replace(",", " ").split():
+        if part.startswith(f"{SIGNATURE_VERSION}="):
+            entries.append(part.split("=", 1)[1])
+    return entries
+
+
+def is_timestamp_fresh(timestamp, tolerance_sec: int = DEFAULT_TOLERANCE_SEC, now: Optional[int] = None) -> bool:
+    try:
+        sent_at = int(timestamp)
+    except (TypeError, ValueError):
+        return False
+    current = int(time.time()) if now is None else int(now)
+    return abs(current - sent_at) <= int(tolerance_sec)
+
+
+def verify_signature(
+    body: bytes,
+    signature_header: Optional[str],
+    timestamp,
+    secrets_list: list[str],
+    tolerance_sec: int = DEFAULT_TOLERANCE_SEC,
+    now: Optional[int] = None,
+) -> bool:
+    """Verify an X-Atlas-Signature header over timestamp.body.
+
+    Mirrors the documented receiver-side check: reject stale timestamps, then
+    accept the delivery when any advertised signature matches any of the
+    secrets the receiver holds (current plus, during rotation, previous).
+    """
+    if not is_timestamp_fresh(timestamp, tolerance_sec, now):
+        return False
+    provided = parse_signature_header(signature_header)
+    if not provided:
+        return False
+    for secret in secrets_list:
+        if not secret:
+            continue
+        expected = compute_timestamped_signature(body, secret, int(timestamp))
+        for candidate in provided:
+            if hmac.compare_digest(expected, candidate):
+                return True
+    return False
+
+
+def build_curl_example(url: str, timestamp: int, signature_header: str, body: str) -> str:
+    """Copy-paste curl that replays a delivery for receiver-side debugging."""
+
+    def single_quote(value: str) -> str:
+        return "'" + str(value).replace("'", "'\\''") + "'"
+
+    return (
+        f"curl -X POST {single_quote(url)} \\\n"
+        f"  -H 'Content-Type: application/json' \\\n"
+        f"  -H {single_quote(f'{TIMESTAMP_HEADER}: {timestamp}')} \\\n"
+        f"  -H {single_quote(f'{SIGNATURE_HEADER}: {signature_header}')} \\\n"
+        f"  --data-raw {single_quote(body)}"
+    )
 
 
 def _base64url_no_pad(raw: bytes) -> str:
@@ -92,6 +195,10 @@ def mint_audit_writer_token() -> str:
     return f"{signing_input}.{signature}"
 
 
+def serialize_payload(payload: dict) -> bytes:
+    return json.dumps(payload, default=str).encode("utf-8")
+
+
 async def deliver_webhook(
     url: str,
     payload: dict,
@@ -101,6 +208,8 @@ async def deliver_webhook(
     secret: Optional[str] = None,
     custom_headers: Optional[dict[str, str]] = None,
     timeout_sec: int = 30,
+    previous_secret: Optional[str] = None,
+    signing_out: Optional[dict] = None,
 ) -> tuple[int, Optional[str]]:
     try:
         validate_webhook_url(url)
@@ -115,7 +224,8 @@ async def deliver_webhook(
         return 0, f"Blocked headers: {e}"
 
     client = get_client()
-    body = json.dumps(payload, default=str).encode("utf-8")
+    body = serialize_payload(payload)
+    timestamp = int(time.time())
 
     headers = {
         "Content-Type": "application/json",
@@ -123,8 +233,22 @@ async def deliver_webhook(
         "X-Webhook-ID": str(webhook_id),
         "X-Delivery-ID": str(delivery_log_id),
     }
+    signatures = []
     if secret:
-        headers["X-Webhook-Signature"] = compute_signature(body, secret)
+        signatures.append(compute_timestamped_signature(body, secret, timestamp))
+        if previous_secret:
+            signatures.append(compute_timestamped_signature(body, previous_secret, timestamp))
+    if signatures:
+        headers[TIMESTAMP_HEADER] = str(timestamp)
+        headers[SIGNATURE_HEADER] = format_signature_header(signatures)
+        if signing_out is not None:
+            # Artifacts for the delivery-detail view: the exact bytes and
+            # headers this attempt signed, never the secret itself.
+            signing_out.update({
+                "signature": headers[SIGNATURE_HEADER],
+                "signature_timestamp": timestamp,
+                "request_body": body.decode("utf-8", errors="replace"),
+            })
     if safe_headers:
         headers.update(safe_headers)
 
