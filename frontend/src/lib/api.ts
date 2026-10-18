@@ -339,7 +339,34 @@ export const employeeApi = {
   },
   delete: (email: string) =>
     api.delete(`/employee/employees/${email}`),
+  hierarchy: async () => {
+    const res = await api.get("/employee/employees/hierarchy");
+    res.data = validateResponse(orgTreeResponseSchema, res.data, "org hierarchy");
+    return res;
+  },
 };
+
+// Recursive by nature: every node may carry children. Validated lazily with
+// z.lazy, and typed through OrgTreeResponse rather than the schema output.
+const orgNodeSchema: z.ZodTypeAny = z.lazy(() =>
+  z.looseObject({
+    email: z.string(),
+    name: z.string(),
+    department: z.string().optional(),
+    position: z.string().optional(),
+    manager_id: z.string().nullable().optional(),
+    direct_reports: z.number(),
+    total_reports: z.number(),
+    children: z.array(orgNodeSchema),
+  })
+);
+
+const orgTreeResponseSchema = z.looseObject({
+  scope: z.string(),
+  viewer_email: z.string().nullable().optional(),
+  total_visible: z.number(),
+  roots: z.array(orgNodeSchema),
+});
 
 const moneyField = z.union([z.number(), z.string()]).optional();
 
