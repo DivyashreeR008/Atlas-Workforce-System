@@ -494,17 +494,218 @@ function safeLog(logFn, msg, data) {
   }
 }
 
-function validatePassword(password) {
-  if (!password || password.length < 8) {
-    return 'Password must be at least 8 characters';
+// ---- Per-tenant password policy ----
+
+// The hard floor is compiled in and can never be configured away: a tenant
+// may tighten its policy above it, never below it.
+const PASSWORD_HARD_FLOOR = 8;
+const PASSWORD_MIN_LENGTH_CAP = 128;
+const PASSWORD_HISTORY_MAX_RETENTION = 24;
+const PASSWORD_MAX_AGE_DAYS_CAP = 730;
+
+// Pinned embedded denylist of very common passwords. This is a best-effort
+// stop for the obvious cases (exact entry or entry plus trailing digits or
+// punctuation), not a substitute for a breached-password service; the list
+// version is returned by the policy API and recorded in error messages so a
+// future list update is auditable.
+const COMMON_PASSWORD_LIST_VERSION = '2026.10';
+const COMMON_PASSWORDS = new Set([
+  '1234', '12345', '123456', '1234567', '12345678', '123456789', '1234567890',
+  '111111', '000000', '1q2w3e4r', 'qazwsx', 'asdfghjkl', 'zaq12wsx', 'qwerty',
+  'qwerty1', 'qwerty12', 'qwerty123', 'abc123', 'abcd1234', '1234abcd',
+  'password', 'password1', 'password12', 'password123', 'password1234',
+  'passw0rd', 'p@ssw0rd', 'p@ssword', 'letmein', 'letmein1', 'welcome',
+  'welcome1', 'welcome123', 'admin', 'admin1', 'admin123', 'administrator',
+  'root', 'toor', 'guest', 'changeme', 'changeit', 'secret', 'secret1',
+  'secret123', 'default', 'iloveyou', 'monkey', 'monkey1', 'dragon', 'dragon1',
+  'football', 'baseball', 'basketball', 'soccer', 'sunshine', 'princess',
+  'superman', 'batman', 'starwars', 'trustno1', 'master', 'shadow', 'michael',
+  'jennifer', 'jessica', 'michelle', 'mustang', 'access', 'flower',
+  'whatever', 'computer', 'charlie', 'daniel', 'thomas', 'hunter', 'harley',
+  'ranger', 'buster', 'test123', 'test1234',
+]);
+
+// Secure defaults that reproduce the pre-policy behavior: 8 characters (the
+// hard floor), uppercase and a digit required, lowercase/symbol optional,
+// no expiry and no history requirement. Tenants opt up from here.
+const DEFAULT_PASSWORD_POLICY = Object.freeze({
+  min_length: PASSWORD_HARD_FLOOR,
+  require_upper: true,
+  require_lower: false,
+  require_digit: true,
+  require_symbol: false,
+  history_count: 0,
+  max_age_days: null,
+});
+
+function isCommonPassword(password) {
+  if (!password || typeof password !== 'string') return false;
+  const candidate = password.trim().toLowerCase();
+  if (COMMON_PASSWORDS.has(candidate)) return true;
+  // Also reject a listed base word with trailing digits/punctuation appended,
+  // e.g. "qwerty" -> "qwerty2026!" - the cheapest way of "changing" a password.
+  const stripped = candidate.replace(/[0-9!@#$%^&*._\-]+$/, '');
+  return stripped.length >= 6 && COMMON_PASSWORDS.has(stripped);
+}
+
+// Normalize a stored policy row (or an untrusted value) into a valid policy.
+// Defense in depth: even if a row somehow holds an out-of-range value, the
+// effective policy is clamped back inside the compiled bounds.
+function clampPasswordPolicy(raw) {
+  const policy = { ...DEFAULT_PASSWORD_POLICY };
+  if (!raw || typeof raw !== 'object') return policy;
+  const toInt = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+    if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) return parseInt(value, 10);
+    return null;
+  };
+  const minLength = toInt(raw.min_length);
+  if (minLength !== null) {
+    policy.min_length = Math.min(Math.max(minLength, PASSWORD_HARD_FLOOR), PASSWORD_MIN_LENGTH_CAP);
   }
-  if (!/[A-Z]/.test(password)) {
+  for (const key of ['require_upper', 'require_lower', 'require_digit', 'require_symbol']) {
+    if (typeof raw[key] === 'boolean') policy[key] = raw[key];
+  }
+  const historyCount = toInt(raw.history_count);
+  if (historyCount !== null) {
+    policy.history_count = Math.min(Math.max(historyCount, 0), PASSWORD_HISTORY_MAX_RETENTION);
+  }
+  if (raw.max_age_days === null) {
+    policy.max_age_days = null;
+  } else {
+    const maxAgeDays = toInt(raw.max_age_days);
+    if (maxAgeDays !== null) {
+      policy.max_age_days = maxAgeDays <= 0 ? null : Math.min(maxAgeDays, PASSWORD_MAX_AGE_DAYS_CAP);
+    }
+  }
+  return policy;
+}
+
+// Strict input validation for the admin policy API. Unlike clampPasswordPolicy
+// this reports bad input instead of silently coercing it.
+function validatePasswordPolicyInput(body) {
+  const errors = {};
+  const isInt = (value) => typeof value === 'number' && Number.isInteger(value);
+  if ('min_length' in body && (!isInt(body.min_length) || body.min_length < PASSWORD_HARD_FLOOR || body.min_length > PASSWORD_MIN_LENGTH_CAP)) {
+    errors.min_length = `min_length must be an integer between ${PASSWORD_HARD_FLOOR} and ${PASSWORD_MIN_LENGTH_CAP}`;
+  }
+  for (const key of ['require_upper', 'require_lower', 'require_digit', 'require_symbol']) {
+    if (key in body && typeof body[key] !== 'boolean') {
+      errors[key] = `${key} must be a boolean`;
+    }
+  }
+  if ('history_count' in body && (!isInt(body.history_count) || body.history_count < 0 || body.history_count > PASSWORD_HISTORY_MAX_RETENTION)) {
+    errors.history_count = `history_count must be an integer between 0 and ${PASSWORD_HISTORY_MAX_RETENTION}`;
+  }
+  if ('max_age_days' in body && body.max_age_days !== null
+      && (!isInt(body.max_age_days) || body.max_age_days < 0 || body.max_age_days > PASSWORD_MAX_AGE_DAYS_CAP)) {
+    errors.max_age_days = `max_age_days must be null (disabled) or an integer between 1 and ${PASSWORD_MAX_AGE_DAYS_CAP}`;
+  }
+  return Object.keys(errors).length ? errors : null;
+}
+
+function validatePassword(password, policy) {
+  const effective = clampPasswordPolicy(policy || DEFAULT_PASSWORD_POLICY);
+  if (!password || password.length < effective.min_length) {
+    return `Password must be at least ${effective.min_length} characters`;
+  }
+  if (effective.require_upper && !/[A-Z]/.test(password)) {
     return 'Password must contain at least one uppercase letter';
   }
-  if (!/[0-9]/.test(password)) {
+  if (effective.require_lower && !/[a-z]/.test(password)) {
+    return 'Password must contain at least one lowercase letter';
+  }
+  if (effective.require_digit && !/[0-9]/.test(password)) {
     return 'Password must contain at least one number';
   }
+  if (effective.require_symbol && !/[^A-Za-z0-9]/.test(password)) {
+    return 'Password must contain at least one symbol';
+  }
+  if (isCommonPassword(password)) {
+    return `Password is too common; choose a different password (denylist ${COMMON_PASSWORD_LIST_VERSION})`;
+  }
   return null;
+}
+
+// Days-until-expiry status for a password change. Expiry is advisory: an
+// expired password still logs in and the client is prompted to rotate, which
+// is what existing tenants expect (no behavior change until max_age_days is
+// configured above the default of null).
+function passwordExpiryStatus(passwordChangedAt, maxAgeDays, now = Date.now()) {
+  const disabled = { max_age_days: null, expires_at: null, expired: false, days_until_expiry: null };
+  if (!maxAgeDays || !passwordChangedAt) return disabled;
+  const changedAtMs = new Date(passwordChangedAt).getTime();
+  if (Number.isNaN(changedAtMs)) return disabled;
+  const expiresAtMs = changedAtMs + maxAgeDays * 24 * 60 * 60 * 1000;
+  return {
+    max_age_days: maxAgeDays,
+    expires_at: new Date(expiresAtMs).toISOString(),
+    expired: now >= expiresAtMs,
+    days_until_expiry: Math.max(0, Math.ceil((expiresAtMs - now) / (24 * 60 * 60 * 1000))),
+  };
+}
+
+async function getPasswordPolicyForTenant(tenantId) {
+  const tid = String(tenantId || 'default').trim() || 'default';
+  try {
+    const result = await pool.query('SELECT * FROM password_policies WHERE tenant_id = $1', [tid]);
+    if (result.rows[0]) return clampPasswordPolicy(result.rows[0]);
+  } catch (err) {
+    // Fall back to the compiled defaults (never below the hard floor) rather
+    // than blocking every credential change on a policy read.
+    safeLog(console.error, 'Failed to load password policy; using secure defaults:', err);
+  }
+  return { ...DEFAULT_PASSWORD_POLICY };
+}
+
+async function isPasswordReused(password, passwordHashes) {
+  for (const hash of passwordHashes) {
+    if (hash && await bcrypt.compare(password, hash)) return true;
+  }
+  return false;
+}
+
+// Reject a password found among the user's last N stored hashes. Returns an
+// error message or null; a DB failure propagates so the caller fails closed.
+async function enforcePasswordHistory(userId, newPassword, historyCount) {
+  const limit = Math.min(Math.max(Number(historyCount) || 0, 0), PASSWORD_HISTORY_MAX_RETENTION);
+  if (!limit) return null;
+  const result = await pool.query(
+    'SELECT password_hash FROM password_history WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2',
+    [userId, limit]
+  );
+  if (await isPasswordReused(newPassword, result.rows.map((row) => row.password_hash))) {
+    return `Password was used recently; choose a password you have not used in your last ${limit} changes`;
+  }
+  return null;
+}
+
+// Record a new hash and trim the row set to the retention cap. History is
+// bookkeeping for reuse checks: failures are logged, not fatal, because the
+// password change itself already succeeded.
+async function recordPasswordHistory(userId, passwordHash) {
+  try {
+    await pool.query('INSERT INTO password_history (user_id, password_hash) VALUES ($1, $2)', [userId, passwordHash]);
+    await pool.query(
+      `DELETE FROM password_history
+       WHERE user_id = $1 AND id NOT IN (
+         SELECT id FROM password_history WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2
+       )`,
+      [userId, PASSWORD_HISTORY_MAX_RETENTION]
+    );
+  } catch (err) {
+    safeLog(console.error, 'Failed to record password history:', err);
+  }
+}
+
+async function setUserPassword(userId, plaintextPassword) {
+  const hashedPassword = await bcrypt.hash(plaintextPassword, BCRYPT_COST);
+  await pool.query(
+    'UPDATE users SET password = $1, password_changed_at = NOW(), updated_at = NOW() WHERE id = $2',
+    [hashedPassword, userId]
+  );
+  await recordPasswordHistory(userId, hashedPassword);
+  return hashedPassword;
 }
 
 function normalizeEmail(email) {
@@ -1140,6 +1341,53 @@ async function initDB() {
     );
   `);
 
+  // Per-tenant password policy. Column defaults reproduce the historical
+  // global rules; a tenant opts up by writing a row (defaults are applied by
+  // the service when no row exists, so absence is never a downgrade).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS password_policies (
+      tenant_id VARCHAR(50) PRIMARY KEY,
+      min_length INTEGER NOT NULL DEFAULT 8,
+      require_upper BOOLEAN NOT NULL DEFAULT true,
+      require_lower BOOLEAN NOT NULL DEFAULT false,
+      require_digit BOOLEAN NOT NULL DEFAULT true,
+      require_symbol BOOLEAN NOT NULL DEFAULT false,
+      history_count INTEGER NOT NULL DEFAULT 0,
+      max_age_days INTEGER,
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  // Backfill: existing tenants get an explicit default row so settings
+  // surfaces have something to edit and audits can diff from a stored row.
+  try {
+    await pool.query(`INSERT INTO password_policies (tenant_id) VALUES ('default') ON CONFLICT (tenant_id) DO NOTHING`);
+    await pool.query(`
+      INSERT INTO password_policies (tenant_id)
+      SELECT DISTINCT tenant_id FROM users WHERE tenant_id IS NOT NULL AND tenant_id <> ''
+      ON CONFLICT (tenant_id) DO NOTHING
+    `);
+  } catch (err) { /* best effort backfill */ }
+
+  // Salted hashes of recent passwords, used only for reuse rejection. Plain
+  // passwords are never stored here (or anywhere).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS password_history (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      password_hash VARCHAR(255) NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  try {
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_password_history_user ON password_history (user_id, created_at DESC)');
+  } catch (err) { /* index may exist */ }
+
+  // Password age tracking for advisory expiry (max_age_days).
+  try {
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP');
+    await pool.query('UPDATE users SET password_changed_at = COALESCE(updated_at, created_at, NOW()) WHERE password_changed_at IS NULL');
+  } catch (err) { /* column may exist */ }
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS webauthn_credentials (
       id SERIAL PRIMARY KEY,
@@ -1243,7 +1491,7 @@ async function initDB() {
   if (adminCheck.rows.length === 0) {
     const hashedPass = await bcrypt.hash(ADMIN_DEFAULT_PASSWORD, BCRYPT_COST);
     await pool.query(
-      'INSERT INTO users (email, password, name, role, department, position, tenant_id) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      'INSERT INTO users (email, password, name, role, department, position, tenant_id, password_changed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())',
       [
         'admin@atlas.io',
         hashedPass,
@@ -1276,14 +1524,16 @@ app.post('/register', createUserRateLimiter('register', 10, 15 * 60 * 1000, { ke
   }
   const normalizedEmail = normalizeEmail(email);
 
-  const passwordError = validatePassword(password);
-  if (passwordError) {
-    return res.status(400).json({ message: passwordError });
-  }
-
   // Tenant is always assigned server-side. Joining an existing tenant
   // requires an invite/admin flow, never a client-supplied tenant_id.
   const tenantId = 'default';
+
+  // Enforce the requesting tenant's policy (defaults until the tenant opts up).
+  const policy = await getPasswordPolicyForTenant(tenantId);
+  const passwordError = validatePassword(password, policy);
+  if (passwordError) {
+    return res.status(400).json({ message: passwordError, field: 'password' });
+  }
 
   try {
     const userExists = await pool.query('SELECT * FROM users WHERE email = $1', [normalizedEmail]);
@@ -1293,7 +1543,9 @@ app.post('/register', createUserRateLimiter('register', 10, 15 * 60 * 1000, { ke
 
     const hashedPassword = await bcrypt.hash(password, BCRYPT_COST);
     const result = await pool.query(
-      'INSERT INTO users (email, password, name, role, department, position, tenant_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, email, name, role, department, position, tenant_id',
+      `INSERT INTO users (email, password, name, role, department, position, tenant_id, password_changed_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+       RETURNING id, email, name, role, department, position, tenant_id`,
       [
         normalizedEmail,
         hashedPassword,
@@ -1304,6 +1556,8 @@ app.post('/register', createUserRateLimiter('register', 10, 15 * 60 * 1000, { ke
         tenantId
       ]
     );
+
+    await recordPasswordHistory(result.rows[0].id, hashedPassword);
 
     await sendAuditEvent('auth.register', result.rows[0].id, normalizedEmail, {
       role: 'employee',
@@ -1363,6 +1617,11 @@ app.post('/login', createUserRateLimiter('login', 20, 15 * 60 * 1000, { keyByEma
 
     await clearFailedAttempts(normalizedEmail);
 
+    // Advisory expiry status for the tenant policy: reported on login so the
+    // client can prompt a rotation. Never blocks the login.
+    const expiresPolicy = await getPasswordPolicyForTenant(user.tenant_id || 'default');
+    const passwordStatus = passwordExpiryStatus(user.password_changed_at, expiresPolicy.max_age_days);
+
     const deviceId = req.headers['x-device-id'];
     const deviceFingerprint = req.headers['x-device-fingerprint'];
 
@@ -1412,7 +1671,10 @@ app.post('/login', createUserRateLimiter('login', 20, 15 * 60 * 1000, { keyByEma
       return res.status(200).json({
         message: 'MFA required',
         mfa_required: true,
-        mfa_challenge_token: mfaChallengeToken
+        mfa_challenge_token: mfaChallengeToken,
+        password_expired: passwordStatus.expired,
+        days_until_password_expiry: passwordStatus.days_until_expiry,
+        password_max_age_days: passwordStatus.max_age_days
       });
     }
 
@@ -1424,7 +1686,9 @@ app.post('/login', createUserRateLimiter('login', 20, 15 * 60 * 1000, { keyByEma
       device_id: deviceId,
       ip_address: req.ip,
       user_agent: req.headers['user-agent'],
-      session_id: sessionId
+      session_id: sessionId,
+      password_expired: passwordStatus.expired,
+      days_until_password_expiry: passwordStatus.days_until_expiry
     });
 
     res.status(200).json({
@@ -1433,7 +1697,10 @@ app.post('/login', createUserRateLimiter('login', 20, 15 * 60 * 1000, { keyByEma
       session_id: sessionId,
       user: sanitizeUser(user),
       device_trusted: deviceTrusted,
-      mfa_required: false
+      mfa_required: false,
+      password_expired: passwordStatus.expired,
+      days_until_password_expiry: passwordStatus.days_until_expiry,
+      password_max_age_days: passwordStatus.max_age_days
     });
   } catch (error) {
     safeLog(console.error, 'Request failed', error);
@@ -2088,7 +2355,10 @@ app.post('/scim/v2/Users', requireScimAuth, createUserRateLimiter('scim_create',
 
     let passwordToHash;
     if (password && typeof password === 'string' && password.length > 0) {
-      const passwordError = validatePassword(password);
+      // SCIM is a credential-setting path too: enforce the provisioning
+      // key's tenant policy (the tenant is verified, never client-supplied).
+      const scimPolicy = await getPasswordPolicyForTenant(tenant);
+      const passwordError = validatePassword(password, scimPolicy);
       if (passwordError) {
         return sendScimError(res, 400, passwordError);
       }
@@ -2102,9 +2372,14 @@ app.post('/scim/v2/Users', requireScimAuth, createUserRateLimiter('scim_create',
     const hashedPassword = await bcrypt.hash(passwordToHash, BCRYPT_COST);
 
     const result = await pool.query(
-      'INSERT INTO users (email, password, name, role, active, tenant_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      `INSERT INTO users (email, password, name, role, active, tenant_id, password_changed_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING *`,
       [email, hashedPassword, displayName, role, userActive, tenant]
     );
+
+    if (password && typeof password === 'string' && password.length > 0) {
+      await recordPasswordHistory(result.rows[0].id, hashedPassword);
+    }
 
     const baseUrl = `${req.protocol}://${req.get('host')}`;
     const scimUser = formatScimUser(result.rows[0], baseUrl);
@@ -2494,7 +2769,7 @@ app.post('/saml/acs', createUserRateLimiter('saml_acs', 20), async (req, res) =>
       const tempPassword = crypto.randomBytes(16).toString('hex');
       const hashedPassword = await bcrypt.hash(tempPassword, BCRYPT_COST);
       userResult = await pool.query(
-        'INSERT INTO users (email, password, name) VALUES ($1, $2, $3) RETURNING *',
+        'INSERT INTO users (email, password, name, password_changed_at) VALUES ($1, $2, $3, NOW()) RETURNING *',
         [email, hashedPassword, displayName || email]
       );
       userData = userResult.rows[0];
@@ -2719,11 +2994,6 @@ app.post('/auth/password/reset', createUserRateLimiter('password_reset', 10), as
       return res.status(400).json({ message: 'Token and new password are required' });
     }
 
-    const passwordError = validatePassword(newPassword);
-    if (passwordError) {
-      return res.status(400).json({ message: passwordError });
-    }
-
     const tokenHash = hashToken(String(token).trim());
     const tokenResult = await pool.query(
       'SELECT * FROM password_reset_tokens WHERE token_hash = $1 AND used = false AND expires_at > NOW()',
@@ -2743,8 +3013,19 @@ app.post('/auth/password/reset', createUserRateLimiter('password_reset', 10), as
       return res.status(403).json({ message: 'Account is deactivated' });
     }
 
-    const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_COST);
-    await pool.query('UPDATE users SET password = $1, updated_at = NOW() WHERE id = $2', [hashedPassword, user.id]);
+    // The token names the user, so the policy comes from the user's tenant -
+    // never from anything the caller supplied.
+    const policy = await getPasswordPolicyForTenant(user.tenant_id || 'default');
+    const passwordError = validatePassword(newPassword, policy);
+    if (passwordError) {
+      return res.status(400).json({ message: passwordError, field: 'password' });
+    }
+    const historyError = await enforcePasswordHistory(user.id, newPassword, policy.history_count);
+    if (historyError) {
+      return res.status(400).json({ message: historyError, field: 'password' });
+    }
+
+    await setUserPassword(user.id, newPassword);
     await pool.query('UPDATE password_reset_tokens SET used = true WHERE token_hash = $1', [tokenHash]);
     await pool.query('DELETE FROM password_reset_tokens WHERE user_id = $1 AND token_hash != $2', [user.id, tokenHash]);
 
@@ -2770,11 +3051,6 @@ app.post('/auth/admin/password-reset', requireRole('admin'), createUserRateLimit
       return res.status(400).json({ message: 'Target email or user_id and a new password are required' });
     }
 
-    const passwordError = validatePassword(newPassword);
-    if (passwordError) {
-      return res.status(400).json({ message: passwordError });
-    }
-
     const lookup = targetId
       ? await pool.query('SELECT * FROM users WHERE id = $1', [targetId])
       : await pool.query('SELECT * FROM users WHERE email = $1', [targetEmail]);
@@ -2784,8 +3060,17 @@ app.post('/auth/admin/password-reset', requireRole('admin'), createUserRateLimit
       return res.status(404).json({ message: 'User not found' });
     }
 
-    const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_COST);
-    await pool.query('UPDATE users SET password = $1, updated_at = NOW() WHERE id = $2', [hashedPassword, user.id]);
+    const policy = await getPasswordPolicyForTenant(user.tenant_id || 'default');
+    const passwordError = validatePassword(newPassword, policy);
+    if (passwordError) {
+      return res.status(400).json({ message: passwordError, field: 'password' });
+    }
+    const historyError = await enforcePasswordHistory(user.id, newPassword, policy.history_count);
+    if (historyError) {
+      return res.status(400).json({ message: historyError, field: 'password' });
+    }
+
+    await setUserPassword(user.id, newPassword);
     await pool.query('DELETE FROM password_reset_tokens WHERE user_id = $1', [user.id]);
 
     await revokeAllUserSessions(user.id);
@@ -2796,6 +3081,79 @@ app.post('/auth/admin/password-reset', requireRole('admin'), createUserRateLimit
   } catch (err) {
     safeLog(console.error, 'Request failed', err);
     res.status(500).json({ message: 'Admin password reset failed' });
+  }
+});
+
+// Admin policy surface: tenants opt up from the secure defaults here. The
+// policy always applies to the caller's verified tenant claim.
+app.get('/auth/admin/password-policy', requireRole('admin'), createUserRateLimiter('password_policy_read', 60), async (req, res) => {
+  try {
+    const tenantId = req.user.tenant_id || 'default';
+    const stored = await pool.query('SELECT * FROM password_policies WHERE tenant_id = $1', [tenantId]);
+    res.json({
+      tenant_id: tenantId,
+      configured: stored.rows.length > 0,
+      policy: stored.rows[0] ? clampPasswordPolicy(stored.rows[0]) : { ...DEFAULT_PASSWORD_POLICY },
+      hard_floor_min_length: PASSWORD_HARD_FLOOR,
+      history_max_retention: PASSWORD_HISTORY_MAX_RETENTION,
+      max_age_days_cap: PASSWORD_MAX_AGE_DAYS_CAP,
+      denylist_version: COMMON_PASSWORD_LIST_VERSION,
+    });
+  } catch (err) {
+    safeLog(console.error, 'Request failed', err);
+    res.status(500).json({ message: 'Failed to load password policy' });
+  }
+});
+
+app.put('/auth/admin/password-policy', requireRole('admin'), createUserRateLimiter('password_policy_update', 20), async (req, res) => {
+  try {
+    const tenantId = req.user.tenant_id || 'default';
+    const body = req.body || {};
+    const allowedFields = ['min_length', 'require_upper', 'require_lower', 'require_digit', 'require_symbol', 'history_count', 'max_age_days'];
+    const unknownFields = Object.keys(body).filter((key) => !allowedFields.includes(key));
+    if (unknownFields.length > 0) {
+      return res.status(400).json({
+        message: `Unknown password policy field: ${unknownFields[0]}`,
+        field: unknownFields[0]
+      });
+    }
+    const fieldErrors = validatePasswordPolicyInput(body);
+    if (fieldErrors) {
+      const firstField = Object.keys(fieldErrors)[0];
+      return res.status(400).json({ message: fieldErrors[firstField], field: firstField, errors: fieldErrors });
+    }
+
+    const current = await pool.query('SELECT * FROM password_policies WHERE tenant_id = $1', [tenantId]);
+    const merged = { ...(current.rows[0] || DEFAULT_PASSWORD_POLICY), ...body };
+    const policy = clampPasswordPolicy(merged);
+
+    const result = await pool.query(
+      `INSERT INTO password_policies
+         (tenant_id, min_length, require_upper, require_lower, require_digit, require_symbol, history_count, max_age_days, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+       ON CONFLICT (tenant_id) DO UPDATE SET
+         min_length = $2, require_upper = $3, require_lower = $4, require_digit = $5,
+         require_symbol = $6, history_count = $7, max_age_days = $8, updated_at = NOW()
+       RETURNING *`,
+      [tenantId, policy.min_length, policy.require_upper, policy.require_lower, policy.require_digit,
+       policy.require_symbol, policy.history_count, policy.max_age_days]
+    );
+
+    await sendAuditEvent('auth.password_policy_updated', req.user.id, req.user.email, {
+      tenant_id: tenantId,
+      policy: clampPasswordPolicy(result.rows[0]),
+    });
+
+    res.json({
+      tenant_id: tenantId,
+      configured: true,
+      policy: clampPasswordPolicy(result.rows[0]),
+      hard_floor_min_length: PASSWORD_HARD_FLOOR,
+      denylist_version: COMMON_PASSWORD_LIST_VERSION,
+    });
+  } catch (err) {
+    safeLog(console.error, 'Request failed', err);
+    res.status(500).json({ message: 'Failed to update password policy' });
   }
 });
 
@@ -3521,7 +3879,7 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
         const tempPassword = crypto.randomBytes(16).toString('hex');
         const hashedPass = await bcrypt.hash(tempPassword, BCRYPT_COST);
         userResult = await pool.query(
-          'INSERT INTO users (email, password, name, tenant_id) VALUES ($1, $2, $3, $4) RETURNING *',
+          'INSERT INTO users (email, password, name, tenant_id, password_changed_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING *',
           [email, hashedPass, name, oauthState.tenant_id]
         );
         userData = userResult.rows[0];
@@ -3634,6 +3992,19 @@ module.exports = {
   normalizeEmail,
   validateEmail,
   validatePassword,
+  clampPasswordPolicy,
+  validatePasswordPolicyInput,
+  isCommonPassword,
+  isPasswordReused,
+  enforcePasswordHistory,
+  recordPasswordHistory,
+  setUserPassword,
+  passwordExpiryStatus,
+  DEFAULT_PASSWORD_POLICY,
+  PASSWORD_HARD_FLOOR,
+  PASSWORD_MIN_LENGTH_CAP,
+  PASSWORD_HISTORY_MAX_RETENTION,
+  COMMON_PASSWORD_LIST_VERSION,
   hashToken,
   sanitizeUser,
   resolveOktaBaseUrl,
