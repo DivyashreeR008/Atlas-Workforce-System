@@ -308,6 +308,17 @@ Atlas is a full‑stack HRMS platform built with **4 backend runtimes** (Node.js
 - `POST /saml/acs` — SAML assertion consumer
 - `POST /auth/passwordless/request` — Request magic link
 
+OIDC logins (Google, Microsoft, Okta) carry a per-request nonce through the
+`oauth_states` row and validate it against the `id_token`, whose RS256 family
+signature is verified against the provider JWKS resolved from the provider's
+`/.well-known/openid-configuration` (cached, with a documented one-hour
+refresh interval and an immediate refetch when a rotated `kid` is unknown).
+Issuer, audience, expiry, and `email_verified` checks all fail closed, so a
+discovery outage rejects the login instead of skipping verification. GitHub
+logins require a verified address from `GET /user/emails`; synthetic
+addresses are never created. Per-tenant generic OIDC issuers are the
+follow-up slice of this work.
+
 ---
 
 ## Getting Started
