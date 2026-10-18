@@ -4,7 +4,6 @@ import { Suspense } from "react";
 import { AuthGuard } from "@/components/auth/auth-guard";
 import { Sidebar, SidebarProvider } from "@/components/layout/sidebar";
 import { TopBar } from "@/components/layout/topbar";
-import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { OfflineBanner } from "@/components/ui/offline-banner";
 
 export default function DashboardLayout({
@@ -22,7 +21,9 @@ export default function DashboardLayout({
               <TopBar />
               <main className="flex-1 overflow-y-auto">
                 <div className="w-full px-4 py-4 md:px-6 md:py-6">
-                  <ErrorBoundary>{children}</ErrorBoundary>
+                  {/* Route-level failures are handled by app/dashboard/error.tsx;
+                      individual widgets carry their own WidgetBoundary. */}
+                  {children}
                 </div>
               </main>
             </div>

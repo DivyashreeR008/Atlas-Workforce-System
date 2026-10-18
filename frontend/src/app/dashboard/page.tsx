@@ -11,7 +11,7 @@ import { HiringPipelineChart } from "@/components/charts/hiring-pipeline-chart";
 import { WorkforceGrowthChart } from "@/components/charts/workforce-growth-chart";
 import { ActivityFeed } from "@/components/dashboard/activity-feed";
 import { LiveCheckins } from "@/components/dashboard/live-checkins";
-import { ErrorBoundary } from "@/components/ui/error-boundary";
+import { WidgetBoundary } from "@/components/ui/widget-boundary";
 import { PageContainer } from "@/components/layout/page-container";
 import { Users, Clock, UserX, AlertTriangle, Briefcase, TrendingDown } from "lucide-react";
 import {
@@ -45,14 +45,13 @@ function parseAttendanceRecords(raw: any) {
 }
 
 export default function DashboardPage() {
-  // --- Queries ---
+  // --- Queries --- (retry/backoff come from the central policy in providers)
   const deptQuery = useQuery({
     queryKey: ["analytics", "department"],
     queryFn: async () => {
       const { data } = await analyticsApi.department();
       return (data ?? []) as Array<{ department: string; count: number }>;
     },
-    retry: 1,
     staleTime: 30000,
   });
 
@@ -62,7 +61,6 @@ export default function DashboardPage() {
       const { data } = await employeeApi.list({ page: 1, pageSize: 1 });
       return (data ?? { total: 0 }) as { total: number };
     },
-    retry: 1,
     staleTime: 30000,
   });
 
@@ -72,7 +70,6 @@ export default function DashboardPage() {
       const { data } = await attendanceApi.list();
       return (Array.isArray(data) ? data : []) as Array<any>;
     },
-    retry: 1,
     staleTime: 15000,
   });
 
@@ -82,7 +79,6 @@ export default function DashboardPage() {
       const { data } = await attendanceApi.heatmap("week");
       return data as unknown;
     },
-    retry: 1,
     staleTime: 15000,
   });
 
@@ -92,7 +88,6 @@ export default function DashboardPage() {
       const { data } = await commandCenterApi.hiringPipeline();
       return data as unknown;
     },
-    retry: 1,
     staleTime: 30000,
   });
 
@@ -102,7 +97,6 @@ export default function DashboardPage() {
       const { data } = await commandCenterApi.activityFeed({ limit: 10 });
       return data as unknown;
     },
-    retry: 1,
     staleTime: 30000,
   });
 
@@ -216,25 +210,25 @@ export default function DashboardPage() {
   };
 
   return (
-    <ErrorBoundary>
-      <PageContainer>
-        <div className="grid grid-cols-12 gap-4">
-          {USE_MOCK_DATA && (
-            <div
-              data-testid="sample-data-banner"
-              className="col-span-12 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300"
-            >
-              Sample data is enabled (NEXT_PUBLIC_USE_MOCK_DATA=true). Widgets
-              below show mock values instead of live data.
-            </div>
-          )}
-          {/* === KPI Cards: 6 metrics in 3x2 grid on 2xl, 2x3 on lg, 1-col on mobile === */}
-          {kpiMetrics.map((m, i) => {
-            const Icon = m.icon;
-            const loading = isKpiLoading && !deptQuery.data && !empQuery.data;
-            const error = i >= 2 ? false : isKpiError;
-            return (
-              <div key={m.label} className="col-span-6 md:col-span-4 2xl:col-span-2">
+    <PageContainer>
+      <div className="grid grid-cols-12 gap-4">
+        {USE_MOCK_DATA && (
+          <div
+            data-testid="sample-data-banner"
+            className="col-span-12 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300"
+          >
+            Sample data is enabled (NEXT_PUBLIC_USE_MOCK_DATA=true). Widgets
+            below show mock values instead of live data.
+          </div>
+        )}
+        {/* === KPI Cards: 6 metrics in 3x2 grid on 2xl, 2x3 on lg, 1-col on mobile === */}
+        {kpiMetrics.map((m, i) => {
+          const Icon = m.icon;
+          const loading = isKpiLoading && !deptQuery.data && !empQuery.data;
+          const error = i >= 2 ? false : isKpiError;
+          return (
+            <div key={m.label} className="col-span-6 md:col-span-4 2xl:col-span-2">
+              <WidgetBoundary title={m.label} onRetry={handleRetry(deptQuery)}>
                 <KpiCard
                   metric={{ label: m.label, value: m.value, change: m.change, trend: m.trend }}
                   index={i}
@@ -244,73 +238,87 @@ export default function DashboardPage() {
                   onRetry={handleRetry(deptQuery)}
                   subtitle={m.subtitle}
                 />
-              </div>
-            );
-          })}
+              </WidgetBoundary>
+            </div>
+          );
+        })}
 
-          {/* === Row 2: Headcount Trend (wide) + Department Distribution (narrow) === */}
-          <div className="col-span-12 xl:col-span-8 2xl:col-span-7">
+        {/* === Row 2: Headcount Trend (wide) + Department Distribution (narrow) === */}
+        <div className="col-span-12 xl:col-span-8 2xl:col-span-7">
+          <WidgetBoundary title="Headcount Trend" onRetry={handleRetry(empQuery)}>
             <HeadcountChart
               data={headcountData}
               loading={empQuery.isLoading}
               error={empQuery.isError}
               onRetry={handleRetry(empQuery)}
             />
-          </div>
-          <div className="col-span-12 xl:col-span-4 2xl:col-span-5">
+          </WidgetBoundary>
+        </div>
+        <div className="col-span-12 xl:col-span-4 2xl:col-span-5">
+          <WidgetBoundary title="Department Distribution" onRetry={handleRetry(deptQuery)}>
             <DepartmentChart
               data={deptChartData}
               loading={deptQuery.isLoading}
               error={deptQuery.isError}
               onRetry={handleRetry(deptQuery)}
             />
-          </div>
+          </WidgetBoundary>
+        </div>
 
-          {/* === Row 3: Attendance Trend + Hiring Pipeline + Workforce Growth === */}
-          <div className="col-span-12 md:col-span-6 xl:col-span-4">
+        {/* === Row 3: Attendance Trend + Hiring Pipeline + Workforce Growth === */}
+        <div className="col-span-12 md:col-span-6 xl:col-span-4">
+          <WidgetBoundary title="Attendance Trend" onRetry={handleRetry(heatmapQuery)}>
             <AttendanceChart
               data={attendanceTrendData}
               loading={heatmapQuery.isLoading}
               error={heatmapQuery.isError}
               onRetry={handleRetry(heatmapQuery)}
             />
-          </div>
-          <div className="col-span-12 md:col-span-6 xl:col-span-4">
+          </WidgetBoundary>
+        </div>
+        <div className="col-span-12 md:col-span-6 xl:col-span-4">
+          <WidgetBoundary title="Hiring Pipeline" onRetry={handleRetry(pipelineQuery)}>
             <HiringPipelineChart
               data={pipelineStages}
               loading={pipelineQuery.isLoading}
               error={pipelineQuery.isError}
               onRetry={handleRetry(pipelineQuery)}
             />
-          </div>
-          <div className="col-span-12 xl:col-span-4">
+          </WidgetBoundary>
+        </div>
+        <div className="col-span-12 xl:col-span-4">
+          <WidgetBoundary title="Workforce Growth" onRetry={handleRetry(deptQuery)}>
             <WorkforceGrowthChart
               data={growthData}
               loading={deptQuery.isLoading}
               error={deptQuery.isError}
               onRetry={handleRetry(deptQuery)}
             />
-          </div>
+          </WidgetBoundary>
+        </div>
 
-          {/* === Row 4: Activity Feed + Live Check-ins === */}
-          <div className="col-span-12 xl:col-span-7">
+        {/* === Row 4: Activity Feed + Live Check-ins === */}
+        <div className="col-span-12 xl:col-span-7">
+          <WidgetBoundary title="Activity Feed" onRetry={handleRetry(activityQuery)}>
             <ActivityFeed
               data={activityItems}
               loading={activityQuery.isLoading}
               error={activityQuery.isError}
               onRetry={handleRetry(activityQuery)}
             />
-          </div>
-          <div className="col-span-12 xl:col-span-5">
+          </WidgetBoundary>
+        </div>
+        <div className="col-span-12 xl:col-span-5">
+          <WidgetBoundary title="Live Check-ins" onRetry={handleRetry(attendanceQuery)}>
             <LiveCheckins
               data={checkinData}
               loading={attendanceQuery.isLoading}
               error={attendanceQuery.isError}
               onRetry={handleRetry(attendanceQuery)}
             />
-          </div>
+          </WidgetBoundary>
         </div>
-      </PageContainer>
-    </ErrorBoundary>
+      </div>
+    </PageContainer>
   );
 }

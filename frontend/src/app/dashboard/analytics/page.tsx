@@ -22,6 +22,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { WidgetBoundary } from "@/components/ui/widget-boundary";
 import {
   Bar,
   BarChart,
@@ -44,7 +45,6 @@ export default function AnalyticsPage() {
       const { data } = await analyticsApi.department();
       return data as Array<{ department: string; count: number }>;
     },
-    retry: false,
     staleTime: 30000,
   });
 
@@ -59,7 +59,6 @@ export default function AnalyticsPage() {
       const { data } = await analyticsApi.performance();
       return data as Record<string, unknown>;
     },
-    retry: false,
     staleTime: 60000,
   });
 
@@ -74,7 +73,6 @@ export default function AnalyticsPage() {
       const { data } = await attendanceApi.heatmap("week");
       return data as unknown;
     },
-    retry: false,
     staleTime: 30000,
   });
 
@@ -115,25 +113,30 @@ export default function AnalyticsPage() {
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <HeadcountChart
-          data={headcountData}
-          loading={deptLoading}
-          error={deptError}
-          onRetry={() => {
-            refetchDept();
-          }}
-        />
-        <DepartmentChart
-          data={realDeptBreakdown}
-          loading={deptLoading}
-          error={deptError}
-          onRetry={() => {
-            refetchDept();
-          }}
-        />
+        <WidgetBoundary title="Headcount Trend" onRetry={() => { refetchDept(); }}>
+          <HeadcountChart
+            data={headcountData}
+            loading={deptLoading}
+            error={deptError}
+            onRetry={() => {
+              refetchDept();
+            }}
+          />
+        </WidgetBoundary>
+        <WidgetBoundary title="Department Distribution" onRetry={() => { refetchDept(); }}>
+          <DepartmentChart
+            data={realDeptBreakdown}
+            loading={deptLoading}
+            error={deptError}
+            onRetry={() => {
+              refetchDept();
+            }}
+          />
+        </WidgetBoundary>
       </div>
 
-      {perfLoading ? (
+      <WidgetBoundary title="Performance Insights" onRetry={() => { refetchPerf(); }}>
+        {perfLoading ? (
         <Card className="glass-panel">
           <CardContent className="pt-6">
             <Skeleton className="h-24 w-full" />
