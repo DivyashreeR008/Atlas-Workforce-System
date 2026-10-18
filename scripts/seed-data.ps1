@@ -93,6 +93,13 @@ try {
     $employeeIds = @()
     $empCount = 0
 
+    # Reporting-line fixture: index 0 is the root, indexes 0-5 head their
+    # departments, and everyone else reports to their department head. Links
+    # only point at lower indexes, and each is dropped if that manager row did
+    # not make it into the tenant, so a bad seed can never reference a ghost.
+    $rootEmail = $null
+    $deptHead = @{}
+
     Write-Output "`n=== Creating $EmployeeCount Employees ==="
     for ($i = 0; $i -lt $EmployeeCount; $i++) {
         $first = $firstNames[$i % $firstNames.Length]
@@ -100,7 +107,19 @@ try {
         $dept  = $departments[$i % $departments.Length]
         $pos   = $positions[$dept][$i % $positions[$dept].Length]
         $email = "$($first.ToLower()).$($last.ToLower())$($i)@atlas.io"
+
+        $managerId = $null
+        if ($i -ge 1 -and $i -lt $departments.Length) {
+            $managerId = $rootEmail
+        } elseif ($i -ge $departments.Length -and $deptHead.ContainsKey($dept)) {
+            $managerId = $deptHead[$dept]
+        }
+        if ($managerId -and ($employeeIds -notcontains $managerId)) {
+            $managerId = $null
+        }
+
         $empBody = @{ name = "$first $last"; email = $email; department = $dept; position = $pos }
+        if ($managerId) { $empBody["manager_id"] = $managerId }
 
         try {
             $result = Invoke-Api -Method POST -Url "$BaseUrl/api/employee/employees" -BodyObject $empBody -Token $token
@@ -121,6 +140,12 @@ try {
             Write-Output "  [FAIL] $email ($($_.Exception.Message))"
             $script:failures++
         }
+
+        if ($i -eq 0) { $rootEmail = $email }
+        if ($i -lt $departments.Length -and -not $deptHead.ContainsKey($dept)) {
+            $deptHead[$dept] = $email
+        }
+
         Start-Sleep -Milliseconds 50
     }
 

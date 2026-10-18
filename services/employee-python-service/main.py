@@ -93,6 +93,12 @@ ALLOWED_SEARCH_FIELDS = {"name", "email", "department", "position"}
 SEARCH_MAX_LENGTH = 200
 SEARCH_ALLOWED_CHARS = re.compile(r"^[a-zA-Z0-9 @._\-]+$")
 
+# Reporting-line safety rails: cycles are rejected on write and broken on
+# read, so dirty data can never hang the hierarchy assembly.
+MAX_REPORTING_CHAIN = 50
+MAX_HIERARCHY_NODES = 5000
+PRIVILEGED_HIERARCHY_ROLES = {"admin", "hr"}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -151,6 +157,10 @@ async def internal_auth_middleware(request: Request, call_next):
         request.state.tenant_id = claims.get("tenant_id", "default")
         request.state.user_id = claims.get("user_id", "")
         request.state.user_role = claims.get("user_role", "employee")
+        # Verified caller email, used to scope the reporting hierarchy. The
+        # gateway mints this claim from the authenticated session, so it can
+        # never be supplied (or overridden) by the client.
+        request.state.user_email = str(claims.get("email") or "").strip().lower()
     except HTTPException as e:
         return JSONResponse(status_code=e.status_code, content={"detail": e.detail})
     except (ValueError, KeyError, AttributeError, TypeError, UnicodeError) as e:
@@ -186,6 +196,153 @@ def validate_search_param(search: Optional[str]) -> Optional[str]:
         log_event("warning", "search.invalid_chars", search=search)
         raise HTTPException(status_code=400, detail="Search contains invalid characters")
     return search
+
+
+# ------------------------------------------------
+# Reporting Hierarchy Helpers
+# ------------------------------------------------
+async def resolve_manager_reference(
+    tenant_id: str,
+    manager_id: str,
+    employee_email: Optional[str] = None,
+) -> str:
+    """Validate a manager reference and return its normalized email.
+
+    A manager must be a real employee in the same tenant, must not be the
+    employee themselves, and must not already report (directly or indirectly)
+    to the employee - which would close a reporting cycle.
+    """
+    manager_id = (manager_id or "").strip().lower()
+    if not manager_id or len(manager_id) > EMAIL_MAX_LENGTH or not EMAIL_PATTERN.match(manager_id):
+        raise HTTPException(status_code=400, detail="manager_id must be a valid employee email")
+
+    employee_key = (employee_email or "").strip().lower()
+    if employee_key and manager_id == employee_key:
+        raise HTTPException(status_code=400, detail="An employee cannot report to themselves")
+
+    manager = await employees_collection.find_one({"email": manager_id, "tenant_id": tenant_id})
+    if not manager:
+        raise HTTPException(status_code=400, detail="manager_id does not match an employee in this tenant")
+
+    cursor_email = str(manager.get("manager_id") or "").strip().lower()
+    seen = {manager_id}
+    depth = 0
+    while cursor_email and depth < MAX_REPORTING_CHAIN:
+        if employee_key and cursor_email == employee_key:
+            raise HTTPException(status_code=400, detail="manager_id would create a reporting cycle")
+        if cursor_email in seen:
+            break  # pre-existing cycle in stored data; not introduced by this change
+        seen.add(cursor_email)
+        parent = await employees_collection.find_one(
+            {"email": cursor_email, "tenant_id": tenant_id},
+            {"manager_id": 1},
+        )
+        if not parent:
+            break
+        cursor_email = str(parent.get("manager_id") or "").strip().lower()
+        depth += 1
+    if depth >= MAX_REPORTING_CHAIN:
+        raise HTTPException(status_code=400, detail="Reporting chain is too deep")
+    return manager_id
+
+
+def build_hierarchy(records: List[dict]):
+    """Assemble flat employee rows into a forest of reporting trees.
+
+    Returns (nodes_by_email, roots). Records whose manager is missing from the
+    tenant, or is themselves, become roots so dirty data still renders; any
+    manager cycles are broken by promoting one node per cycle to a root.
+    """
+    nodes = {}
+    for record in records:
+        email = str(record.get("email") or "").strip().lower()
+        if not email or email in nodes:
+            continue
+        nodes[email] = {
+            "email": email,
+            "name": record.get("name", ""),
+            "department": record.get("department", ""),
+            "position": record.get("position", ""),
+            "manager_id": str(record.get("manager_id") or "").strip().lower() or None,
+            "direct_reports": 0,
+            "total_reports": 0,
+            "children": [],
+        }
+
+    roots = []
+    for email, node in nodes.items():
+        manager_id = node["manager_id"]
+        if manager_id and manager_id != email and manager_id in nodes:
+            nodes[manager_id]["children"].append(node)
+        else:
+            roots.append(node)
+
+    visited = set()
+
+    def visit(start_nodes):
+        stack = list(start_nodes)
+        while stack:
+            node = stack.pop()
+            if node["email"] in visited:
+                continue
+            visited.add(node["email"])
+            stack.extend(node["children"])
+
+    visit(roots)
+    remaining = [node for email, node in nodes.items() if email not in visited]
+    while remaining:
+        promoted = remaining[0]
+        log_event("warning", "hierarchy.cycle_detected", node=promoted["email"])
+        manager_id = promoted["manager_id"]
+        if manager_id and manager_id in nodes:
+            parent = nodes[manager_id]
+            parent["children"] = [child for child in parent["children"] if child is not promoted]
+        promoted["manager_id"] = None
+        roots.append(promoted)
+        visit([promoted])
+        remaining = [node for email, node in nodes.items() if email not in visited]
+
+    for root in roots:
+        _sort_hierarchy(root)
+    return nodes, roots
+
+
+def _sort_hierarchy(root: dict) -> None:
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        node["children"].sort(key=lambda child: (child["name"].lower(), child["email"]))
+        stack.extend(node["children"])
+
+
+def compute_report_counts(root: dict) -> None:
+    """Fill direct_reports/total_reports for the subtree rooted at root."""
+    stack = [(root, False)]
+    while stack:
+        node, expanded = stack.pop()
+        if expanded:
+            total = 0
+            for child in node["children"]:
+                total += 1 + child["total_reports"]
+            node["direct_reports"] = len(node["children"])
+            node["total_reports"] = total
+        else:
+            stack.append((node, True))
+            stack.extend((child, False) for child in node["children"])
+
+
+async def load_hierarchy_records(tenant_id: str) -> List[dict]:
+    """Load the flat reporting rows for a tenant, capped for safety."""
+    records = []
+    cursor = employees_collection.find(
+        {"tenant_id": tenant_id},
+        {"_id": 0, "email": 1, "name": 1, "department": 1, "position": 1, "manager_id": 1},
+    ).limit(MAX_HIERARCHY_NODES)
+    async for record in cursor:
+        records.append(record)
+    if len(records) >= MAX_HIERARCHY_NODES:
+        log_event("warning", "hierarchy.truncated", tenant_id=tenant_id, limit=MAX_HIERARCHY_NODES)
+    return records
 
 
 # ------------------------------------------------
@@ -250,6 +407,11 @@ class EmployeeSchema(BaseModel):
         pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
         description="Employee email address (unique per tenant)",
     )
+    manager_id: Optional[str] = Field(
+        None,
+        max_length=254,
+        description="Email of the employee's manager (validated against the tenant)",
+    )
     tenant_id: Optional[str] = Field(None, description="Multi-tenant identifier")
 
     class Config:
@@ -288,6 +450,34 @@ class EmployeeUpdateSchema(BaseModel):
         pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
         description="Updated email",
     )
+    manager_id: Optional[str] = Field(
+        None,
+        max_length=254,
+        description="Updated manager email; send an empty string to clear the reporting line",
+    )
+
+
+class HierarchyNode(BaseModel):
+    """One employee in the reporting tree, with span-of-control counts."""
+
+    email: str
+    name: str
+    department: str = ""
+    position: str = ""
+    manager_id: Optional[str] = None
+    direct_reports: int = 0
+    total_reports: int = 0
+    children: List["HierarchyNode"] = Field(default_factory=list)
+
+
+class HierarchyResponse(BaseModel):
+    scope: str = Field(..., description="What the caller may see: tenant, subtree or none")
+    viewer_email: Optional[str] = None
+    total_visible: int
+    roots: List[HierarchyNode]
+
+
+HierarchyNode.model_rebuild()
 
 
 # ------------------------------------------------
@@ -340,6 +530,52 @@ async def get_employees(
     }
 
 
+@app.get(
+    "/employees/hierarchy",
+    response_model=HierarchyResponse,
+    tags=["employees"],
+    summary="Get the employee reporting hierarchy",
+)
+async def get_employee_hierarchy(request: Request):
+    """Return the reporting tree the caller is allowed to see.
+
+    Permissions are enforced here, server-side: admin and hr see the whole
+    tenant forest, everyone else sees only their own subtree (the people who
+    report to them, directly or indirectly). Records with a missing or cyclic
+    manager are surfaced as roots rather than dropped, and every node carries
+    span-of-control counts for the manager facet.
+    """
+    tenant_id = getattr(request.state, "tenant_id", "default")
+    role = str(getattr(request.state, "user_role", "employee") or "employee").lower()
+    viewer_email = str(getattr(request.state, "user_email", "") or "").strip().lower()
+
+    records = await load_hierarchy_records(tenant_id)
+    nodes, roots = build_hierarchy(records)
+
+    if role in PRIVILEGED_HIERARCHY_ROLES:
+        visible_roots = roots
+        scope = "tenant"
+    else:
+        viewer = nodes.get(viewer_email)
+        if viewer is None:
+            visible_roots = []
+            scope = "none"
+        else:
+            visible_roots = [viewer]
+            scope = "subtree"
+
+    for root in visible_roots:
+        compute_report_counts(root)
+
+    total_visible = sum(1 + root["total_reports"] for root in visible_roots)
+    return {
+        "scope": scope,
+        "viewer_email": viewer_email or None,
+        "total_visible": total_visible,
+        "roots": visible_roots,
+    }
+
+
 @app.get("/employees/{email}", response_model=EmployeeSchema, tags=["employees"], summary="Get employee by email")
 async def get_employee(request: Request, email: str):
     """Fetch a single employee by their email address within a tenant scope."""
@@ -361,6 +597,14 @@ async def create_employee(
     tenant_id = getattr(request.state, "tenant_id", "default")
     employee_dict = employee.model_dump(by_alias=True, exclude_none=True)
     employee_dict["tenant_id"] = tenant_id
+
+    manager_id = str(employee_dict.get("manager_id") or "").strip()
+    if manager_id:
+        employee_dict["manager_id"] = await resolve_manager_reference(
+            tenant_id, manager_id, employee_email=employee.email
+        )
+    else:
+        employee_dict.pop("manager_id", None)
 
     try:
         result = await employees_collection.insert_one(employee_dict)
@@ -390,6 +634,19 @@ async def update_employee(
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
+    unset_manager = False
+    if "manager_id" in update_data:
+        new_manager = str(update_data["manager_id"] or "").strip()
+        if new_manager:
+            update_data["manager_id"] = await resolve_manager_reference(
+                tenant_id,
+                new_manager,
+                employee_email=update_data.get("email", email),
+            )
+        else:
+            del update_data["manager_id"]
+            unset_manager = True
+
     if "email" in update_data and update_data["email"] != email:
         duplicate = await employees_collection.find_one(
             {"email": update_data["email"], "tenant_id": tenant_id}
@@ -397,9 +654,15 @@ async def update_employee(
         if duplicate:
             raise HTTPException(status_code=400, detail="Email already in use")
 
+    update_doc = {}
+    if update_data:
+        update_doc["$set"] = update_data
+    if unset_manager:
+        update_doc["$unset"] = {"manager_id": ""}
+
     await employees_collection.update_one(
         {"email": email, "tenant_id": tenant_id},
-        {"$set": update_data}
+        update_doc
     )
 
     updated = await employees_collection.find_one({"email": update_data.get("email", email), "tenant_id": tenant_id})
