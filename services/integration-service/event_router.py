@@ -6,6 +6,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from urllib.parse import unquote, urlparse
 
 from sqlalchemy.orm import Session
 
@@ -29,6 +30,11 @@ logger = logging.getLogger("event-router")
 
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://atlas_rabbit:changeme_rabbit_pass@rabbitmq:5672/")
 RABBITMQ_EXCHANGE = "notifications_exchange"
+# Reconnection pacing: a broker restart is routine maintenance, so the consumer
+# must outlive it. Bounded exponential backoff with jitter prevents a
+# thundering herd against a recovering broker.
+_CONSUMER_BACKOFF_BASE_SEC = 1
+_CONSUMER_BACKOFF_CAP_SEC = 60
 
 _rabbit_connection = None
 _rabbit_channel = None
@@ -46,33 +52,105 @@ def get_db() -> Optional[Session]:
     return None
 
 
+def parse_broker(url: str) -> dict:
+    """Parse RABBITMQ_URL into connection parts.
+
+    Fails fast with a message naming the variable on anything malformed:
+    userless URLs, credentials containing '@', IPv6 hosts and non-default
+    ports all parse correctly here, unlike the old string-splitting.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError as exc:
+        raise ValueError(f"RABBITMQ_URL is unparseable: {exc}") from exc
+    if parsed.scheme not in ("amqp", "amqps"):
+        raise ValueError(f"RABBITMQ_URL must start with amqp:// or amqps:// (got scheme={parsed.scheme!r})")
+    if not parsed.hostname:
+        raise ValueError("RABBITMQ_URL has no host")
+    port = parsed.port or (5671 if parsed.scheme == "amqps" else 5672)
+    username = unquote(parsed.username) if parsed.username else None
+    password = unquote(parsed.password) if parsed.password else None
+    return {
+        "host": parsed.hostname,
+        "port": port,
+        "username": username,
+        "password": password,
+        "ssl": parsed.scheme == "amqps",
+    }
+
+
+def _broker_credentials(broker: dict) -> tuple:
+    """Resolve credentials: URL first, then environment, never 'guest' fallback."""
+    username = broker.get("username") or os.environ.get("RABBITMQ_USER")
+    password = broker.get("password") or os.environ.get("RABBITMQ_PASSWORD")
+    if not username or not password:
+        raise ValueError(
+            "RabbitMQ credentials missing: set user:password in RABBITMQ_URL "
+            "or provide RABBITMQ_USER and RABBITMQ_PASSWORD. "
+            "Hard-failing rather than falling back to guest/guest."
+        )
+    return username, password
+
+
 def start_rabbitmq_consumer():
     def _consume():
         try:
             import pika
-            credentials = pika.PlainCredentials("guest", "guest")
-            params = pika.ConnectionParameters(
-                host=RABBITMQ_URL.split("@")[1].split(":")[0] if "@" in RABBITMQ_URL else "rabbitmq",
-                port=5672,
-                credentials=credentials,
-                heartbeat=30,
-            )
-            connection = pika.BlockingConnection(params)
-            channel = connection.channel()
-            channel.exchange_declare(exchange=RABBITMQ_EXCHANGE, exchange_type="fanout", durable=True)
-            result = channel.queue_declare(queue="", exclusive=True)
-            queue_name = result.method.queue
-            channel.queue_bind(exchange=RABBITMQ_EXCHANGE, queue=queue_name)
-            channel.basic_consume(queue=queue_name, on_message_callback=_handle_rabbitmq_message, auto_ack=True)
-            logger.info(f"RabbitMQ consumer started on exchange={RABBITMQ_EXCHANGE}")
-            channel.start_consuming()
         except ImportError:
             logger.info("[MOCK] RabbitMQ consumer (pika not available)")
-        except Exception as e:
-            logger.error(f"RabbitMQ consumer error: {e}")
-            time.sleep(10)
+            return
+        # Parse and validate configuration once at startup so a typo fails
+        # fast with a clear message instead of dying mid-reconnect loop.
+        broker = parse_broker(RABBITMQ_URL)
+        try:
+            username, password = _broker_credentials(broker)
+        except ValueError as exc:
+            logger.error("RabbitMQ consumer not started: %s", exc)
+            return
 
-    thread = threading.Thread(target=_consume, daemon=True)
+        attempt = 0
+        while True:
+            connection = None
+            try:
+                credentials = pika.PlainCredentials(username, password)
+                params = pika.ConnectionParameters(
+                    host=broker["host"],
+                    port=broker["port"],
+                    credentials=credentials,
+                    heartbeat=30,
+                )
+                connection = pika.BlockingConnection(params)
+                channel = connection.channel()
+                channel.exchange_declare(exchange=RABBITMQ_EXCHANGE, exchange_type="fanout", durable=True)
+                # Exclusive auto-delete queue: on reconnect this consumer gets a
+                # fresh queue. Fanout messages published while disconnected are
+                # not replayed, but the consumer itself keeps running.
+                result = channel.queue_declare(queue="", exclusive=True, auto_delete=True)
+                queue_name = result.method.queue
+                channel.queue_bind(exchange=RABBITMQ_EXCHANGE, queue=queue_name)
+                # Manual ack: a failed message must not be acknowledged and
+                # lost. Unacknowledged deliveries return to the queue when the
+                # connection drops.
+                channel.basic_consume(queue=queue_name, on_message_callback=_handle_rabbitmq_message, auto_ack=False)
+                logger.info("RabbitMQ consumer started on exchange=%s host=%s:%s", RABBITMQ_EXCHANGE, broker["host"], broker["port"])
+                attempt = 0
+                channel.start_consuming()
+            except Exception as exc:
+                logger.error("RabbitMQ consumer error: %s (%s) - reconnecting", exc, type(exc).__name__)
+                # Drop any half-open connection before retrying.
+                if connection is not None:
+                    try:
+                        if connection.is_open:
+                            connection.close()
+                    except Exception:
+                        pass
+                attempt += 1
+                delay = min(_CONSUMER_BACKOFF_BASE_SEC * (2 ** (attempt - 1)), _CONSUMER_BACKOFF_CAP_SEC)
+                delay += random.uniform(0, delay / 2)
+                logger.info("RabbitMQ consumer reconnect attempt %s in %.1fs", attempt, round(delay, 1))
+                time.sleep(delay)
+
+    thread = threading.Thread(target=_consume, daemon=True, name="rabbitmq-consumer")
     thread.start()
     return thread
 
@@ -84,8 +162,17 @@ def _handle_rabbitmq_message(ch, method, properties, body):
         tenant_id = message.get("tenant_id", "default")
         logger.info(f"Received RabbitMQ event: {event_type} for tenant={tenant_id}")
         route_event(event_type, tenant_id, message)
+        ch.basic_ack(delivery_tag=method.delivery_tag)
     except Exception as e:
-        logger.error(f"Error handling RabbitMQ message: {e}")
+        # A failed message must not dissolve into the log stream under a green
+        # ack. Requeue once; reject on redelivery so a poison message cannot
+        # loop forever.
+        redelivered = bool(getattr(method, "redelivered", False))
+        logger.error("Error handling RabbitMQ message: %s (redelivered=%s)", e, redelivered, exc_info=True)
+        try:
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=not redelivered)
+        except Exception as nack_exc:
+            logger.warning("Failed to nack message: %s (%s)", nack_exc, type(nack_exc).__name__)
 
 
 RETRY_BACKOFF_CAP_SEC = 30 * 60
