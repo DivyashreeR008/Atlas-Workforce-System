@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -16,8 +17,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 os.environ.setdefault("INTERNAL_JWT_SECRET", "test-secret")
 
+import crud
 from crud import configure_hash_salt, _compute_hash
-from models import Base, AuditLog, CompliancePolicy, ComplianceViolation
+from models import Base, AuditChainAnchor, AuditLog, CompliancePolicy, ComplianceViolation
 from main import (
     HASH_SALT,
     MAX_PAGE_SIZE,
@@ -826,6 +828,180 @@ async def test_verify_chain_integrity_tampered(client: AsyncClient, db_session: 
     data = resp.json()
     assert data["chain_intact"] is False
     assert len(data["issues"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_verify_chain_requires_writer_audience(client: AsyncClient, db_session: Session):
+    tenant = "test-verify-audience"
+    db_session.query(AuditLog).filter(AuditLog.tenant_id == tenant).delete()
+    db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/audit/verify-chain?tenant_id={tenant}",
+        headers=_auth_headers(tenant, audience="someone-else"),
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_chain_sequence_is_monotonic_and_anchored(client: AsyncClient, db_session: Session):
+    tenant = "test-sequence-order"
+    db_session.query(AuditLog).filter(AuditLog.tenant_id == tenant).delete()
+    db_session.query(AuditChainAnchor).filter(
+        AuditChainAnchor.tenant_id == tenant
+    ).delete()
+    db_session.commit()
+
+    hashes = []
+    for i in range(3):
+        resp = await client.post(
+            "/api/v1/audit/log",
+            json=_create_audit_payload(tenant_id=tenant, event_type=f"seq.event.{i}"),
+            headers=_auth_headers(tenant),
+        )
+        assert resp.status_code == 201
+        hashes.append(resp.json()["hash"])
+
+    rows = (
+        db_session.query(AuditLog)
+        .filter(AuditLog.tenant_id == tenant)
+        .order_by(AuditLog.sequence.asc())
+        .all()
+    )
+    assert [row.sequence for row in rows] == [1, 2, 3]
+    assert rows[0].previous_hash is None
+    assert rows[1].previous_hash == rows[0].hash
+    assert rows[2].previous_hash == rows[1].hash
+
+    resp = await client.get(f"/api/v1/audit/verify-chain?tenant_id={tenant}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["chain_intact"] is True
+    assert data["head"]["sequence"] == 3
+    assert data["head"]["hash"] == hashes[-1]
+    assert data["anchor"]["present"] is True
+    assert data["anchor"]["signature_valid"] is True
+    assert data["anchor"]["entry_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_concurrent_writers_produce_one_unbranched_chain(client: AsyncClient, db_session: Session):
+    tenant = "test-concurrent-writers"
+    db_session.query(AuditLog).filter(AuditLog.tenant_id == tenant).delete()
+    db_session.query(AuditChainAnchor).filter(
+        AuditChainAnchor.tenant_id == tenant
+    ).delete()
+    db_session.commit()
+
+    def _write(index: int):
+        db = TestingSessionLocal()
+        try:
+            return crud.create_audit_log(
+                db,
+                _create_audit_payload(
+                    tenant_id=tenant, event_type=f"concurrent.event.{index}"
+                ),
+                HASH_SALT,
+            )
+        finally:
+            db.close()
+
+    workers = 8
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        logs = list(pool.map(_write, range(workers)))
+
+    assert all(log.tenant_id == tenant for log in logs)
+    assert sorted(log.sequence for log in logs) == list(range(1, workers + 1))
+    assert len({log.hash for log in logs}) == workers
+    roots = [log for log in logs if log.previous_hash is None]
+    assert len(roots) == 1, "a forked chain has more than one root entry"
+
+    resp = await client.get(f"/api/v1/audit/verify-chain?tenant_id={tenant}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["chain_intact"] is True
+    assert data["total_entries"] == workers
+    assert data["anchor"]["entry_count"] == workers
+
+
+@pytest.mark.asyncio
+async def test_verify_chain_detects_tail_deletion(client: AsyncClient, db_session: Session):
+    tenant = "test-tail-deletion"
+    db_session.query(AuditLog).filter(AuditLog.tenant_id == tenant).delete()
+    db_session.query(AuditChainAnchor).filter(
+        AuditChainAnchor.tenant_id == tenant
+    ).delete()
+    db_session.commit()
+
+    for i in range(3):
+        await client.post(
+            "/api/v1/audit/log",
+            json=_create_audit_payload(tenant_id=tenant, event_type=f"tail.event.{i}"),
+            headers=_auth_headers(tenant),
+        )
+
+    newest = (
+        db_session.query(AuditLog)
+        .filter(AuditLog.tenant_id == tenant)
+        .order_by(AuditLog.sequence.desc())
+        .first()
+    )
+    db_session.delete(newest)
+    db_session.commit()
+
+    resp = await client.get(f"/api/v1/audit/verify-chain?tenant_id={tenant}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["chain_intact"] is False
+    assert any("anchor" in issue["issue"] for issue in data["issues"])
+    assert data["anchor"]["present"] is True
+    assert data["anchor"]["entry_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_tied_timestamps_use_sequence_order(
+    client: AsyncClient, db_session: Session, monkeypatch
+):
+    tenant = "test-tied-timestamps"
+    db_session.query(AuditLog).filter(AuditLog.tenant_id == tenant).delete()
+    db_session.query(AuditChainAnchor).filter(
+        AuditChainAnchor.tenant_id == tenant
+    ).delete()
+    db_session.commit()
+
+    fixed_ts = datetime(2026, 1, 1, 3, 0, 0, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_ts
+
+    monkeypatch.setattr(crud, "datetime", _FrozenDatetime)
+    try:
+        for i in range(2):
+            resp = await client.post(
+                "/api/v1/audit/log",
+                json=_create_audit_payload(tenant_id=tenant, event_type=f"tied.event.{i}"),
+                headers=_auth_headers(tenant),
+            )
+            assert resp.status_code == 201
+    finally:
+        monkeypatch.undo()
+
+    rows = (
+        db_session.query(AuditLog)
+        .filter(AuditLog.tenant_id == tenant)
+        .all()
+    )
+    assert len(rows) == 2
+    assert rows[0].created_at == rows[1].created_at
+
+    first = await client.get(f"/api/v1/audit/verify-chain?tenant_id={tenant}")
+    second = await client.get(f"/api/v1/audit/verify-chain?tenant_id={tenant}")
+    assert first.status_code == 200 and second.status_code == 200
+    assert first.json() == second.json()
+    assert first.json()["chain_intact"] is True
+    assert first.json()["head"]["sequence"] == 2
 
 
 # ── Retryreceiveion Policies ──────────────────────────────────────────────────

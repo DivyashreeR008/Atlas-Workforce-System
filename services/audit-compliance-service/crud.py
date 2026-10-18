@@ -1,15 +1,20 @@
 import csv
 import hashlib
+import hmac
 import io
 import json
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, func, or_, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from models import (
+    AuditChainAnchor,
     AuditLog,
     CompliancePolicy,
     ComplianceViolation,
@@ -19,11 +24,27 @@ from models import (
 
 
 HASH_SALT: str = ""
+ANCHOR_SIGNING_KEY: str = ""
+
+# Fallback serialization for dialects without advisory locks (SQLite in local
+# runs). PostgreSQL writers are serialized by a transaction-scoped advisory
+# lock so every service instance shares the same mutex.
+_tenant_thread_locks: dict[str, threading.Lock] = {}
+_tenant_thread_locks_guard = threading.Lock()
+
+CHAIN_RETRY_ATTEMPTS = 5
+
+_VERIFY_BATCH_SIZE = 500
 
 
 def configure_hash_salt(salt: str) -> None:
     global HASH_SALT
     HASH_SALT = salt
+
+
+def configure_anchor_signing_key(key: str) -> None:
+    global ANCHOR_SIGNING_KEY
+    ANCHOR_SIGNING_KEY = key or HASH_SALT
 
 
 def _compute_hash(
@@ -48,14 +69,114 @@ def _compute_hash(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _get_latest_hash_for_tenant(db: Session, tenant_id: str) -> Optional[str]:
-    entry = (
-        db.query(AuditLog.hash)
+def _advisory_lock_key(tenant_id: str) -> int:
+    digest = hashlib.sha256(f"audit-chain::{tenant_id}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+@contextmanager
+def _tenant_write_lock(db: Session, tenant_id: str):
+    """Serialize chain writers for a tenant.
+
+    PostgreSQL takes a transaction-scoped advisory lock so writers in other
+    processes and service instances are serialized too; the in-process lock
+    covers dialects without advisory locks and keeps local test runs honest
+    about ordering.
+    """
+    with _tenant_thread_locks_guard:
+        lock = _tenant_thread_locks.get(tenant_id)
+        if lock is None:
+            lock = threading.Lock()
+            _tenant_thread_locks[tenant_id] = lock
+    with lock:
+        bind = db.get_bind()
+        dialect = getattr(getattr(bind, "dialect", None), "name", "")
+        if dialect == "postgresql":
+            db.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"),
+                {"key": _advisory_lock_key(tenant_id)},
+            )
+        yield
+
+
+def _sign_anchor(
+    tenant_id: str, head_hash: str, last_sequence: int, entry_count: int
+) -> str:
+    key = ANCHOR_SIGNING_KEY or HASH_SALT
+    raw = f"{tenant_id}|{head_hash}|{last_sequence}|{entry_count}"
+    return hmac.new(key.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _verify_anchor_signature(
+    tenant_id: str, head_hash: str, last_sequence: int, entry_count: int, signature: str
+) -> bool:
+    expected = _sign_anchor(tenant_id, head_hash, last_sequence, entry_count)
+    return hmac.compare_digest(expected, signature or "")
+
+
+def _get_latest_entry_for_tenant(db: Session, tenant_id: str) -> Optional[AuditLog]:
+    return (
+        db.query(AuditLog)
         .filter(AuditLog.tenant_id == tenant_id)
-        .order_by(AuditLog.created_at.desc())
+        .order_by(
+            AuditLog.sequence.desc(),
+            AuditLog.created_at.desc(),
+            AuditLog.id.desc(),
+        )
         .first()
     )
-    return entry[0] if entry else None
+
+
+def _get_latest_hash_for_tenant(db: Session, tenant_id: str) -> Optional[str]:
+    entry = _get_latest_entry_for_tenant(db, tenant_id)
+    return entry.hash if entry else None
+
+
+def _next_sequence_for_tenant(db: Session, tenant_id: str) -> int:
+    with db.no_autoflush:
+        current_max = (
+            db.query(func.max(AuditLog.sequence))
+            .filter(AuditLog.tenant_id == tenant_id)
+            .scalar()
+        )
+    return int(current_max or 0) + 1
+
+
+def _upsert_chain_anchor(
+    db: Session, tenant_id: str, head_hash: str, last_sequence: int, now: datetime
+) -> AuditChainAnchor:
+    anchor = (
+        db.query(AuditChainAnchor)
+        .filter(AuditChainAnchor.tenant_id == tenant_id)
+        .first()
+    )
+    if anchor is None:
+        anchor = AuditChainAnchor(
+            tenant_id=tenant_id,
+            head_hash=head_hash,
+            last_sequence=last_sequence,
+            entry_count=0,
+            signature="",
+            anchored_at=now,
+        )
+        db.add(anchor)
+    anchor.head_hash = head_hash
+    anchor.last_sequence = last_sequence
+    anchor.entry_count = int(anchor.entry_count or 0) + 1
+    anchor.signature = _sign_anchor(
+        tenant_id, head_hash, last_sequence, anchor.entry_count
+    )
+    anchor.anchored_at = now
+    return anchor
+
+
+def get_chain_anchor(db: Session, tenant_id: str) -> Optional[AuditChainAnchor]:
+    tenant_id = _require_tenant(tenant_id)
+    return (
+        db.query(AuditChainAnchor)
+        .filter(AuditChainAnchor.tenant_id == tenant_id)
+        .first()
+    )
 
 
 def _require_tenant(tenant_id) -> str:
@@ -125,42 +246,65 @@ COMPLIANCE_POLICY_UPDATE_FIELDS = frozenset({"name", "description", "category", 
 
 def create_audit_log(db: Session, data: dict[str, Any], salt: str) -> AuditLog:
     require_fields(data, ["tenant_id", "event_type", "actor_id"])
-    previous_hash = _get_latest_hash_for_tenant(db, data["tenant_id"]) or ""
-    now = datetime.now(timezone.utc)
+    tenant_id = _require_tenant(data["tenant_id"])
 
-    entry_hash = _compute_hash(
-        previous_hash=previous_hash,
-        event_type=data["event_type"],
-        actor_id=data["actor_id"],
-        action=data.get("action"),
-        resource_type=data.get("resource_type"),
-        resource_id=data.get("resource_id"),
-        created_at=now,
-    )
+    last_error: Optional[Exception] = None
+    for _ in range(CHAIN_RETRY_ATTEMPTS):
+        try:
+            return _create_audit_log_once(db, data, salt, tenant_id)
+        except IntegrityError as exc:
+            # Belt and braces behind the tenant lock: if a competing writer
+            # (for example an older instance without the lock) still races the
+            # unique (tenant_id, sequence) index, re-read and retry.
+            db.rollback()
+            last_error = exc
+    raise last_error if last_error else RuntimeError("Could not append audit log entry")
 
-    log = AuditLog(
-        tenant_id=data["tenant_id"],
-        event_type=data["event_type"],
-        actor_id=data["actor_id"],
-        actor_email=data.get("actor_email"),
-        action=data.get("action"),
-        resource_type=data.get("resource_type"),
-        resource_id=data.get("resource_id"),
-        old_value=data.get("old_value"),
-        new_value=data.get("new_value"),
-        ip_address=data.get("ip_address"),
-        user_agent=data.get("user_agent"),
-        session_id=data.get("session_id"),
-        device_fingerprint=data.get("device_fingerprint"),
-        hash=entry_hash,
-        previous_hash=previous_hash or None,
-        metadata=data.get("metadata"),
-        created_at=now,
-    )
-    db.add(log)
-    db.commit()
-    db.refresh(log)
-    return log
+
+def _create_audit_log_once(
+    db: Session, data: dict[str, Any], salt: str, tenant_id: str
+) -> AuditLog:
+    with _tenant_write_lock(db, tenant_id):
+        previous_entry = _get_latest_entry_for_tenant(db, tenant_id)
+        previous_hash = previous_entry.hash if previous_entry else ""
+        sequence = _next_sequence_for_tenant(db, tenant_id)
+        now = datetime.now(timezone.utc)
+
+        entry_hash = _compute_hash(
+            previous_hash=previous_hash,
+            event_type=data["event_type"],
+            actor_id=data["actor_id"],
+            action=data.get("action"),
+            resource_type=data.get("resource_type"),
+            resource_id=data.get("resource_id"),
+            created_at=now,
+        )
+
+        log = AuditLog(
+            tenant_id=tenant_id,
+            event_type=data["event_type"],
+            actor_id=data["actor_id"],
+            actor_email=data.get("actor_email"),
+            action=data.get("action"),
+            resource_type=data.get("resource_type"),
+            resource_id=data.get("resource_id"),
+            old_value=data.get("old_value"),
+            new_value=data.get("new_value"),
+            ip_address=data.get("ip_address"),
+            user_agent=data.get("user_agent"),
+            session_id=data.get("session_id"),
+            device_fingerprint=data.get("device_fingerprint"),
+            hash=entry_hash,
+            previous_hash=previous_hash or None,
+            sequence=sequence,
+            metadata=data.get("metadata"),
+            created_at=now,
+        )
+        db.add(log)
+        _upsert_chain_anchor(db, tenant_id, entry_hash, sequence, now)
+        db.commit()
+        db.refresh(log)
+        return log
 
 
 def get_audit_log(db: Session, log_id: UUID) -> Optional[AuditLog]:
@@ -198,7 +342,9 @@ def list_audit_logs(
     if filters:
         q = q.filter(and_(*filters))
 
-    q = q.order_by(AuditLog.created_at.desc())
+    q = q.order_by(
+        AuditLog.created_at.desc(), AuditLog.sequence.desc(), AuditLog.id.desc()
+    )
     return _paginate_query(q, page, page_size)
 
 
@@ -224,7 +370,9 @@ def export_audit_logs_csv(
     filters.extend(date_filters)
     if filters:
         q = q.filter(and_(*filters))
-    q = q.order_by(AuditLog.created_at.asc())
+    q = q.order_by(
+        AuditLog.created_at.asc(), AuditLog.sequence.asc(), AuditLog.id.asc()
+    )
 
     logs = q.all()
 
@@ -268,7 +416,9 @@ def export_audit_logs_json(
     filters.extend(date_filters)
     if filters:
         q = q.filter(and_(*filters))
-    q = q.order_by(AuditLog.created_at.asc())
+    q = q.order_by(
+        AuditLog.created_at.asc(), AuditLog.sequence.asc(), AuditLog.id.asc()
+    )
 
     logs = q.all()
     result = []
@@ -816,7 +966,9 @@ def data_portability(
     audit_events_raw = (
         db.query(AuditLog)
         .filter(and_(*a_filters))
-        .order_by(AuditLog.created_at.desc())
+        .order_by(
+            AuditLog.created_at.desc(), AuditLog.sequence.desc(), AuditLog.id.desc()
+        )
         .limit(500)
         .all()
     )
@@ -874,3 +1026,216 @@ def data_portability(
         ],
         "exported_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ── Chain Integrity ─────────────────────────────────────────────────────────
+
+def verify_audit_chain(
+    db: Session, tenant_id: str, batch_size: int = _VERIFY_BATCH_SIZE
+) -> dict:
+    """Walk the tenant chain in sequence order and check it against the anchor.
+
+    Ordering is (sequence, created_at, id) so tied timestamps and batched
+    reads always see the same order. The stored head anchor catches entries
+    removed from the newest end, which a walk over the surviving rows alone
+    cannot see.
+    """
+    tenant_id = _require_tenant(tenant_id)
+
+    issues: list[dict] = []
+    index = 0
+    total_entries = 0
+    expected_prev_hash = ""
+    last_hash = ""
+    last_sequence = 0
+    offset = 0
+    while True:
+        batch = (
+            db.query(AuditLog)
+            .filter(AuditLog.tenant_id == tenant_id)
+            .order_by(
+                AuditLog.sequence.asc(),
+                AuditLog.created_at.asc(),
+                AuditLog.id.asc(),
+            )
+            .offset(offset)
+            .limit(batch_size)
+            .all()
+        )
+        if not batch:
+            break
+        for entry in batch:
+            if (entry.previous_hash or "") != expected_prev_hash:
+                issues.append({
+                    "index": index,
+                    "id": str(entry.id),
+                    "issue": "previous_hash mismatch",
+                    "expected": expected_prev_hash,
+                    "found": entry.previous_hash or "",
+                })
+
+            expected_hash = _compute_hash(
+                previous_hash=expected_prev_hash,
+                event_type=entry.event_type,
+                actor_id=entry.actor_id,
+                action=entry.action,
+                resource_type=entry.resource_type,
+                resource_id=entry.resource_id,
+                created_at=entry.created_at,
+            )
+            if entry.hash != expected_hash:
+                issues.append({
+                    "index": index,
+                    "id": str(entry.id),
+                    "issue": "hash mismatch - entry has been tampered with",
+                    "expected": expected_hash,
+                    "found": entry.hash,
+                })
+            expected_prev_hash = entry.hash
+            last_hash = entry.hash
+            last_sequence = entry.sequence or last_sequence
+            index += 1
+        total_entries += len(batch)
+        if len(batch) < batch_size:
+            break
+        offset += len(batch)
+
+    anchor = (
+        db.query(AuditChainAnchor)
+        .filter(AuditChainAnchor.tenant_id == tenant_id)
+        .first()
+    )
+    anchor_result: dict = {"present": False}
+    if anchor is not None:
+        signature_valid = _verify_anchor_signature(
+            tenant_id,
+            anchor.head_hash,
+            anchor.last_sequence,
+            anchor.entry_count,
+            anchor.signature,
+        )
+        anchor_result = {
+            "present": True,
+            "head_hash": anchor.head_hash,
+            "last_sequence": anchor.last_sequence,
+            "entry_count": anchor.entry_count,
+            "anchored_at": (
+                anchor.anchored_at.isoformat() if anchor.anchored_at else None
+            ),
+            "signature_valid": signature_valid,
+        }
+        if not signature_valid:
+            issues.append({
+                "index": None,
+                "id": None,
+                "issue": "head anchor signature is invalid",
+                "expected": "signed by the audit service key",
+                "found": anchor.signature,
+            })
+        elif (
+            anchor.entry_count != total_entries
+            or anchor.head_hash != last_hash
+            or anchor.last_sequence != last_sequence
+        ):
+            issues.append({
+                "index": None,
+                "id": None,
+                "issue": (
+                    "head anchor mismatch - entries were removed from the end "
+                    "of the chain or appended outside the service"
+                ),
+                "expected": anchor.head_hash,
+                "found": last_hash,
+            })
+
+    return {
+        "tenant_id": tenant_id,
+        "total_entries": total_entries,
+        "chain_intact": len(issues) == 0,
+        "issues": issues,
+        "head": {
+            "hash": last_hash,
+            "sequence": last_sequence,
+            "entry_count": total_entries,
+        },
+        "anchor": anchor_result,
+    }
+
+
+def backfill_audit_sequences(db: Session, batch_size: int = 1000, max_batches: int = 100) -> int:
+    """Assign sequence numbers to rows written before the column existed.
+
+    Idempotent and ordered by (created_at, id) so the legacy chain keeps its
+    original relative order; only rows with a NULL sequence are touched.
+    """
+    updated_total = 0
+    for _ in range(max_batches):
+        batch = (
+            db.query(AuditLog)
+            .filter(AuditLog.sequence.is_(None))
+            .order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
+            .limit(batch_size)
+            .all()
+        )
+        if not batch:
+            break
+        next_by_tenant: dict[str, int] = {}
+        for row in batch:
+            if row.tenant_id not in next_by_tenant:
+                with db.no_autoflush:
+                    current_max = (
+                        db.query(func.max(AuditLog.sequence))
+                        .filter(AuditLog.tenant_id == row.tenant_id)
+                        .scalar()
+                    )
+                next_by_tenant[row.tenant_id] = int(current_max or 0)
+            next_by_tenant[row.tenant_id] += 1
+            row.sequence = next_by_tenant[row.tenant_id]
+        db.commit()
+        updated_total += len(batch)
+    return updated_total
+
+
+def sync_chain_anchors(db: Session) -> int:
+    """Anchor tenants that have entries but no stored head anchor yet.
+
+    Runs at startup so tenants predating the anchor table get a signed
+    baseline from their current head; later tail deletions are then visible.
+    """
+    tenant_rows = (
+        db.query(AuditLog.tenant_id)
+        .outerjoin(
+            AuditChainAnchor, AuditChainAnchor.tenant_id == AuditLog.tenant_id
+        )
+        .filter(AuditChainAnchor.tenant_id.is_(None))
+        .distinct()
+        .all()
+    )
+    created = 0
+    for (tenant_id,) in tenant_rows:
+        head = _get_latest_entry_for_tenant(db, tenant_id)
+        if head is None:
+            continue
+        with db.no_autoflush:
+            count = (
+                db.query(func.count(AuditLog.id))
+                .filter(AuditLog.tenant_id == tenant_id)
+                .scalar()
+            )
+        now = datetime.now(timezone.utc)
+        db.add(
+            AuditChainAnchor(
+                tenant_id=tenant_id,
+                head_hash=head.hash,
+                last_sequence=head.sequence or 0,
+                entry_count=int(count or 0),
+                signature=_sign_anchor(
+                    tenant_id, head.hash, head.sequence or 0, int(count or 0)
+                ),
+                anchored_at=now,
+            )
+        )
+        db.commit()
+        created += 1
+    return created
+
