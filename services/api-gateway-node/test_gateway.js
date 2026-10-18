@@ -9,7 +9,7 @@ const assert = require('assert');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const path = require('path');
-const { csrfMiddleware, rbacMiddleware, services, isPublicOrAuthPath, authMiddleware, mfaStepUpMiddleware, auditProxyMiddleware, deviceTrustHeaderMiddleware, checkCache, cacheInvalidationMiddleware, verifySlackRequest, isWsPath, globalErrorHandler } = require('./index');
+const { csrfMiddleware, rbacMiddleware, services, isPublicOrAuthPath, authMiddleware, mfaStepUpMiddleware, auditProxyMiddleware, deviceTrustHeaderMiddleware, checkCache, cacheInvalidationMiddleware, verifySlackRequest, isWsPath, globalErrorHandler, consumeMfaJti, revokeCheck } = require('./index');
 
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:8080';
 
@@ -285,6 +285,101 @@ async function testMfaStepUpMiddleware() {
   console.log('PASS: mfaStepUpMiddleware rejects invalid step-up tokens');
 }
 
+// Auth-store (Redis) fail-closed policy tests (#329)
+function fakeAuthStore({ isOpen = true, failGet = false, failSet = false } = {}) {
+  const store = new Map();
+  const sets = [];
+  return {
+    isOpen,
+    store,
+    sets,
+    async get(key) {
+      if (failGet) throw new Error('store down');
+      return store.has(key) ? store.get(key) : null;
+    },
+    async set(key, value, opts = {}) {
+      if (failSet) throw new Error('store down');
+      sets.push({ key, value, opts });
+      if (opts.NX && store.has(key)) return null;
+      store.set(key, value);
+      return 'OK';
+    },
+  };
+}
+
+async function quietly(fn) {
+  const error = console.error;
+  const warn = console.warn;
+  console.error = () => {};
+  console.warn = () => {};
+  try {
+    return await fn();
+  } finally {
+    console.error = error;
+    console.warn = warn;
+  }
+}
+
+async function testAuthStoreFailClosed() {
+  // Denylist: a disconnected store refuses the request (503) instead of
+  // admitting a possibly revoked token.
+  const closed = fakeAuthStore({ isOpen: false });
+  const denied = await quietly(() => revokeCheck(closed, { jti: 'j1', sid: 's1' }));
+  assert.strictEqual(denied.status, 503, 'Disconnected store must refuse');
+  assert.strictEqual(denied.body.code, 'auth_store_unavailable', 'Refusal must carry the store code');
+  assert.strictEqual(denied.body.retryable, true, 'Refusal must be retryable');
+  console.log('PASS: denylist check fails closed when Redis is down');
+
+  // A denylisted token is still refused with 401 when the store is healthy;
+  // a clean token passes.
+  const open = fakeAuthStore();
+  open.store.set('denylist:jti:j1', '1');
+  const revoked = await quietly(() => revokeCheck(open, { jti: 'j1' }));
+  assert.strictEqual(revoked.status, 401, 'Denylisted token must be 401');
+  assert.strictEqual(revoked.body.message, 'Session revoked', 'Denylisted token message kept');
+  const clean = await quietly(() => revokeCheck(fakeAuthStore(), { jti: 'j2', sid: 's2' }));
+  assert.strictEqual(clean, null, 'Clean token must pass');
+
+  // Store read failures also fail closed; tokens with nothing to denylist
+  // (no jti and no sid) need no store read.
+  const brokenRead = await quietly(() => revokeCheck(fakeAuthStore({ failGet: true }), { jti: 'j3' }));
+  assert.strictEqual(brokenRead.status, 503, 'Read failure must fail closed');
+  const nothing = await quietly(() => revokeCheck(closed, {}));
+  assert.strictEqual(nothing, null, 'Token without jti/sid needs no store read');
+  console.log('PASS: denylist policy allows clean tokens and refuses on store failure');
+
+  // MFA replay: disconnected store refuses; healthy store consumes the jti
+  // atomically and a second use is a replay.
+  const expMs = Date.now() + 5 * 60 * 1000;
+  const noStore = await quietly(() => consumeMfaJti(fakeAuthStore({ isOpen: false }), 'jti-1', expMs));
+  assert.strictEqual(noStore.status, 503, 'Replay check must fail closed without Redis');
+  assert.strictEqual(noStore.body.code, 'auth_store_unavailable', 'Replay refusal carries the store code');
+
+  const healthy = fakeAuthStore();
+  const first = await quietly(() => consumeMfaJti(healthy, 'jti-2', expMs));
+  assert.strictEqual(first, null, 'First use passes');
+  assert.strictEqual(healthy.sets.length, 1, 'First use writes the jti');
+  assert.strictEqual(healthy.sets[0].key, 'mfa_jti:jti-2', 'jti key shape');
+  assert.ok(healthy.sets[0].opts.NX === true && healthy.sets[0].opts.EX > 0, 'jti write is atomic NX with TTL');
+  const second = await quietly(() => consumeMfaJti(healthy, 'jti-2', expMs));
+  assert.strictEqual(second.status, 403, 'Replay must be 403');
+  assert.strictEqual(second.body.mfa_required, true, 'Replay refusal flags mfa_required');
+
+  const brokenWrite = await quietly(() => consumeMfaJti(fakeAuthStore({ failSet: true }), 'jti-3', expMs));
+  assert.strictEqual(brokenWrite.status, 503, 'Write failure must fail closed');
+  console.log('PASS: MFA replay enforcement is atomic and fails closed');
+
+  // Wiring: middleware must route through the fail-closed helpers and the
+  // degraded counter must exist for alerts.
+  const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+  assert.ok(source.includes('revokeCheck(redisClient, payload)'), 'authMiddleware must use revokeCheck');
+  assert.ok(source.includes('consumeMfaJti(redisClient, jti, expMs)'), 'step-up must use consumeMfaJti');
+  assert.ok(!source.includes('allowing request'), 'no fail-open denylist path may remain');
+  assert.ok(!source.includes('replay check skipped'), 'no fail-open replay path may remain');
+  assert.ok(source.includes('atlas_gateway_redis_degraded_total'), 'degraded counter must exist for alerting');
+  console.log('PASS: fail-closed helpers are wired and observable');
+}
+
 // Audit proxy middleware tests
 function testAuditProxyMiddleware() {
   // GET passes through immediately
@@ -423,6 +518,7 @@ async function run() {
   testPublicPathDetection();
   testAuthMiddleware();
   await testMfaStepUpMiddleware();
+  await testAuthStoreFailClosed();
   testAuditProxyMiddleware();
   testDeviceTrustMiddleware();
   await testCachingPair();

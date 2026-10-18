@@ -52,6 +52,14 @@ const auditDeliveryFailuresTotal = new promClient.Counter({
   labelNames: ['event_type'],
 });
 
+// Auth-store (Redis) degradations. Revocation and replay checks fail closed,
+// so every increment here is a withheld request, not a silently admitted one.
+const redisDegradedTotal = new promClient.Counter({
+  name: 'atlas_gateway_redis_degraded_total',
+  help: 'Fail-closed refusals caused by the auth store (Redis) being unavailable',
+  labelNames: ['check'],
+});
+
 const AUDIT_WRITER_AUDIENCE = 'audit-writer';
 
 function mintAuditWriterToken() {
@@ -602,6 +610,76 @@ function auditProxyMiddleware(req, res, next) {
 
 const SENSITIVE_ROUTES = ['/api/payroll', '/api/compliance', '/api/audit'];
 
+// Fail-closed policy for auth-store (Redis) checks. When the store cannot be
+// reached we cannot prove a token is not revoked or a step-up jti was not
+// replayed, so the request is refused with 503 instead of admitted. The
+// helpers take the client as a parameter so the policy is unit-testable
+// without a live connection.
+function authStoreUnavailable(check) {
+  redisDegradedTotal.labels({ check }).inc();
+  console.error(`Auth store unavailable (${check}): refusing request`);
+  return {
+    status: 503,
+    body: {
+      code: 'auth_store_unavailable',
+      retryable: true,
+      message: 'Authentication temporarily unavailable, please retry shortly'
+    }
+  };
+}
+
+// Single-use enforcement for step-up tokens, made atomic with SET NX so a
+// replay loses the race instead of slipping between a GET and a SET.
+// Returns null to proceed, otherwise the { status, body } refusal to send.
+async function consumeMfaJti(redis, jti, expMs) {
+  if (!redis || !redis.isOpen) {
+    return authStoreUnavailable('mfa_replay');
+  }
+  const ttlSec = Math.max(1, Math.ceil((expMs - Date.now()) / 1000));
+  try {
+    const stored = await redis.set(`mfa_jti:${jti}`, '1', { EX: ttlSec, NX: true });
+    if (stored === null) {
+      return {
+        status: 403,
+        body: {
+          message: 'MFA token already used',
+          mfa_required: true,
+          detail: 'Step-up token has been replayed'
+        }
+      };
+    }
+    return null;
+  } catch (e) {
+    console.error('MFA jti store failed', e.message);
+    return authStoreUnavailable('mfa_replay');
+  }
+}
+
+// Revocation check for session/access tokens. Returns null to proceed, a
+// 401 refusal for a denylisted token, or a 503 refusal when the store cannot
+// answer. Tokens with nothing to denylist (no jti and no sid) pass: there is
+// nothing to check and nothing to fail on.
+async function revokeCheck(redis, payload) {
+  const keys = [];
+  if (payload?.jti) keys.push(`denylist:jti:${payload.jti}`);
+  if (payload?.sid) keys.push(`denylist:sid:${payload.sid}`);
+  if (!keys.length) return null;
+  if (!redis || !redis.isOpen) {
+    return authStoreUnavailable('token_denylist');
+  }
+  try {
+    const values = await Promise.all(keys.map((key) => redis.get(key)));
+    if (values.some(Boolean)) {
+      console.error('JWT auth failure: token denylisted for', keys.join(', '));
+      return { status: 401, body: { message: 'Session revoked' } };
+    }
+    return null;
+  } catch (e) {
+    console.error('Denylist check failed:', e.message);
+    return authStoreUnavailable('token_denylist');
+  }
+}
+
 async function mfaStepUpMiddleware(req, res, next) {
   if (req.method === 'GET') {
     return next();
@@ -674,25 +752,10 @@ async function mfaStepUpMiddleware(req, res, next) {
       });
     }
 
-    if (redisClient.isOpen) {
-      const jtiKey = `mfa_jti:${jti}`;
-      const exists = await redisClient.get(jtiKey);
-      if (exists) {
-        return res.status(403).json({
-          message: 'MFA token already used',
-          mfa_required: true,
-          detail: 'Step-up token has been replayed'
-        });
-      }
-      const expMs = payload.exp ? payload.exp * 1000 : Date.now() + 5 * 60 * 1000;
-      const ttlSec = Math.max(1, Math.ceil((expMs - Date.now()) / 1000));
-      try {
-        await redisClient.set(jtiKey, '1', { EX: ttlSec, NX: true });
-      } catch (e) {
-        console.error('MFA jti store failed', e.message);
-      }
-    } else {
-      console.warn('MFA jti replay check skipped - Redis not connected');
+    const expMs = payload.exp ? payload.exp * 1000 : Date.now() + 5 * 60 * 1000;
+    const replayRefusal = await consumeMfaJti(redisClient, jti, expMs);
+    if (replayRefusal) {
+      return res.status(replayRefusal.status).json(replayRefusal.body);
     }
 
     req.headers['x-mfa-validated'] = 'true';
@@ -823,22 +886,12 @@ async function authMiddleware(req, res, next) {
     return res.status(401).json({ message: 'Invalid or expired token' });
   }
 
-  // Check denylist for revoked sessions / logged-out tokens (added by auth-service on revoke/logout)
-  if (redisClient.isOpen && payload) {
-    try {
-      const checks = [];
-      if (payload.jti) checks.push(redisClient.get(`denylist:jti:${payload.jti}`).then(v => v ? 'jti' : null));
-      if (payload.sid) checks.push(redisClient.get(`denylist:sid:${payload.sid}`).then(v => v ? 'sid' : null));
-      if (checks.length) {
-        const results = await Promise.all(checks);
-        if (results.some(Boolean)) {
-          console.error('JWT auth failure: token denylisted for', req.path, payload.jti || payload.sid);
-          return res.status(401).json({ message: 'Session revoked' });
-        }
-      }
-    } catch (e) {
-      console.error('Denylist check failed, allowing request', e.message);
-    }
+  // Check denylist for revoked sessions / logged-out tokens (added by
+  // auth-service on revoke/logout). Fails closed: when the store cannot
+  // answer the request is refused instead of admitting a revoked token.
+  const revocationRefusal = await revokeCheck(redisClient, payload);
+  if (revocationRefusal) {
+    return res.status(revocationRefusal.status).json(revocationRefusal.body);
   }
 
   req.user = payload;
@@ -1414,6 +1467,9 @@ module.exports = {
   verifySlackRequest,
   isWsPath,
   globalErrorHandler,
+  authStoreUnavailable,
+  consumeMfaJti,
+  revokeCheck,
 };
 
 if (require.main === module) {
