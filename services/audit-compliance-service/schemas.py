@@ -215,6 +215,104 @@ class MessageResponse(BaseModel):
     message: str
 
 
+class ReportDefinitionCreate(BaseModel):
+    tenant_id: Optional[str] = Field(None, max_length=50)
+    name: str = Field(..., max_length=200)
+    dataset: str = Field(..., max_length=50)
+    filters: dict[str, Any] = Field(default_factory=dict)
+    columns: list[str] = Field(default_factory=list)
+    schedule: dict[str, Any] = Field(default_factory=dict)
+    recipients: list[str] = Field(default_factory=list)
+    required_role: Optional[str] = Field(None, max_length=20)
+    enabled: bool = True
+
+
+class ReportDefinitionUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=200)
+    dataset: Optional[str] = Field(None, max_length=50)
+    filters: Optional[dict[str, Any]] = None
+    columns: Optional[list[str]] = None
+    schedule: Optional[dict[str, Any]] = None
+    recipients: Optional[list[str]] = None
+    required_role: Optional[str] = Field(None, max_length=20)
+    enabled: Optional[bool] = None
+
+
+class ReportDefinitionResponse(BaseModel):
+    id: UUID
+    tenant_id: str
+    name: str
+    dataset: str
+    filters: dict[str, Any]
+    columns: list[str]
+    schedule: dict[str, Any]
+    recipients: list[str]
+    required_role: Optional[str] = None
+    enabled: bool
+    created_by: Optional[str] = None
+    last_run_at: Optional[datetime] = None
+    next_run_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ReportDefinitionPage(BaseModel):
+    items: list[ReportDefinitionResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class ReportRunResponse(BaseModel):
+    id: UUID
+    definition_id: UUID
+    tenant_id: str
+    status: str
+    trigger: str
+    run_as_role: Optional[str] = None
+    rows: Optional[int] = None
+    attachment_name: Optional[str] = None
+    delivery_status: Optional[str] = None
+    delivery_detail: Optional[str] = None
+    error: Optional[str] = None
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ReportRunPage(BaseModel):
+    items: list[ReportRunResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class CannedReportResponse(BaseModel):
+    key: str
+    name: str
+    dataset: str
+    description: str
+    default_filters: dict[str, Any]
+    default_columns: list[str]
+    default_schedule: dict[str, Any]
+
+
+class CannedReportInstall(BaseModel):
+    recipients: list[str] = Field(default_factory=list)
+    schedule: Optional[dict[str, Any]] = None
+
+
+class CannedReportInstallResponse(BaseModel):
+    definition: ReportDefinitionResponse
+    created: bool
+
+
 class HealthResponse(BaseModel):
     status: str
     service: str
