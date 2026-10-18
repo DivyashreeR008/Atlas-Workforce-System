@@ -7,7 +7,13 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "payroll_records", indexes = {
+@Table(name = "payroll_records", uniqueConstraints = {
+    // Matches ux_payroll_records_tenant_employee_period in
+    // V4__payroll_period_unique.sql: the database-level guard that makes a
+    // concurrent double run impossible instead of merely unlikely.
+    @UniqueConstraint(name = "ux_payroll_records_tenant_employee_period",
+            columnNames = {"tenant_id", "employee_id", "period"})
+}, indexes = {
     @Index(name = "idx_payroll_employee", columnList = "employeeId"),
     @Index(name = "idx_payroll_period", columnList = "period")
 })

@@ -3,9 +3,11 @@ package com.ems.payroll.service;
 import com.ems.payroll.model.*;
 import com.ems.payroll.repository.*;
 import com.ems.payroll.util.Money;
+import com.ems.payroll.util.PayrollDuplicates;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,6 +39,28 @@ public class PayrollEnterpriseService {
     private final PayrollAnomalyRepository anomalyRepo;
     private final PayslipRepository payslipRepo;
     private final OutboxEventRepository outboxEventRepository;
+    private final PayrollFailureOutboxWriter failureOutbox;
+
+    // Simple progressive tax bands used when the tenant has no country tax
+    // configuration or bracket rows. The defaults mirror the values that used
+    // to be literals in calculateSimpleTax.
+    @Value("${payroll.simple-tax.lower-limit:3000.00}")
+    private BigDecimal simpleTaxLowerLimit = new BigDecimal("3000.00");
+
+    @Value("${payroll.simple-tax.middle-limit:7000.00}")
+    private BigDecimal simpleTaxMiddleLimit = new BigDecimal("7000.00");
+
+    @Value("${payroll.simple-tax.upper-limit:12000.00}")
+    private BigDecimal simpleTaxUpperLimit = new BigDecimal("12000.00");
+
+    @Value("${payroll.simple-tax.low-rate:0.15}")
+    private double simpleTaxLowRate = 0.15;
+
+    @Value("${payroll.simple-tax.middle-rate:0.25}")
+    private double simpleTaxMiddleRate = 0.25;
+
+    @Value("${payroll.simple-tax.high-rate:0.35}")
+    private double simpleTaxHighRate = 0.35;
 
     public PayrollEnterpriseService(
             EnhancedPayrollRepository payrollRepo,
@@ -55,7 +79,8 @@ public class PayrollEnterpriseService {
             PayrollComplianceReportRepository complianceRepo,
             PayrollAnomalyRepository anomalyRepo,
             PayslipRepository payslipRepo,
-            OutboxEventRepository outboxEventRepository) {
+            OutboxEventRepository outboxEventRepository,
+            PayrollFailureOutboxWriter failureOutbox) {
         this.payrollRepo = payrollRepo;
         this.taxConfigRepo = taxConfigRepo;
         this.taxBracketRepo = taxBracketRepo;
@@ -73,6 +98,7 @@ public class PayrollEnterpriseService {
         this.anomalyRepo = anomalyRepo;
         this.payslipRepo = payslipRepo;
         this.outboxEventRepository = outboxEventRepository;
+        this.failureOutbox = failureOutbox;
     }
 
     // ============================================================
@@ -130,7 +156,7 @@ public class PayrollEnterpriseService {
             record.setCreatedAt(LocalDateTime.now());
             record.setUpdatedAt(LocalDateTime.now());
 
-            record = payrollRepo.save(record);
+            record = saveOrRejectDuplicate(record);
 
             // Generate payslip
             generatePayslip(record);
@@ -164,21 +190,27 @@ public class PayrollEnterpriseService {
 
             return record;
         } catch (Exception e) {
-            OutboxEvent outboxEvent = new OutboxEvent();
-            outboxEvent.setAggregateType("payroll");
-            outboxEvent.setAggregateId("0");
-            outboxEvent.setEventType("PAYROLL_FAILED");
-            outboxEvent.setPayload(toJson(Map.of(
-                "employeeId", employeeId,
-                "period", period,
-                "error", e.getMessage(),
-                "timestamp", LocalDateTime.now().toString(),
-                "tenantId", tenantId
-            )));
-            outboxEvent.setStatus("PENDING");
-            outboxEvent.setRetryCount(0);
-            outboxEvent.setCreatedAt(LocalDateTime.now());
-            outboxEventRepository.save(outboxEvent);
+            // The failure event is committed in its own transaction: an outbox
+            // row written here would roll back together with the failed run,
+            // leaving exactly the runs that need an audit trail with none.
+            failureOutbox.recordFailure(tenantId, employeeId, period, e.getMessage());
+            throw e;
+        }
+    }
+
+    /**
+     * Saves and flushes so a unique-constraint violation surfaces here and can
+     * be mapped to the friendly duplicate message. The pre-check in
+     * runMultiCountryPayroll is only advisory; this is the loser of a
+     * concurrent double run.
+     */
+    private EnhancedPayrollRecord saveOrRejectDuplicate(EnhancedPayrollRecord record) {
+        try {
+            return payrollRepo.saveAndFlush(record);
+        } catch (DataIntegrityViolationException e) {
+            if (PayrollDuplicates.isUniqueConstraintViolation(e, PayrollDuplicates.ENHANCED_PAYROLL_RECORDS_PERIOD)) {
+                throw new IllegalArgumentException("Payroll already processed for this period", e);
+            }
             throw e;
         }
     }
@@ -239,21 +271,20 @@ public class PayrollEnterpriseService {
 
     public BigDecimal calculateSimpleTax(BigDecimal grossSalary) {
         BigDecimal gross = Money.of(grossSalary);
-        BigDecimal threeK = new BigDecimal("3000.00");
-        BigDecimal sevenK = new BigDecimal("7000.00");
-        BigDecimal twelveK = new BigDecimal("12000.00");
-        if (gross.compareTo(threeK) <= 0) return Money.zero();
-        if (gross.compareTo(sevenK) <= 0) return Money.percentOf(gross.subtract(threeK), 0.15);
-        if (gross.compareTo(twelveK) <= 0) {
+        if (gross.compareTo(simpleTaxLowerLimit) <= 0) return Money.zero();
+        if (gross.compareTo(simpleTaxMiddleLimit) <= 0) {
+            return Money.percentOf(gross.subtract(simpleTaxLowerLimit), simpleTaxLowRate);
+        }
+        if (gross.compareTo(simpleTaxUpperLimit) <= 0) {
             return Money.add(
-                    Money.percentOf(new BigDecimal("4000.00"), 0.15),
-                    Money.percentOf(gross.subtract(sevenK), 0.25));
+                    Money.percentOf(simpleTaxMiddleLimit.subtract(simpleTaxLowerLimit), simpleTaxLowRate),
+                    Money.percentOf(gross.subtract(simpleTaxMiddleLimit), simpleTaxMiddleRate));
         }
         return Money.add(
                 Money.add(
-                        Money.percentOf(new BigDecimal("4000.00"), 0.15),
-                        Money.percentOf(new BigDecimal("5000.00"), 0.25)),
-                Money.percentOf(gross.subtract(twelveK), 0.35));
+                        Money.percentOf(simpleTaxMiddleLimit.subtract(simpleTaxLowerLimit), simpleTaxLowRate),
+                        Money.percentOf(simpleTaxUpperLimit.subtract(simpleTaxMiddleLimit), simpleTaxMiddleRate)),
+                Money.percentOf(gross.subtract(simpleTaxUpperLimit), simpleTaxHighRate));
     }
 
     // ============================================================

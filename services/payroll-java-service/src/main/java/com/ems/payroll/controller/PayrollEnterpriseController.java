@@ -66,20 +66,39 @@ public class PayrollEnterpriseController {
     public ResponseEntity<?> runPayroll(
             @TenantId String tenantId,
             @RequestBody Map<String, Object> req) {
+        String missingField = missingMoneyField(req);
+        if (missingField != null) {
+            return ResponseEntity.badRequest().body(Map.of("error", missingField + " is required"));
+        }
         try {
             EnhancedPayrollRecord record = service.runMultiCountryPayroll(
                     tenantId,
                     (String) req.get("employeeId"),
                     (String) req.get("period"),
-                    Money.of(req.getOrDefault("baseSalary", "0")),
-                    Money.of(req.getOrDefault("allowances", "0")),
-                    Money.of(req.getOrDefault("deductions", "0")),
+                    Money.of(req.get("baseSalary")),
+                    Money.of(req.get("allowances")),
+                    Money.of(req.get("deductions")),
                     (String) req.getOrDefault("country", "US"),
                     (String) req.getOrDefault("currency", "USD"));
             return ResponseEntity.ok(record);
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
+    }
+
+    /**
+     * Money fields are required. A missing component used to be coerced to
+     * zero, which silently paid the employee the wrong amount; reject it with
+     * a clear message before any arithmetic happens.
+     */
+    private static String missingMoneyField(Map<String, Object> request) {
+        for (String field : List.of("baseSalary", "allowances", "deductions")) {
+            Object value = request.get(field);
+            if (value == null || value.toString().isBlank()) {
+                return field;
+            }
+        }
+        return null;
     }
 
     // ============================================================
