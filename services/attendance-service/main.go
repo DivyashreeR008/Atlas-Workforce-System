@@ -312,6 +312,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// The face comparison is still a stand-in, so it only runs when a
+	// developer explicitly opts in; the service refuses to start with the
+	// mock enabled anywhere but a development environment.
+	allowDevFaceMock = os.Getenv("ATLAS_ALLOW_DEV_FACE_MOCK") == "true"
+	if allowDevFaceMock && getEnv("NODE_ENV", "production") != "development" {
+		log.Fatal("FATAL: ATLAS_ALLOW_DEV_FACE_MOCK requires NODE_ENV=development")
+	}
+
 	initDatabase()
 	initRabbitMQ()
 	go consumeEmployeeDeletions(ctx)
