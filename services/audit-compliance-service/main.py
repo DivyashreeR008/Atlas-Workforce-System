@@ -1,5 +1,7 @@
 import logging
 import os
+import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
@@ -22,10 +24,12 @@ from crud import (
     configure_hash_salt,
     create_audit_log,
     create_policy,
+    create_report_definition,
     create_retention_policy,
     create_violation,
     data_portability,
     delete_policy,
+    delete_report_definition,
     export_audit_logs_csv,
     export_audit_logs_json,
     generate_compliance_report,
@@ -33,21 +37,38 @@ from crud import (
     get_compliance_summary,
     get_consents,
     get_policy,
+    get_report_definition,
+    get_report_run,
     list_audit_logs,
     list_policies,
+    list_report_definitions,
+    list_report_runs,
     list_retention_policies,
     list_violations,
     record_consent,
     right_to_be_forgotten,
+    set_report_definition_next_run,
     trigger_compliance_scan,
     update_policy,
+    update_report_definition,
     update_violation_status,
 )
 from models import AuditLog, Base
+from reporting import (
+    CANNED_REPORTS,
+    DATASET_FETCHERS,
+    compute_next_run,
+    execute_report_definition,
+    install_canned_report,
+    run_due_report_definitions,
+)
 from schemas import (
     AuditLogCreate,
     AuditLogPaginated,
     AuditLogResponse,
+    CannedReportInstall,
+    CannedReportInstallResponse,
+    CannedReportResponse,
     CompliancePolicyCreate,
     CompliancePolicyResponse,
     CompliancePolicyUpdate,
@@ -65,6 +86,12 @@ from schemas import (
     GDPRConsentResponse,
     HealthResponse,
     MessageResponse,
+    ReportDefinitionCreate,
+    ReportDefinitionPage,
+    ReportDefinitionResponse,
+    ReportDefinitionUpdate,
+    ReportRunPage,
+    ReportRunResponse,
 )
 
 load_dotenv()
@@ -92,9 +119,39 @@ def get_db() -> Session:
         db.close()
 
 
+def _report_scheduler_enabled() -> bool:
+    return os.getenv("REPORT_SCHEDULER_ENABLED", "true").lower() not in ("0", "false", "no")
+
+
+def _report_scheduler_loop(interval_seconds: int) -> None:
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                runs = run_due_report_definitions(db)
+                if runs:
+                    logger.info("report.scheduler_ran", extra={"runs": len(runs)})
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("report.scheduler_failed")
+        time.sleep(interval_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    if _report_scheduler_enabled():
+        try:
+            interval = max(5, int(os.getenv("REPORT_SCHEDULER_INTERVAL_SEC", "60")))
+        except ValueError:
+            interval = 60
+        threading.Thread(
+            target=_report_scheduler_loop,
+            args=(interval,),
+            daemon=True,
+            name="report-scheduler",
+        ).start()
     yield
 
 
@@ -131,6 +188,11 @@ app = FastAPI(
         {
             "name": "GDPR",
             "description": "GDPR compliance operations: consent management, right to be forgotten, data portability.",
+        },
+        {
+            "name": "Reports",
+            "description": "Scheduled report definitions, canned templates (headcount, payroll totals, "
+            "compliance posture), manual and scheduled execution, and run history.",
         },
         {
             "name": "Health",
@@ -765,6 +827,285 @@ async def data_portability_endpoint(
     db: Session = Depends(get_db),
 ):
     return data_portability(db, employee_id, resolve_tenant(tenant_id, verified_tenant))
+
+
+# ── Reports ─────────────────────────────────────────────────────────────────
+
+@app.get(
+    "/api/v1/reports/canned",
+    response_model=list[CannedReportResponse],
+    tags=["Reports"],
+    summary="List canned report templates",
+    description="Built-in report templates (headcount, payroll totals, compliance posture) "
+    "that can be installed as tenant report definitions.",
+)
+async def list_canned_reports(request: Request):
+    return [
+        CannedReportResponse(
+            key=template["key"],
+            name=template["name"],
+            dataset=template["dataset"],
+            description=template["description"],
+            default_filters=template["filters"],
+            default_columns=template["columns"],
+            default_schedule=template["schedule"],
+        )
+        for template in CANNED_REPORTS.values()
+    ]
+
+
+@app.post(
+    "/api/v1/reports/canned/{key}/install",
+    response_model=CannedReportInstallResponse,
+    tags=["Reports"],
+    summary="Install a canned report definition",
+    description="Creates the tenant's definition for a canned report. Idempotent on "
+    "tenant+name: returns the existing definition with `created: false` if already installed.",
+)
+async def install_canned_report_endpoint(
+    key: str,
+    payload: CannedReportInstall,
+    request: Request,
+    verified_tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    if key not in CANNED_REPORTS:
+        raise HTTPException(status_code=404, detail="Unknown canned report")
+    user_id = getattr(request.state, "user_id", None) or None
+    try:
+        definition, created = install_canned_report(
+            db,
+            verified_tenant,
+            key,
+            recipients=payload.recipients,
+            created_by=user_id,
+            schedule=payload.schedule,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"definition": definition, "created": created}
+
+
+@app.get(
+    "/api/v1/reports/definitions",
+    response_model=ReportDefinitionPage,
+    tags=["Reports"],
+    summary="List report definitions",
+)
+async def list_report_definition_endpoint(
+    request: Request,
+    tenant_id: Optional[str] = Query(None),
+    enabled: Optional[bool] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Depends(clamp_page_size),
+    verified_tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    return list_report_definitions(
+        db,
+        tenant_id=resolve_tenant(tenant_id, verified_tenant),
+        enabled=enabled,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@app.post(
+    "/api/v1/reports/definitions",
+    response_model=ReportDefinitionResponse,
+    status_code=201,
+    tags=["Reports"],
+    summary="Create a report definition",
+    description="Defines dataset, filters, columns, schedule, recipients, and the minimum "
+    "role required to receive the rows.",
+)
+async def create_report_definition_endpoint(
+    payload: ReportDefinitionCreate,
+    request: Request,
+    verified_tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    effective_tenant = resolve_tenant(payload.tenant_id, verified_tenant)
+    if payload.dataset not in DATASET_FETCHERS:
+        raise HTTPException(status_code=400, detail=f"Unknown dataset: {payload.dataset}")
+    user_id = getattr(request.state, "user_id", None) or None
+    data = payload.model_dump(exclude={"tenant_id"})
+    try:
+        return create_report_definition(
+            db,
+            effective_tenant,
+            data,
+            created_by=user_id,
+            next_run_at=compute_next_run(data.get("schedule")),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get(
+    "/api/v1/reports/definitions/{definition_id}",
+    response_model=ReportDefinitionResponse,
+    tags=["Reports"],
+    summary="Get a report definition",
+)
+async def get_report_definition_endpoint(
+    definition_id: UUID,
+    request: Request,
+    verified_tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    definition = get_report_definition(db, definition_id, verified_tenant)
+    if not definition:
+        raise HTTPException(status_code=404, detail="Report definition not found")
+    return definition
+
+
+@app.put(
+    "/api/v1/reports/definitions/{definition_id}",
+    response_model=ReportDefinitionResponse,
+    tags=["Reports"],
+    summary="Update a report definition",
+)
+async def update_report_definition_endpoint(
+    definition_id: UUID,
+    payload: ReportDefinitionUpdate,
+    request: Request,
+    verified_tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    data = payload.model_dump(exclude_unset=True)
+    if "dataset" in data and data["dataset"] not in DATASET_FETCHERS:
+        raise HTTPException(status_code=400, detail=f"Unknown dataset: {data['dataset']}")
+    try:
+        definition = update_report_definition(db, definition_id, data, tenant_id=verified_tenant)
+    except MassAssignmentError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not definition:
+        raise HTTPException(status_code=404, detail="Report definition not found")
+    if "schedule" in data:
+        definition = set_report_definition_next_run(
+            db, definition, compute_next_run(definition.schedule)
+        )
+    return definition
+
+
+@app.delete(
+    "/api/v1/reports/definitions/{definition_id}",
+    response_model=MessageResponse,
+    tags=["Reports"],
+    summary="Delete a report definition",
+)
+async def delete_report_definition_endpoint(
+    definition_id: UUID,
+    request: Request,
+    verified_tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    if not delete_report_definition(db, definition_id, tenant_id=verified_tenant):
+        raise HTTPException(status_code=404, detail="Report definition not found")
+    return MessageResponse(message="Report definition deleted")
+
+
+@app.post(
+    "/api/v1/reports/definitions/{definition_id}/run",
+    response_model=ReportRunResponse,
+    tags=["Reports"],
+    summary="Run a report definition now",
+    description="Executes the definition with the calling user's role. Always returns the "
+    "finished run record; check `status` (SUCCEEDED, FAILED, SUPPRESSED) and `delivery_status`.",
+)
+async def run_report_definition_endpoint(
+    definition_id: UUID,
+    request: Request,
+    verified_tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    definition = get_report_definition(db, definition_id, verified_tenant)
+    if not definition:
+        raise HTTPException(status_code=404, detail="Report definition not found")
+    run_as_role = getattr(request.state, "user_role", None) or "employee"
+    return execute_report_definition(
+        db, definition, trigger="manual", run_as_role=run_as_role
+    )
+
+
+@app.post(
+    "/api/v1/reports/scheduler/run-due",
+    response_model=list[ReportRunResponse],
+    tags=["Reports"],
+    summary="Run due report definitions for the caller's tenant",
+)
+async def run_due_reports_endpoint(
+    request: Request,
+    verified_tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    return run_due_report_definitions(db, tenant_id=verified_tenant)
+
+
+@app.get(
+    "/api/v1/reports/runs",
+    response_model=ReportRunPage,
+    tags=["Reports"],
+    summary="List report runs",
+)
+async def list_report_runs_endpoint(
+    request: Request,
+    definition_id: Optional[UUID] = Query(None),
+    status: Optional[str] = Query(None, pattern="^(RUNNING|SUCCEEDED|FAILED|SUPPRESSED)$"),
+    page: int = Query(1, ge=1),
+    page_size: int = Depends(clamp_page_size),
+    verified_tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    return list_report_runs(
+        db,
+        verified_tenant,
+        definition_id=definition_id,
+        status=status,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@app.get(
+    "/api/v1/reports/definitions/{definition_id}/runs",
+    response_model=ReportRunPage,
+    tags=["Reports"],
+    summary="List runs for a report definition",
+)
+async def list_definition_runs_endpoint(
+    definition_id: UUID,
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Depends(clamp_page_size),
+    verified_tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    definition = get_report_definition(db, definition_id, verified_tenant)
+    if not definition:
+        raise HTTPException(status_code=404, detail="Report definition not found")
+    return list_report_runs(
+        db, verified_tenant, definition_id=definition_id, page=page, page_size=page_size
+    )
+
+
+@app.get(
+    "/api/v1/reports/runs/{run_id}",
+    response_model=ReportRunResponse,
+    tags=["Reports"],
+    summary="Get a report run",
+)
+async def get_report_run_endpoint(
+    run_id: UUID,
+    request: Request,
+    verified_tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    run = get_report_run(db, run_id, verified_tenant)
+    if not run:
+        raise HTTPException(status_code=404, detail="Report run not found")
+    return run
 
 
 # ── Verify Chain Integrity ──────────────────────────────────────────────────

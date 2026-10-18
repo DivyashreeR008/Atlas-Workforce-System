@@ -4,7 +4,7 @@ import hmac
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -17,13 +17,15 @@ from sqlalchemy.orm import Session, sessionmaker
 os.environ.setdefault("INTERNAL_JWT_SECRET", "test-secret")
 
 from crud import configure_hash_salt, _compute_hash
-from models import Base, AuditLog, CompliancePolicy, ComplianceViolation
+from models import Base, AuditLog, CompliancePolicy, ComplianceViolation, ReportDefinition, ReportRun
 from main import (
     HASH_SALT,
     MAX_PAGE_SIZE,
     app,
     get_db,
 )
+import reporting
+from report_delivery import RecordingDelivery
 
 TEST_DB_URL = os.getenv(
     "TEST_DATABASE_URL", "postgresql://atlas:atlas_pass@localhost:5432/atlas_audit_test"
@@ -94,7 +96,7 @@ def client(override_get_db):
 INTERNAL_JWT_SECRET = os.environ.get("INTERNAL_JWT_SECRET", "test-secret")
 
 
-def _mint_audit_writer_token(secret: str = None, audience="audit-writer", tenant_id: str = "default") -> str:
+def _mint_audit_writer_token(secret: str = None, audience="audit-writer", tenant_id: str = "default", user_role: str = None) -> str:
     secret = secret if secret is not None else INTERNAL_JWT_SECRET
     header = base64.urlsafe_b64encode(json.dumps({"alg": "HS256"}).encode()).rstrip(b"=").decode()
     payload = {
@@ -104,6 +106,8 @@ def _mint_audit_writer_token(secret: str = None, audience="audit-writer", tenant
         "aud": audience,
         "exp": int(time.time()) + 3600,
     }
+    if user_role:
+        payload["user_role"] = user_role
     payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
     signing_input = f"{header}.{payload_b64}"
     signature = base64.urlsafe_b64encode(
@@ -112,8 +116,12 @@ def _mint_audit_writer_token(secret: str = None, audience="audit-writer", tenant
     return f"{signing_input}.{signature}"
 
 
-def _auth_headers(tenant: str = "default", audience: str = "audit-writer") -> dict:
-    return {"x-internal-auth": _mint_audit_writer_token(audience=audience, tenant_id=tenant)}
+def _auth_headers(tenant: str = "default", audience: str = "audit-writer", user_role: str = None) -> dict:
+    return {
+        "x-internal-auth": _mint_audit_writer_token(
+            audience=audience, tenant_id=tenant, user_role=user_role
+        )
+    }
 
 
 INTERNAL_HEADERS = {"x-internal-auth": _mint_audit_writer_token()}
@@ -886,3 +894,275 @@ def test_compute_hash_length():
     h = _compute_hash("", "evt", "act", None, None, None, ts)
     assert len(h) == 64
     assert isinstance(h, str)
+
+
+# ── Reports ─────────────────────────────────────────────────────────────────
+
+def _report_payload(**overrides: Any) -> dict:
+    payload = {
+        "tenant_id": TENANT_ID,
+        "name": f"Test Report {uuid4().hex[:8]}",
+        "dataset": "compliance_posture",
+        "filters": {"report_type": "SOC2"},
+        "columns": ["metric", "value"],
+        "schedule": {},
+        "recipients": ["reports@test.com"],
+        "enabled": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_report_definition_crud(client: AsyncClient, db_session: Session):
+    headers = _auth_headers(tenant=TENANT_ID)
+
+    create = await client.post(
+        "/api/v1/reports/definitions", json=_report_payload(), headers=headers
+    )
+    assert create.status_code == 201
+    definition = create.json()
+    assert definition["dataset"] == "compliance_posture"
+    assert definition["next_run_at"] is None
+    definition_id = definition["id"]
+
+    get = await client.get(f"/api/v1/reports/definitions/{definition_id}", headers=headers)
+    assert get.status_code == 200
+    assert get.json()["id"] == definition_id
+
+    update = await client.put(
+        f"/api/v1/reports/definitions/{definition_id}",
+        json={"name": "Renamed Report", "schedule": {"frequency": "weekly", "day_of_week": 2, "hour": 9}},
+        headers=headers,
+    )
+    assert update.status_code == 200
+    updated = update.json()
+    assert updated["name"] == "Renamed Report"
+    assert updated["next_run_at"] is not None
+
+    delete = await client.delete(f"/api/v1/reports/definitions/{definition_id}", headers=headers)
+    assert delete.status_code == 200
+    missing = await client.get(f"/api/v1/reports/definitions/{definition_id}", headers=headers)
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_report_definition_rejects_unknown_dataset(client: AsyncClient):
+    headers = _auth_headers(tenant=TENANT_ID)
+    create = await client.post(
+        "/api/v1/reports/definitions",
+        json=_report_payload(dataset="not_a_dataset"),
+        headers=headers,
+    )
+    assert create.status_code == 400
+
+    created = await client.post(
+        "/api/v1/reports/definitions", json=_report_payload(), headers=headers
+    )
+    definition_id = created.json()["id"]
+    update = await client.put(
+        f"/api/v1/reports/definitions/{definition_id}",
+        json={"dataset": "not_a_dataset"},
+        headers=headers,
+    )
+    assert update.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_report_definitions_are_tenant_scoped(client: AsyncClient):
+    headers = _auth_headers(tenant=TENANT_ID)
+    created = await client.post(
+        "/api/v1/reports/definitions", json=_report_payload(), headers=headers
+    )
+    definition_id = created.json()["id"]
+
+    other = _auth_headers(tenant="other-tenant")
+    listing = await client.get("/api/v1/reports/definitions", headers=other)
+    assert listing.status_code == 200
+    assert all(item["id"] != definition_id for item in listing.json()["items"])
+
+    get = await client.get(f"/api/v1/reports/definitions/{definition_id}", headers=other)
+    assert get.status_code == 404
+    delete = await client.delete(f"/api/v1/reports/definitions/{definition_id}", headers=other)
+    assert delete.status_code == 404
+    runs = await client.get(f"/api/v1/reports/definitions/{definition_id}/runs", headers=other)
+    assert runs.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_canned_reports_list_and_install(client: AsyncClient):
+    headers = _auth_headers(tenant=TENANT_ID)
+    canned = await client.get("/api/v1/reports/canned", headers=headers)
+    assert canned.status_code == 200
+    keys = {item["key"] for item in canned.json()}
+    assert {"headcount", "payroll_totals", "compliance_posture"} <= keys
+
+    first = await client.post(
+        "/api/v1/reports/canned/compliance_posture/install",
+        json={"recipients": ["cso@test.com"]},
+        headers=headers,
+    )
+    assert first.status_code == 200
+    body = first.json()
+    assert body["created"] is True
+    assert body["definition"]["dataset"] == "compliance_posture"
+    assert body["definition"]["recipients"] == ["cso@test.com"]
+    assert body["definition"]["next_run_at"] is not None
+
+    second = await client.post(
+        "/api/v1/reports/canned/compliance_posture/install", json={}, headers=headers
+    )
+    assert second.status_code == 200
+    assert second.json()["created"] is False
+    assert second.json()["definition"]["id"] == body["definition"]["id"]
+
+    unknown = await client.post(
+        "/api/v1/reports/canned/not-a-template/install", json={}, headers=headers
+    )
+    assert unknown.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_manual_report_run_delivers_csv_and_records_history(
+    client: AsyncClient, db_session: Session, monkeypatch
+):
+    headers = _auth_headers(tenant=TENANT_ID, user_role="admin")
+    created = await client.post(
+        "/api/v1/reports/definitions", json=_report_payload(), headers=headers
+    )
+    definition_id = created.json()["id"]
+
+    delivery = RecordingDelivery()
+    monkeypatch.setattr(reporting, "get_delivery", lambda: delivery)
+
+    run = await client.post(
+        f"/api/v1/reports/definitions/{definition_id}/run", headers=headers
+    )
+    assert run.status_code == 200
+    run_body = run.json()
+    assert run_body["status"] == "SUCCEEDED"
+    assert run_body["trigger"] == "manual"
+    assert run_body["rows"] >= 1
+    assert run_body["delivery_status"] == "DELIVERED"
+    assert run_body["attachment_name"].endswith(".csv")
+    assert len(delivery.reports) == 1
+    content = delivery.reports[0]["content"]
+    assert content.startswith("metric,value")
+    assert "status," in content
+    assert delivery.reports[0]["recipients"] == ["reports@test.com"]
+
+    history = await client.get(
+        f"/api/v1/reports/definitions/{definition_id}/runs", headers=headers
+    )
+    assert history.status_code == 200
+    assert history.json()["total"] >= 1
+
+    fetched = await client.get(f"/api/v1/reports/runs/{run_body['id']}", headers=headers)
+    assert fetched.status_code == 200
+    assert fetched.json()["status"] == "SUCCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_report_run_suppressed_when_role_below_required(
+    client: AsyncClient, db_session: Session, monkeypatch
+):
+    admin_headers = _auth_headers(tenant=TENANT_ID, user_role="admin")
+    created = await client.post(
+        "/api/v1/reports/definitions",
+        json=_report_payload(required_role="admin"),
+        headers=admin_headers,
+    )
+    definition_id = created.json()["id"]
+
+    delivery = RecordingDelivery()
+    monkeypatch.setattr(reporting, "get_delivery", lambda: delivery)
+
+    suppressed = await client.post(
+        f"/api/v1/reports/definitions/{definition_id}/run",
+        headers=_auth_headers(tenant=TENANT_ID, user_role="employee"),
+    )
+    assert suppressed.status_code == 200
+    suppressed_body = suppressed.json()
+    assert suppressed_body["status"] == "SUPPRESSED"
+    assert "below required role" in suppressed_body["error"]
+    assert suppressed_body["attachment_name"] is None
+    assert delivery.reports == []
+    assert len(delivery.alerts) == 1
+
+    allowed = await client.post(
+        f"/api/v1/reports/definitions/{definition_id}/run", headers=admin_headers
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["status"] == "SUCCEEDED"
+    assert len(delivery.reports) == 1
+
+
+@pytest.mark.asyncio
+async def test_report_run_failure_is_recorded_and_alerted(
+    client: AsyncClient, db_session: Session, monkeypatch
+):
+    headers = _auth_headers(tenant=TENANT_ID, user_role="admin")
+    created = await client.post(
+        "/api/v1/reports/definitions",
+        json=_report_payload(dataset="headcount", filters={}, columns=["department", "headcount"]),
+        headers=headers,
+    )
+    definition_id = created.json()["id"]
+
+    def boom(context):
+        raise RuntimeError("analytics service unreachable")
+
+    monkeypatch.setitem(reporting.DATASET_FETCHERS, "headcount", boom)
+    delivery = RecordingDelivery()
+    monkeypatch.setattr(reporting, "get_delivery", lambda: delivery)
+
+    run = await client.post(
+        f"/api/v1/reports/definitions/{definition_id}/run", headers=headers
+    )
+    assert run.status_code == 200
+    run_body = run.json()
+    assert run_body["status"] == "FAILED"
+    assert "analytics service unreachable" in run_body["error"]
+    assert delivery.reports == []
+    assert delivery.alerts and "Report run failed" in delivery.alerts[0]["message"]
+
+    failed = await client.get(
+        f"/api/v1/reports/runs?definition_id={definition_id}&status=FAILED", headers=headers
+    )
+    assert failed.status_code == 200
+    assert failed.json()["total"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_runs_due_definitions_for_tenant(
+    client: AsyncClient, db_session: Session, monkeypatch
+):
+    headers = _auth_headers(tenant=TENANT_ID, user_role="hr")
+    created = await client.post(
+        "/api/v1/reports/definitions", json=_report_payload(), headers=headers
+    )
+    definition_id = UUID(created.json()["id"])
+    definition = (
+        db_session.query(ReportDefinition)
+        .filter(ReportDefinition.id == definition_id)
+        .first()
+    )
+    definition.next_run_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db_session.commit()
+
+    delivery = RecordingDelivery()
+    monkeypatch.setattr(reporting, "get_delivery", lambda: delivery)
+
+    resp = await client.post("/api/v1/reports/scheduler/run-due", headers=headers)
+    assert resp.status_code == 200
+    runs = resp.json()
+    assert len(runs) == 1
+    assert runs[0]["definition_id"] == str(definition_id)
+    assert runs[0]["trigger"] == "schedule"
+    assert runs[0]["status"] == "SUCCEEDED"
+    assert runs[0]["run_as_role"] == "employee"
+    assert len(delivery.reports) == 1
+
+    db_session.refresh(definition)
+    assert definition.last_run_at is not None
+    assert definition.next_run_at is None

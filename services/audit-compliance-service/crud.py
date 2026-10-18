@@ -15,6 +15,8 @@ from models import (
     ComplianceViolation,
     DataRetentionPolicy,
     GDPRConsentRecord,
+    ReportDefinition,
+    ReportRun,
 )
 
 
@@ -874,3 +876,186 @@ def data_portability(
         ],
         "exported_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ── Report Definitions & Runs ───────────────────────────────────────────────
+
+REPORT_DEFINITION_UPDATE_FIELDS = frozenset({
+    "name", "dataset", "filters", "columns", "schedule",
+    "recipients", "required_role", "enabled",
+})
+
+REPORT_RUN_UPDATE_FIELDS = frozenset({
+    "status", "rows", "attachment_name", "delivery_status",
+    "delivery_detail", "error", "finished_at",
+})
+
+
+def list_report_definitions(
+    db: Session,
+    tenant_id: str,
+    enabled: Optional[bool] = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    tenant_id = _require_tenant(tenant_id)
+    q = db.query(ReportDefinition).filter(ReportDefinition.tenant_id == tenant_id)
+    if enabled is not None:
+        q = q.filter(ReportDefinition.enabled == enabled)
+    q = q.order_by(ReportDefinition.created_at.desc())
+    return _paginate_query(q, page, page_size)
+
+
+def get_report_definition(
+    db: Session, definition_id: UUID, tenant_id: Optional[str] = None
+) -> Optional[ReportDefinition]:
+    q = db.query(ReportDefinition).filter(ReportDefinition.id == definition_id)
+    if tenant_id:
+        q = q.filter(ReportDefinition.tenant_id == _require_tenant(tenant_id))
+    return q.first()
+
+
+def create_report_definition(
+    db: Session,
+    tenant_id: str,
+    data: dict[str, Any],
+    created_by: Optional[str] = None,
+    next_run_at: Optional[datetime] = None,
+) -> ReportDefinition:
+    require_fields(data, ["name", "dataset"])
+    definition = ReportDefinition(
+        tenant_id=_require_tenant(tenant_id),
+        name=data["name"],
+        dataset=data["dataset"],
+        filters=data.get("filters") or {},
+        columns=data.get("columns") or [],
+        schedule=data.get("schedule") or {},
+        recipients=data.get("recipients") or [],
+        required_role=data.get("required_role"),
+        enabled=data.get("enabled", True),
+        created_by=created_by or data.get("created_by"),
+        next_run_at=next_run_at,
+    )
+    db.add(definition)
+    db.commit()
+    db.refresh(definition)
+    return definition
+
+
+def update_report_definition(
+    db: Session,
+    definition_id: UUID,
+    data: dict[str, Any],
+    tenant_id: Optional[str] = None,
+) -> Optional[ReportDefinition]:
+    definition = get_report_definition(db, definition_id, tenant_id)
+    if not definition:
+        return None
+    apply_updates(definition, data, REPORT_DEFINITION_UPDATE_FIELDS)
+    definition.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(definition)
+    return definition
+
+
+def delete_report_definition(
+    db: Session, definition_id: UUID, tenant_id: Optional[str] = None
+) -> bool:
+    definition = get_report_definition(db, definition_id, tenant_id)
+    if not definition:
+        return False
+    db.delete(definition)
+    db.commit()
+    return True
+
+
+def mark_report_definition_ran(
+    db: Session,
+    definition: ReportDefinition,
+    when: Optional[datetime] = None,
+    next_run_at: Optional[datetime] = None,
+) -> ReportDefinition:
+    definition.last_run_at = when or datetime.now(timezone.utc)
+    definition.next_run_at = next_run_at
+    db.commit()
+    db.refresh(definition)
+    return definition
+
+
+def create_report_run(
+    db: Session,
+    tenant_id: str,
+    definition_id: UUID,
+    trigger: str = "manual",
+    run_as_role: Optional[str] = None,
+) -> ReportRun:
+    run = ReportRun(
+        tenant_id=_require_tenant(tenant_id),
+        definition_id=definition_id,
+        status="RUNNING",
+        trigger=trigger,
+        run_as_role=run_as_role,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def finish_report_run(db: Session, run_id: UUID, data: dict[str, Any]) -> Optional[ReportRun]:
+    run = db.query(ReportRun).filter(ReportRun.id == run_id).first()
+    if not run:
+        return None
+    apply_updates(run, data, REPORT_RUN_UPDATE_FIELDS)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def list_report_runs(
+    db: Session,
+    tenant_id: str,
+    definition_id: Optional[UUID] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    tenant_id = _require_tenant(tenant_id)
+    q = db.query(ReportRun).filter(ReportRun.tenant_id == tenant_id)
+    if definition_id:
+        q = q.filter(ReportRun.definition_id == definition_id)
+    if status:
+        q = q.filter(ReportRun.status == status)
+    q = q.order_by(ReportRun.created_at.desc())
+    return _paginate_query(q, page, page_size)
+
+
+def get_report_run(db: Session, run_id: UUID, tenant_id: str) -> Optional[ReportRun]:
+    return (
+        db.query(ReportRun)
+        .filter(ReportRun.id == run_id, ReportRun.tenant_id == _require_tenant(tenant_id))
+        .first()
+    )
+
+
+def set_report_definition_next_run(
+    db: Session, definition: ReportDefinition, next_run_at: Optional[datetime]
+) -> ReportDefinition:
+    definition.next_run_at = next_run_at
+    db.commit()
+    db.refresh(definition)
+    return definition
+
+
+def get_due_report_definitions(
+    db: Session, now: datetime, limit: int = 20, tenant_id: Optional[str] = None
+):
+    q = db.query(ReportDefinition).filter(
+        ReportDefinition.enabled.is_(True),
+        ReportDefinition.next_run_at.isnot(None),
+        ReportDefinition.next_run_at <= now,
+    )
+    if tenant_id:
+        q = q.filter(ReportDefinition.tenant_id == _require_tenant(tenant_id))
+    return q.order_by(ReportDefinition.next_run_at.asc()).limit(limit).all()
