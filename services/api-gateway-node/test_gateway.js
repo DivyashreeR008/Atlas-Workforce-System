@@ -9,7 +9,7 @@ const assert = require('assert');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const path = require('path');
-const { csrfMiddleware, rbacMiddleware, services, isPublicOrAuthPath, authMiddleware, mfaStepUpMiddleware, auditProxyMiddleware, deviceTrustHeaderMiddleware, checkCache, cacheInvalidationMiddleware, verifySlackRequest, isWsPath, globalErrorHandler } = require('./index');
+const { csrfMiddleware, rbacMiddleware, services, isPublicOrAuthPath, authMiddleware, mfaStepUpMiddleware, auditProxyMiddleware, deviceTrustHeaderMiddleware, checkCache, cacheInvalidationMiddleware, verifySlackRequest, isWsPath, globalErrorHandler, normalizeCheckoutRequest, resolveCheckoutPricing, fetchTenantHeadcount } = require('./index');
 
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:8080';
 
@@ -368,16 +368,75 @@ function testWebhookVerification() {
   console.log('PASS: slack webhook fails closed without signing secrets');
 }
 
-// Billing route tests (source + behavior contract)
-function testBillingRoute() {
+// Billing checkout tests: the body is honored, validated and priced, and the
+// headcount lookup signs the call and times out instead of guessing.
+async function testBillingRoute() {
   const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
   const at = source.indexOf('/api/billing/create-checkout-session');
   assert.ok(at !== -1, 'Billing checkout route must exist');
-  const block = source.slice(at, at + 1500);
+  const block = source.slice(at, at + 2600);
   assert.ok(block.includes('Authentication required'), 'Billing must require authentication');
   assert.ok(block.includes('Tenant context missing'), 'Billing must require tenant context');
-  assert.ok(block.includes('status(500)') || block.includes('500'), 'Billing must map failures to error status');
-  console.log('PASS: billing checkout validates auth, tenant, and error mapping');
+  assert.ok(block.includes('normalizeCheckoutRequest(req.body)'), 'Billing must read the request body');
+  assert.ok(!block.includes('response.data?.total || 1'), 'Billing must not fall back to a one-seat charge');
+  assert.ok(block.includes('fetchTenantHeadcount'), 'Billing must fetch the headcount through the helper');
+  assert.ok(block.includes('status(502)'), 'Billing must surface upstream failures as 502');
+  console.log('PASS: billing checkout reads the body and refuses silent fallbacks');
+
+  // Body validation: plan allowlist, positive integer seats within plan
+  // limits, billing interval allowlist.
+  assert.deepStrictEqual(
+    normalizeCheckoutRequest({ plan: 'Growth', seats: 25, billing_interval: 'annual' }),
+    { ok: true, value: { plan: 'growth', seats: 25, billingInterval: 'annual' } },
+    'Valid body must normalize plan and interval'
+  );
+  assert.deepStrictEqual(
+    normalizeCheckoutRequest({ plan: 'starter', seats: 5 }),
+    { ok: true, value: { plan: 'starter', seats: 5, billingInterval: 'monthly' } },
+    'billing_interval must default to monthly'
+  );
+  for (const body of [undefined, null, {}, { seats: 5 }, { plan: 'platinum', seats: 5 }, { plan: 'starter' }, { plan: 'starter', seats: 0 }, { plan: 'starter', seats: -3 }, { plan: 'starter', seats: 2.5 }, { plan: 'starter', seats: '5' }, { plan: 'starter', seats: 51 }, { plan: 'starter', seats: 5, billing_interval: 'weekly' }]) {
+    const parsed = normalizeCheckoutRequest(body);
+    assert.strictEqual(parsed.ok, false, `Body ${JSON.stringify(body)} must be refused`);
+    assert.strictEqual(parsed.status, 400, `Body ${JSON.stringify(body)} must be a 400`);
+  }
+  assert.strictEqual(normalizeCheckoutRequest({ plan: 'enterprise', seats: 10000 }).ok, true, 'Plan limit boundary is inclusive');
+  console.log('PASS: checkout body validation enforces plan, seats and interval');
+
+  // Pricing: a finite amount or null, never a wrong price.
+  assert.deepStrictEqual(resolveCheckoutPricing(5), { perSeatPrice: 10, totalAmount: 50 }, 'Five seats price at 50');
+  assert.deepStrictEqual(resolveCheckoutPricing(1), { perSeatPrice: 10, totalAmount: 10 }, 'One seat prices at 10');
+  assert.strictEqual(resolveCheckoutPricing(0), null, 'Zero seats must not price');
+  assert.strictEqual(resolveCheckoutPricing(2.5), null, 'Fractional seats must not price');
+  assert.strictEqual(resolveCheckoutPricing('5'), null, 'String seats must not price');
+  assert.strictEqual(resolveCheckoutPricing(Number.MAX_SAFE_INTEGER), null, 'Imprecise totals must not price');
+  console.log('PASS: checkout pricing checks the number before multiplying');
+
+  // Headcount lookup: internal credential, explicit timeout, numeric total.
+  const calls = [];
+  const fakeHttp = (payload, opts = {}) => ({
+    async get(url, requestOpts) {
+      calls.push({ url, requestOpts });
+      if (opts.reject) throw Object.assign(new Error('upstream down'), { code: opts.code });
+      return { data: payload };
+    },
+  });
+  const user = { id: 7, role: 'admin', tenant_id: 'tenant-a', email: 'admin@example.com' };
+  const headcount = await fetchTenantHeadcount('tenant-a', user, fakeHttp({ total: 12 }));
+  assert.strictEqual(headcount, 12, 'Numeric total is returned');
+  assert.strictEqual(calls[0].url.endsWith('/employees'), true, 'Employee service URL is used');
+  assert.strictEqual(calls[0].requestOpts.timeout, 5000, 'Headcount lookup carries an explicit timeout');
+  assert.strictEqual(calls[0].requestOpts.headers['X-Tenant-Id'], 'tenant-a', 'Tenant header is sent');
+  const internalPayload = jwt.verify(calls[0].requestOpts.headers['x-internal-auth'], process.env.INTERNAL_JWT_SECRET, { algorithms: ['HS256'] });
+  assert.strictEqual(internalPayload.tenant_id, 'tenant-a', 'Internal token carries the tenant');
+  assert.strictEqual(internalPayload.user_id, 7, 'Internal token carries the caller');
+  assert.ok(internalPayload.exp > Math.floor(Date.now() / 1000), 'Internal token is short-lived but live');
+
+  assert.strictEqual(await fetchTenantHeadcount('t', user, fakeHttp({ total: '12' })), null, 'String total is refused');
+  assert.strictEqual(await fetchTenantHeadcount('t', user, fakeHttp({})), null, 'Missing total is refused');
+  assert.strictEqual(await fetchTenantHeadcount('t', user, fakeHttp({ total: -1 })), null, 'Negative total is refused');
+  await assert.rejects(() => fetchTenantHeadcount('t', user, fakeHttp(null, { reject: true, code: 'ECONNABORTED' })), /upstream down/, 'Timeout propagates for the handler to map');
+  console.log('PASS: headcount lookup signs the call, times out, and validates the total');
 }
 
 // Upgrade path tests
@@ -427,7 +486,7 @@ async function run() {
   testDeviceTrustMiddleware();
   await testCachingPair();
   testWebhookVerification();
-  testBillingRoute();
+  await testBillingRoute();
   testUpgradePath();
   testErrorShape();
 

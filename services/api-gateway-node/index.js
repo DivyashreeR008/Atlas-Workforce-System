@@ -71,6 +71,23 @@ function auditWriterHeaders() {
   return { 'x-internal-auth': mintAuditWriterToken() };
 }
 
+// Internal service credential: the same signed-envelope pattern the proxy
+// layer uses, minted per request so downstream services can trust the caller
+// and the tenant claim.
+function mintInternalAuthToken(user) {
+  return jwt.sign(
+    {
+      user_id: user?.id,
+      user_role: user?.role || 'employee',
+      tenant_id: user?.tenant_id || 'default',
+      email: user?.email || '',
+      exp: Math.floor(Date.now() / 1000) + 10,
+    },
+    INTERNAL_JWT_SECRET,
+    { algorithm: 'HS256' }
+  );
+}
+
 promClient.collectDefaultMetrics();
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://redis:6379';
@@ -1120,6 +1137,66 @@ app.post('/api/webhooks/slack', express.urlencoded({
   }
 });
 
+// Billing checkout plans: seat caps keep a mistyped seat count from creating
+// an unbounded invoice; the per-seat price is flat across plans today.
+const CHECKOUT_PLAN_LIMITS = {
+  starter: 50,
+  growth: 500,
+  enterprise: 10000,
+};
+const CHECKOUT_BILLING_INTERVALS = ['monthly', 'annual'];
+const CHECKOUT_PER_SEAT_PRICE = 10;
+const CHECKOUT_HEADCOUNT_TIMEOUT_MS = 5000;
+
+// Parse and validate the checkout body instead of discarding it. Returns
+// { ok: true, value: { plan, seats, billingInterval } } or a 400 refusal.
+function normalizeCheckoutRequest(body) {
+  const source = body && typeof body === 'object' ? body : {};
+  const plan = typeof source.plan === 'string' ? source.plan.trim().toLowerCase() : '';
+  if (!Object.prototype.hasOwnProperty.call(CHECKOUT_PLAN_LIMITS, plan)) {
+    return { ok: false, status: 400, message: `Invalid plan; expected one of: ${Object.keys(CHECKOUT_PLAN_LIMITS).join(', ')}` };
+  }
+  if (!Number.isInteger(source.seats) || source.seats <= 0) {
+    return { ok: false, status: 400, message: 'seats must be a positive integer' };
+  }
+  const maxSeats = CHECKOUT_PLAN_LIMITS[plan];
+  if (source.seats > maxSeats) {
+    return { ok: false, status: 400, message: `seats exceeds the ${plan} plan limit of ${maxSeats}` };
+  }
+  const intervalInput = source.billing_interval === undefined ? 'monthly' : source.billing_interval;
+  const billingInterval = typeof intervalInput === 'string' ? intervalInput.trim().toLowerCase() : '';
+  if (!CHECKOUT_BILLING_INTERVALS.includes(billingInterval)) {
+    return { ok: false, status: 400, message: `Invalid billing_interval; expected one of: ${CHECKOUT_BILLING_INTERVALS.join(', ')}` };
+  }
+  return { ok: true, value: { plan, seats: source.seats, billingInterval } };
+}
+
+// Price the validated seat count. Returns null rather than a wrong price when
+// the inputs cannot produce an exact amount.
+function resolveCheckoutPricing(seats) {
+  if (!Number.isInteger(seats) || seats <= 0) return null;
+  const perSeatPrice = CHECKOUT_PER_SEAT_PRICE;
+  const totalAmount = seats * perSeatPrice;
+  if (!Number.isSafeInteger(totalAmount)) return null;
+  return { perSeatPrice, totalAmount };
+}
+
+// Fetch the tenant headcount with the internal service credential and an
+// explicit timeout. Returns null when the upstream answered without a usable
+// numeric total; network failures propagate to the caller.
+async function fetchTenantHeadcount(tenantId, user, http = axios) {
+  const response = await http.get(`${services.employee}/employees`, {
+    headers: {
+      'X-Tenant-Id': tenantId,
+      'x-internal-auth': mintInternalAuthToken(user),
+    },
+    timeout: CHECKOUT_HEADCOUNT_TIMEOUT_MS,
+  });
+  const total = response?.data?.total;
+  if (!Number.isFinite(total) || total < 0) return null;
+  return total;
+}
+
 app.post('/api/billing/create-checkout-session', express.json(), async (req, res) => {
   try {
     if (!req.user) {
@@ -1130,19 +1207,38 @@ app.post('/api/billing/create-checkout-session', express.json(), async (req, res
       return res.status(400).json({ message: 'Tenant context missing' });
     }
 
-    const employeeServiceUrl = `${services.employee}/employees`;
-    const response = await axios.get(employeeServiceUrl, {
-      headers: { 'X-Tenant-Id': tenantId }
-    });
+    const parsed = normalizeCheckoutRequest(req.body);
+    if (!parsed.ok) {
+      return res.status(parsed.status).json({ message: parsed.message });
+    }
+    const { plan, seats, billingInterval } = parsed.value;
 
-    const headcount = response.data?.total || 1;
-    const perSeatPrice = 10;
-    const totalAmount = headcount * perSeatPrice;
+    const pricing = resolveCheckoutPricing(seats);
+    if (!pricing) {
+      return res.status(400).json({ message: 'Unable to price the requested seat count' });
+    }
+
+    let headcount;
+    try {
+      headcount = await fetchTenantHeadcount(tenantId, req.user);
+    } catch (err) {
+      console.error('Billing headcount lookup failed:', err.message);
+      const detail = err.code === 'ECONNABORTED' ? 'Employee service timed out' : 'Employee service unavailable';
+      return res.status(502).json({ message: `${detail}; checkout not created` });
+    }
+    if (headcount === null) {
+      console.error('Billing headcount lookup returned no usable total');
+      return res.status(502).json({ message: 'Employee service returned no usable headcount; checkout not created' });
+    }
 
     return res.json({
-      checkoutUrl: `https://mock-stripe.atlas.io/checkout/${tenantId}?amount=${totalAmount}`,
+      checkoutUrl: `https://mock-stripe.atlas.io/checkout/${tenantId}?plan=${plan}&interval=${billingInterval}&seats=${seats}&amount=${pricing.totalAmount}`,
+      plan,
+      billing_interval: billingInterval,
+      seats,
+      perSeatPrice: pricing.perSeatPrice,
       headcount,
-      totalAmount,
+      totalAmount: pricing.totalAmount,
       currency: 'USD'
     });
   } catch (err) {
@@ -1187,15 +1283,7 @@ function proxyService(target, prefix, pathRewrite) {
   });
   return (req, res, next) => {
     if (req.user) {
-      const internalPayload = {
-        user_id: req.user.id,
-        user_role: req.user.role,
-        tenant_id: req.user.tenant_id || 'default',
-        email: req.user.email || '',
-        exp: Math.floor(Date.now() / 1000) + 10
-      };
-      const internalToken = jwt.sign(internalPayload, INTERNAL_JWT_SECRET, { algorithm: 'HS256' });
-      req.headers['x-internal-auth'] = internalToken;
+      req.headers['x-internal-auth'] = mintInternalAuthToken(req.user);
       // Overwrite client-supplied tenant header with verified claim
       const tenantId = req.user.tenant_id || 'default';
       req.headers['x-tenant-id'] = tenantId;
@@ -1414,6 +1502,11 @@ module.exports = {
   verifySlackRequest,
   isWsPath,
   globalErrorHandler,
+  mintInternalAuthToken,
+  normalizeCheckoutRequest,
+  resolveCheckoutPricing,
+  fetchTenantHeadcount,
+  CHECKOUT_PLAN_LIMITS,
 };
 
 if (require.main === module) {
