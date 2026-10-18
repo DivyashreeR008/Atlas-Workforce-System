@@ -251,8 +251,15 @@ class IntegrationConfigResponse(BaseModel):
 
 
 class EventPublishRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
     event_type: str = Field(..., max_length=100)
-    tenant_id: str = Field(default="default", max_length=50)
+    # Optional and never defaulted to "default": the publish route routes on the
+    # verified tenant from x-internal-auth. A body tenant is advisory only and
+    # must agree with the verified claim when supplied - defaulting it here
+    # would make an omitted field look like a deliberate "default" claim and
+    # reject every caller whose verified tenant is anything else.
+    tenant_id: Optional[str] = Field(default=None, max_length=50)
     source_service: str = Field(..., max_length=100)
     payload: dict[str, Any]
 
