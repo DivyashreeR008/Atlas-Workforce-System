@@ -54,6 +54,14 @@ const authFailedLoginTotal = new promClient.Counter({
   labelNames: ['known_user'],
 });
 
+// Auth-store (Redis) degradations. The fail-closed paths below increment this
+// whenever a request is withheld because the store could not answer.
+const redisDegradedTotal = new promClient.Counter({
+  name: 'atlas_auth_redis_degraded_total',
+  help: 'Fail-closed refusals caused by the auth store (Redis) being unavailable',
+  labelNames: ['check'],
+});
+
 promClient.collectDefaultMetrics();
 
 const app = express();
@@ -467,6 +475,55 @@ redisClient.on('error', (err) => console.log('Auth Redis Client Error', err));
     safeLog(console.error, 'Auth Redis connection failed, nonce check disabled:', err);
   }
 })();
+
+// Fail-closed policy for auth-store (Redis) reads and writes: when the store
+// is unavailable the caller must refuse the operation instead of skipping the
+// check, because skipping silently disables revocation or replay protection.
+// The client is a parameter so the policy is testable with fake stores.
+function authStoreUnavailable(res, check) {
+  redisDegradedTotal.labels({ check }).inc();
+  safeLog(console.error, `Auth store unavailable (${check}): refusing request`);
+  return res.status(503).json({
+    code: 'auth_store_unavailable',
+    retryable: true,
+    message: 'Authentication temporarily unavailable, please retry shortly'
+  });
+}
+
+async function storeMfaChallengeJti(redis, jti, userId) {
+  if (!redis || !redis.isOpen) return false;
+  try {
+    await redis.set(`mfa_challenge:${jti}`, String(userId), { EX: 300, NX: true });
+    return true;
+  } catch (err) {
+    safeLog(console.error, 'Failed to store MFA challenge jti', err);
+    return false;
+  }
+}
+
+// Returns true when the jti is present, false when it was consumed or expired,
+// and null when the store cannot answer (caller must refuse the request).
+async function mfaChallengeJtiExists(redis, jti) {
+  if (!redis || !redis.isOpen) return null;
+  try {
+    const exists = await redis.get(`mfa_challenge:${jti}`);
+    return Boolean(exists);
+  } catch (err) {
+    safeLog(console.error, 'Failed to check MFA challenge jti', err);
+    return null;
+  }
+}
+
+async function consumeMfaChallengeJti(redis, jti) {
+  if (!redis || !redis.isOpen) return false;
+  try {
+    await redis.del(`mfa_challenge:${jti}`);
+    return true;
+  } catch (err) {
+    safeLog(console.error, 'Failed to consume MFA challenge jti', err);
+    return false;
+  }
+}
 
 // Resolve the real client IP. The gateway passes it in x-real-client-ip;
 // we never trust X-Forwarded-For because clients can spoof it.
@@ -1423,12 +1480,10 @@ app.post('/login', createUserRateLimiter('login', 20, 15 * 60 * 1000, { keyByEma
         const decoded = jwt.decode(mfaChallengeToken);
         jti = decoded?.jti;
       } catch {}
-      if (jti && redisClient.isOpen) {
-        try {
-          await redisClient.set(`mfa_challenge:${jti}`, String(user.id), { EX: 300, NX: true });
-        } catch (e) {
-          safeLog(console.error, 'Failed to store MFA challenge jti', e);
-        }
+      // The challenge cannot be validated without its stored jti, so a store
+      // failure refuses the login instead of issuing an unredeemable token.
+      if (!jti || !(await storeMfaChallengeJti(redisClient, jti, user.id))) {
+        return authStoreUnavailable(res, 'mfa_challenge_store');
       }
       await sendAuditEvent('auth.login_mfa_required', user.id, email, {
         device_trusted: deviceTrusted,
@@ -1553,21 +1608,36 @@ app.post('/logout', createUserRateLimiter('logout', 100), requireCsrfDoubleSubmi
 
     if (sessionId) {
       await pool.query('UPDATE sessions SET is_active = false WHERE id = $1', [sessionId]);
-      if (redisClient.isOpen) await redisClient.set(`denylist:sid:${sessionId}`, '1', { EX: 15 * 60 });
     } else if (refreshToken) {
       await pool.query('UPDATE sessions SET is_active = false WHERE token_hash = $1', [hashToken(refreshToken)]);
     }
-    // Denylist the current access token (if any) so it cannot be used for the next 15 minutes
+
+    // Denylist the access token and session so they cannot be used for the
+    // next 15 minutes. The write must not be skipped: a logout that cannot
+    // record the revocation is refused (503) and the cookies are kept so the
+    // client can retry once the store is back.
+    const denylistKeys = new Set();
     const authHeader = req.headers.authorization;
-    if (authHeader?.startsWith('Bearer ') && redisClient.isOpen) {
+    if (authHeader?.startsWith('Bearer ')) {
       try {
-        const token = authHeader.slice(7);
-        const payload = jwt.decode(token);
-        if (payload && payload.jti) await redisClient.set(`denylist:jti:${payload.jti}`, '1', { EX: 15 * 60 });
-        if (payload && payload.sid) await redisClient.set(`denylist:sid:${payload.sid}`, '1', { EX: 15 * 60 });
+        const payload = jwt.decode(authHeader.slice(7));
+        if (payload?.jti) denylistKeys.add(`denylist:jti:${payload.jti}`);
+        if (payload?.sid) denylistKeys.add(`denylist:sid:${payload.sid}`);
       } catch {}
-    } else if (sessionId && redisClient.isOpen) {
-      await redisClient.set(`denylist:sid:${sessionId}`, '1', { EX: 15 * 60 });
+    }
+    if (sessionId) denylistKeys.add(`denylist:sid:${sessionId}`);
+    if (denylistKeys.size) {
+      if (!redisClient.isOpen) {
+        return authStoreUnavailable(res, 'logout_denylist');
+      }
+      try {
+        for (const key of denylistKeys) {
+          await redisClient.set(key, '1', { EX: 15 * 60 });
+        }
+      } catch (err) {
+        safeLog(console.error, 'Logout denylist write failed', err);
+        return authStoreUnavailable(res, 'logout_denylist');
+      }
     }
 
     res.clearCookie('refreshToken');
@@ -1719,17 +1789,16 @@ app.post('/mfa/validate', createUserRateLimiter('mfa_validate', 10), async (req,
       if (!jti) {
         return res.status(401).json({ message: 'Challenge token missing jti' });
       }
-      // Enforce single-use via Redis (5 minute TTL). If Redis is open, the jti must still exist.
-      if (redisClient.isOpen) {
-        const key = `mfa_challenge:${jti}`;
-        const exists = await redisClient.get(key);
-        if (!exists) {
-          return res.status(401).json({ message: 'MFA challenge token already used or expired' });
-        }
-        challengeJti = jti;
-      } else {
-        challengeJti = jti;
+      // Enforce single-use via Redis (5 minute TTL). Fails closed: when the
+      // store cannot answer, the challenge cannot be trusted either.
+      const exists = await mfaChallengeJtiExists(redisClient, jti);
+      if (exists === null) {
+        return authStoreUnavailable(res, 'mfa_challenge_check');
       }
+      if (!exists) {
+        return res.status(401).json({ message: 'MFA challenge token already used or expired' });
+      }
+      challengeJti = jti;
       userId = parseInt(payload.sub || payload.user_id || payload.id, 10);
       if (!userId) {
         return res.status(400).json({ message: 'Invalid challenge token subject' });
@@ -1799,11 +1868,14 @@ app.post('/mfa/validate', createUserRateLimiter('mfa_validate', 10), async (req,
       return res.status(400).json({ message: 'Invalid token or backup code' });
     }
 
-    // Consume challenge token after successful validation (single-use)
-    if (isChallengeFlow && challengeJti && redisClient.isOpen) {
-      try {
-        await redisClient.del(`mfa_challenge:${challengeJti}`);
-      } catch {}
+    // Consume challenge token after successful validation (single-use). If the
+    // store cannot record the consumption the session is not issued: the
+    // challenge would otherwise stay replayable.
+    if (isChallengeFlow && challengeJti) {
+      const consumed = await consumeMfaChallengeJti(redisClient, challengeJti);
+      if (!consumed) {
+        return authStoreUnavailable(res, 'mfa_challenge_consume');
+      }
     }
 
     if (isChallengeFlow) {
@@ -3813,6 +3885,10 @@ module.exports = {
   requireCsrfDoubleSubmit,
   mintCsrfCookie,
   validateOAuthIdToken,
+  authStoreUnavailable,
+  storeMfaChallengeJti,
+  mfaChallengeJtiExists,
+  consumeMfaChallengeJti,
 };
 
 if (require.main === module) {

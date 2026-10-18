@@ -15,7 +15,9 @@ process.env.OAUTH_ENCRYPTION_KEY = process.env.OAUTH_ENCRYPTION_KEY || 'unit-tes
 process.env.REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 
 const assert = require('assert');
-const { validatePassword, hashToken, sanitizeUser } = require('./index');
+const fs = require('fs');
+const path = require('path');
+const { validatePassword, hashToken, sanitizeUser, authStoreUnavailable, storeMfaChallengeJti, mfaChallengeJtiExists, consumeMfaChallengeJti } = require('./index');
 
 // Unit tests for auth service utilities (imported from index.js, not redefined here)
 function testValidatePassword() {
@@ -127,10 +129,120 @@ function testGetClientIp() {
   console.log('PASS: getClientIp');
 }
 
+// Auth-store (Redis) fail-closed policy tests (#329)
+function fakeRes() {
+  return {
+    statusCode: 200,
+    body: null,
+    status(code) { this.statusCode = code; return this; },
+    json(data) { this.body = data; return this; },
+  };
+}
+
+function fakeAuthStore({ isOpen = true, failGet = false, failSet = false, failDel = false, entries = [] } = {}) {
+  const store = new Map(entries);
+  const sets = [];
+  const dels = [];
+  return {
+    isOpen,
+    store,
+    sets,
+    dels,
+    async get(key) {
+      if (failGet) throw new Error('store down');
+      return store.has(key) ? store.get(key) : null;
+    },
+    async set(key, value, opts = {}) {
+      if (failSet) throw new Error('store down');
+      sets.push({ key, value, opts });
+      if (opts.NX && store.has(key)) return null;
+      store.set(key, value);
+      return 'OK';
+    },
+    async del(key) {
+      if (failDel) throw new Error('store down');
+      dels.push(key);
+      return store.delete(key) ? 1 : 0;
+    },
+  };
+}
+
+async function silenceErrors(fn) {
+  const original = console.error;
+  console.error = () => {};
+  try {
+    return await fn();
+  } finally {
+    console.error = original;
+  }
+}
+
+async function testAuthStoreFailClosed() {
+  // The 503 envelope used by every fail-closed refusal.
+  const res = fakeRes();
+  await silenceErrors(async () => authStoreUnavailable(res, 'unit_test'));
+  assert.strictEqual(res.statusCode, 503, 'store outage must be 503');
+  assert.strictEqual(res.body.code, 'auth_store_unavailable', 'envelope carries the code');
+  assert.strictEqual(res.body.retryable, true, 'envelope is retryable');
+  console.log('PASS: authStoreUnavailable returns the 503 envelope');
+
+  // Challenge jti storage: a challenge is only issued when its jti is stored.
+  const closed = fakeAuthStore({ isOpen: false });
+  assert.strictEqual(await storeMfaChallengeJti(closed, 'j1', 7), false, 'closed store must not store a jti');
+  const open = fakeAuthStore();
+  assert.strictEqual(await storeMfaChallengeJti(open, 'j1', 7), true, 'open store stores the jti');
+  assert.strictEqual(open.sets[0].key, 'mfa_challenge:j1', 'jti key shape');
+  assert.strictEqual(open.sets[0].value, '7', 'jti value is the user id');
+  assert.ok(open.sets[0].opts.EX === 300 && open.sets[0].opts.NX === true, 'jti stored for 5 minutes, first-write-wins');
+  assert.strictEqual(await silenceErrors(() => storeMfaChallengeJti(fakeAuthStore({ failSet: true }), 'j2', 7)), false, 'store failure must not report success');
+  console.log('PASS: challenge jti store fails closed when Redis is down');
+
+  // Challenge jti lookup: null means "store cannot answer", which the route
+  // must map to 503 rather than treating the challenge as valid.
+  assert.strictEqual(await mfaChallengeJtiExists(closed, 'j1'), null, 'closed store answers unknown');
+  assert.strictEqual(await silenceErrors(() => mfaChallengeJtiExists(fakeAuthStore({ failGet: true }), 'j1')), null, 'read failure answers unknown');
+  assert.strictEqual(await mfaChallengeJtiExists(fakeAuthStore(), 'j1'), false, 'missing jti is consumed or expired');
+  assert.strictEqual(await mfaChallengeJtiExists(fakeAuthStore({ entries: [['mfa_challenge:j1', '7']] }), 'j1'), true, 'present jti is redeemable');
+  console.log('PASS: challenge jti lookup distinguishes missing from unknown');
+
+  // Challenge jti consumption: the session must not be issued when the
+  // consumption cannot be recorded.
+  assert.strictEqual(await consumeMfaChallengeJti(closed, 'j1'), false, 'closed store cannot consume');
+  assert.strictEqual(await silenceErrors(() => consumeMfaChallengeJti(fakeAuthStore({ failDel: true }), 'j1')), false, 'delete failure cannot consume');
+  const consuming = fakeAuthStore({ entries: [['mfa_challenge:j1', '7']] });
+  assert.strictEqual(await consumeMfaChallengeJti(consuming, 'j1'), true, 'open store consumes');
+  assert.strictEqual(consuming.store.has('mfa_challenge:j1'), false, 'jti removed on consumption');
+  console.log('PASS: challenge jti consumption fails closed');
+
+  // Wiring: the routes must go through the fail-closed helpers and must not
+  // keep any conditional that silently skips the store.
+  const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+  assert.ok(source.includes('atlas_auth_redis_degraded_total'), 'degraded counter must exist for alerts');
+  assert.ok(source.includes('storeMfaChallengeJti(redisClient, jti, user.id)'), 'login must store the challenge jti or refuse');
+  assert.ok(source.includes("authStoreUnavailable(res, 'mfa_challenge_store')"), 'login store failure must 503');
+  assert.ok(source.includes('mfaChallengeJtiExists(redisClient, jti)'), 'validate must check the challenge jti');
+  assert.ok(source.includes("authStoreUnavailable(res, 'mfa_challenge_check')"), 'challenge lookup failure must 503');
+  assert.ok(source.includes('consumeMfaChallengeJti(redisClient, challengeJti)'), 'validate must consume the challenge jti');
+  assert.ok(source.includes("authStoreUnavailable(res, 'mfa_challenge_consume')"), 'consume failure must 503');
+  assert.ok(source.includes("authStoreUnavailable(res, 'logout_denylist')"), 'logout must refuse to skip denylist writes');
+  assert.ok(!source.includes('replay check skipped'), 'no fail-open replay path may remain');
+  // Logout must not gate its denylist writes on the store being open; the
+  // other revocation routes are a tracked follow-up and still carry the guard.
+  const logoutStart = source.indexOf("app.post('/logout'");
+  assert.ok(logoutStart !== -1, 'logout route must exist');
+  const nextRouteStart = source.indexOf('\napp.', logoutStart + 1);
+  const logoutRoute = source.slice(logoutStart, nextRouteStart === -1 ? undefined : nextRouteStart);
+  assert.ok(!logoutRoute.includes('&& redisClient.isOpen'), 'logout denylist write must not be conditional on the store');
+  assert.ok(!logoutRoute.includes("'Bearer ') && redisClient"), 'logout bearer branch must not be gated on client state');
+  console.log('PASS: auth-store fail-closed policy is wired into the routes');
+}
+
 testValidatePassword();
 testHashToken();
 testSanitizeUser();
 testRateLimiterPerIp();
 testGetClientIp();
-console.log('All auth tests passed.');
-process.exit(0);
+testAuthStoreFailClosed().then(() => {
+  console.log('All auth tests passed.');
+  process.exit(0);
+});
