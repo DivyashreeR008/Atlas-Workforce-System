@@ -1,10 +1,15 @@
 "use client";
 
 import { Component, type ReactNode, type ErrorInfo } from "react";
+import { reportClientError } from "@/lib/error-reporting";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
-  fallback?: ReactNode;
+  /**
+   * Either a static fallback, or a render prop that receives the reset
+   * handler so a fallback can wire its own Retry action.
+   */
+  fallback?: ReactNode | ((reset: () => void) => ReactNode);
   onError?: (error: Error, errorInfo: ErrorInfo) => void;
 }
 
@@ -24,8 +29,13 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error("[ErrorBoundary]", error, errorInfo);
-    this.props.onError?.(error, errorInfo);
+    // Reporting goes through the shared redaction helper: raw error messages
+    // can embed tokens or payload fragments and must not reach the console.
+    if (this.props.onError) {
+      this.props.onError(error, errorInfo);
+    } else {
+      reportClientError(error, { boundary: "error-boundary" });
+    }
   }
 
   handleReset = () => {
@@ -34,6 +44,9 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   render() {
     if (this.state.hasError) {
+      if (typeof this.props.fallback === "function") {
+        return this.props.fallback(this.handleReset);
+      }
       if (this.props.fallback) return this.props.fallback;
       return (
         <div className="flex flex-col items-center justify-center gap-4 p-8 text-center">
