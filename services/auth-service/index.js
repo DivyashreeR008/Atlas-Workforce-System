@@ -1554,7 +1554,9 @@ function getFrontendUrl() {
 // place to plug in a real transport.
 async function sendEmail({ to, subject, text }) {
   try {
-    console.log(`[email] to=${to} subject=${subject} body=${text}`);
+    // Never log message bodies: reset and magic-link emails carry
+    // single-use secrets in their URLs. Metadata only.
+    console.log(`[email] to=${to} subject=${subject}`);
     return true;
   } catch (err) {
     safeLog(console.error, 'Email send failed:', err);
@@ -1728,7 +1730,8 @@ async function initDB() {
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS passwordless_tokens (
-      token VARCHAR(64) PRIMARY KEY,
+      id SERIAL PRIMARY KEY,
+      token_hash VARCHAR(64) NOT NULL UNIQUE,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       email VARCHAR(255) NOT NULL,
       expires_at TIMESTAMP NOT NULL,
@@ -1736,6 +1739,10 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+  // Rename for installs created before the column carried its honest name.
+  try {
+    await pool.query('ALTER TABLE passwordless_tokens RENAME COLUMN token TO token_hash');
+  } catch (err) { /* already renamed */ }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS password_reset_tokens (
@@ -3561,8 +3568,17 @@ app.post('/auth/passwordless/request', createUserRateLimiter('passwordless_reque
     const tokenHash = hashToken(token);
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
+    // Bound issuance: supersede prior active tokens and cap rows per user
+    // so token rows cannot accumulate without limit.
+    await pool.query('DELETE FROM passwordless_tokens WHERE user_id = $1 AND (used = true OR expires_at <= NOW())', [user.id]);
     await pool.query(
-      'INSERT INTO passwordless_tokens (token, user_id, email, expires_at) VALUES ($1, $2, $3, $4)',
+      `DELETE FROM passwordless_tokens WHERE user_id = $1 AND id NOT IN (
+         SELECT id FROM passwordless_tokens WHERE user_id = $1 ORDER BY created_at DESC LIMIT 4
+       )`,
+      [user.id]
+    );
+    await pool.query(
+      'INSERT INTO passwordless_tokens (token_hash, user_id, email, expires_at) VALUES ($1, $2, $3, $4)',
       [tokenHash, user.id, normalizedEmail, expiresAt]
     );
 
@@ -3585,16 +3601,16 @@ app.post('/auth/passwordless/verify', createUserRateLimiter('passwordless_verify
     }
 
     const tokenHash = hashToken(token);
+    // Atomic consumption: a single UPDATE with the guard in the WHERE
+    // clause, so two concurrent submissions cannot both pass the check.
     const result = await pool.query(
-      'SELECT * FROM passwordless_tokens WHERE token = $1 AND used = false AND expires_at > NOW()',
+      'UPDATE passwordless_tokens SET used = true WHERE token_hash = $1 AND used = false AND expires_at > NOW() RETURNING *',
       [tokenHash]
     );
 
     if (!result.rows[0]) {
       return res.status(400).json({ message: 'Invalid or expired token' });
     }
-
-    await pool.query('UPDATE passwordless_tokens SET used = true WHERE token = $1', [tokenHash]);
 
     const userResult = await pool.query('SELECT * FROM users WHERE id = $1', [result.rows[0].user_id]);
     const user = userResult.rows[0];
@@ -3665,10 +3681,6 @@ app.post('/auth/password/reset-request', createUserRateLimiter('password_reset_r
     await sendAuditEvent('auth.password_reset_requested', user.id, user.email, { found: true });
 
     const response = { message: genericMessage };
-    if (NODE_ENV !== 'production') {
-      response.reset_token = rawToken;
-      response.reset_url = resetUrl;
-    }
     return res.json(response);
   } catch (err) {
     safeLog(console.error, 'Request failed', err);
@@ -3687,8 +3699,10 @@ app.post('/auth/password/reset', createUserRateLimiter('password_reset', 10), as
     }
 
     const tokenHash = hashToken(String(token).trim());
+    // Atomic consumption: single UPDATE with the guard, so concurrent
+    // submissions cannot both redeem one single-use token.
     const tokenResult = await pool.query(
-      'SELECT * FROM password_reset_tokens WHERE token_hash = $1 AND used = false AND expires_at > NOW()',
+      'UPDATE password_reset_tokens SET used = true WHERE token_hash = $1 AND used = false AND expires_at > NOW() RETURNING *',
       [tokenHash]
     );
     const resetRow = tokenResult.rows[0];
