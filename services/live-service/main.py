@@ -100,13 +100,92 @@ def _parse_timestamp(value: object) -> float | None:
 
 MAX_CHANNELS = int(os.getenv("MAX_CHANNELS", "100"))
 CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+TENANT_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+ROOM_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 MAX_EVENT_NAME_LENGTH = 200
+
+# Channels carrying payroll or compliance detail. The role sets mirror the
+# gateway RBAC matrix (services/api-gateway-node/index.js) so a websocket or
+# SSE subscription cannot receive what the REST surface already refuses.
+SENSITIVE_CHANNEL_ROLES: dict[str, frozenset[str]] = {
+    "payroll": frozenset({"admin", "hr"}),
+    "compliance": frozenset({"admin", "compliance", "hr"}),
+}
+
+EMERGENCY_DEFAULT_CHANNELS = ("emergency", "alert", "incident")
+
+
+def _valid_channel_name(channel: str) -> bool:
+    return bool(channel) and len(channel) <= 64 and bool(CHANNEL_RE.match(channel))
 
 
 def _validate_channel(channel: str) -> str:
-    if not channel or len(channel) > 64 or not CHANNEL_RE.match(channel):
+    if not _valid_channel_name(channel):
         raise HTTPException(status_code=400, detail="Invalid channel name")
     return channel
+
+
+def _valid_tenant(tenant_id: str) -> bool:
+    return bool(tenant_id) and len(tenant_id) <= 64 and bool(TENANT_RE.match(tenant_id))
+
+
+def _validate_tenant(tenant_id: str) -> str:
+    if not _valid_tenant(tenant_id):
+        raise HTTPException(status_code=400, detail="Invalid tenant context")
+    return tenant_id
+
+
+def _tenant_from_request(request: Request) -> str:
+    return _validate_tenant(getattr(request.state, "tenant_id", "") or "")
+
+
+def _scoped_channel(tenant_id: str, channel: str) -> str:
+    """Internal storage key: verified tenant plus the logical channel name.
+
+    Channel names stay client-facing (``attendance``); every client set,
+    history buffer and sequence counter is keyed by the scoped form so two
+    tenants can never share a stream.
+    """
+    return f"{_validate_tenant(tenant_id)}:{_validate_channel(channel)}"
+
+
+def _scoped_key(tenant_id: str, kind: str, resource_id: str) -> str:
+    """Scoped key for REST-managed state (polls, incidents, SLA, rooms)."""
+    return f"{_validate_tenant(tenant_id)}:{kind}:{resource_id}"
+
+
+def _role_allowed(user_role: str, channel: str) -> bool:
+    allowed = SENSITIVE_CHANNEL_ROLES.get(channel)
+    return allowed is None or user_role in allowed
+
+
+def _valid_room_name(room: str) -> bool:
+    return bool(room) and len(room) <= 64 and bool(ROOM_RE.match(room))
+
+
+def _validate_room(room: str) -> str:
+    if not _valid_room_name(room):
+        raise HTTPException(status_code=400, detail="Invalid room name")
+    return room
+
+
+def _presence_key(tenant_id: str, user_id: str) -> str:
+    """Presence keys are tenant-scoped: user ids repeat across tenants."""
+    return _scoped_key(tenant_id, "presence", user_id)
+
+
+def _tenant_keys(store: dict, tenant_id: str, kind: str) -> list[str]:
+    """Keys of ``store`` belonging to ``tenant_id`` under the ``kind`` namespace."""
+    prefix = f"{_validate_tenant(tenant_id)}:{kind}:"
+    return [key for key in store if key.startswith(prefix)]
+
+
+def _require_channel_access(request: Request, channel: str) -> str:
+    """Verified tenant of the caller, refusing channels their role cannot read."""
+    tenant_id = _tenant_from_request(request)
+    if not _role_allowed(getattr(request.state, "user_role", "employee"), channel):
+        raise HTTPException(status_code=403, detail="Insufficient role for channel")
+    return tenant_id
 
 
 class ChannelManager:
@@ -118,6 +197,7 @@ class ChannelManager:
         self.event_sequences: dict[str, int] = defaultdict(int)
         self.presence: dict[str, dict] = {}
         self.chat_rooms: dict[str, list[dict]] = defaultdict(lambda: [])
+        self.chat_room_meta: dict[str, dict] = {}
         self.polls: dict[str, dict] = {}
         self.poll_lock = asyncio.Lock()
         self.incidents: dict[str, list[dict]] = defaultdict(lambda: [])
@@ -140,7 +220,15 @@ class ChannelManager:
         for room in list(self.chat_rooms.keys()):
             messages = self.chat_rooms[room]
             if not messages:
+                # Rooms are created server-side and stay listed until they age
+                # out; the buffer of an empty room is reaped on first sight of
+                # a missing or stale creation stamp.
+                meta = self.chat_room_meta.get(room)
+                created = meta.get("_created_at") if meta else None
+                if created is not None and now - created <= CHAT_ROOM_TTL_SECONDS:
+                    continue
                 del self.chat_rooms[room]
+                self.chat_room_meta.pop(room, None)
                 removed["chat_rooms"] += 1
             else:
                 last_ts = messages[-1].get("timestamp", "")
@@ -150,6 +238,7 @@ class ChannelManager:
                         skipped += 1
                     elif now - last_time > CHAT_ROOM_TTL_SECONDS:
                         del self.chat_rooms[room]
+                        self.chat_room_meta.pop(room, None)
                         removed["chat_rooms"] += 1
         if skipped:
             logger.warning("eviction.chat_timestamp_skipped", extra={"skipped": skipped})
@@ -215,6 +304,19 @@ class ChannelManager:
             self.ws_clients[channel].discard(ws)
 
 manager = ChannelManager()
+
+
+async def _publish_scoped(channel_key: str, event: str, data: dict) -> None:
+    """Fan a message out to the SSE clients and sockets of one scoped channel."""
+    await manager.broadcast_sse(channel_key, event, data)
+    await manager.broadcast_ws(channel_key, {"event": event, "data": data})
+
+
+async def _publish_for_request(request: Request, channel: str, event: str, data: dict) -> str:
+    """Role-checked, tenant-scoped publish for the REST surface."""
+    tenant_id = _require_channel_access(request, channel)
+    await _publish_scoped(_scoped_channel(tenant_id, channel), event, data)
+    return tenant_id
 
 # ── Message Schemas ─────────────────────────────────────────────────────────
 
@@ -343,6 +445,10 @@ class ChatMessage(BaseModel):
     sender: str = Field(..., min_length=1, max_length=200)
     message: str = Field(..., min_length=1, max_length=2000)
     message_type: Literal["text", "image", "system"] = "text"
+
+class ChatRoom(BaseModel):
+    room: str = Field(..., min_length=1, max_length=64)
+    created_by: str = Field(..., min_length=1, max_length=200)
 
 class Poll(BaseModel):
     poll_id: str = Field(..., min_length=1, max_length=100)
@@ -491,8 +597,20 @@ async def rabbitmq_consumer():
                             try:
                                 payload = json.loads(message.body.decode())
                                 channel_name = message.routing_key.split(".")[0]
-                                await manager.broadcast_sse(channel_name, message.routing_key, payload)
-                                await manager.broadcast_ws(channel_name, payload)
+                                tenant_id = payload.get("tenant_id")
+                                if (
+                                    not isinstance(tenant_id, str)
+                                    or not _valid_tenant(tenant_id)
+                                    or not _valid_channel_name(channel_name)
+                                ):
+                                    # Fail closed: a message that names no specific
+                                    # tenant cannot be delivered into a shared stream.
+                                    logger.warning("rabbitmq.unscoped_message_skipped",
+                                        extra={"routing_key": message.routing_key})
+                                    continue
+                                scoped = _scoped_channel(tenant_id, channel_name)
+                                await manager.broadcast_sse(scoped, message.routing_key, payload)
+                                await manager.broadcast_ws(scoped, payload)
                             except (json.JSONDecodeError, UnicodeDecodeError, KeyError, ValueError, AttributeError) as e:
                                 logger.warning("rabbitmq.poison_message_skipped",
                                     extra={"error": str(e), "error_type": type(e).__name__, "routing_key": message.routing_key})
@@ -526,8 +644,13 @@ async def notifications_consumer():
                                     tenant_id = payload.get("tenant_id", "")
                                     logger.info("employee.deleted.presence_cleanup",
                                         extra={"email": email, "tenant_id": tenant_id})
-                                    manager.presence.pop(email, None)
-                                    manager.presence.pop(tenant_id + ":" + email, None)
+                                    if email and isinstance(tenant_id, str) and _valid_tenant(tenant_id):
+                                        manager.presence.pop(_presence_key(tenant_id, email), None)
+                                    else:
+                                        # Without a verified tenant the scoped key is
+                                        # unknowable; TTL eviction still reaps the entry.
+                                        logger.warning("employee.deleted.presence_cleanup_skipped",
+                                            extra={"reason": "missing or invalid tenant_id"})
                             except (json.JSONDecodeError, UnicodeDecodeError, KeyError, ValueError, AttributeError) as e:
                                 logger.warning("rabbitmq.poison_message_skipped",
                                     extra={"error": str(e), "error_type": type(e).__name__})
@@ -553,10 +676,12 @@ async def sse_generator(queue: asyncio.Queue, channel: str):
 
 @app.get("/api/v1/live/sse/{channel}")
 async def sse_channel(channel: str, request: Request):
+    _validate_channel(channel)
+    scoped = _scoped_channel(_require_channel_access(request, channel), channel)
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-    manager.sse_clients[channel].add(queue)
+    manager.sse_clients[scoped].add(queue)
     last_event_id = request.headers.get("last-event-id")
-    history = manager.channel_history.get(channel, [])
+    history = manager.channel_history.get(scoped, [])
     if last_event_id:
         try:
             last_id = int(last_event_id)
@@ -567,7 +692,7 @@ async def sse_channel(channel: str, request: Request):
         history = history[-20:]
     for msg in history:
         await queue.put(msg)
-    return EventSourceResponse(sse_generator(queue, channel))
+    return EventSourceResponse(sse_generator(queue, scoped))
 
 @app.get("/api/v1/live/sse/presence")
 async def sse_presence(request: Request): return await sse_channel("presence", request)
@@ -664,10 +789,17 @@ async def verify_ws_token(websocket: WebSocket, token: Optional[str] = None) -> 
 async def websocket_channel(websocket: WebSocket, channel: str, token: Optional[str] = Query(None)):
     if not await verify_ws_token(websocket, token):
         return
+    if not _valid_channel_name(channel) or not _valid_tenant(websocket.state.tenant_id):
+        await websocket.close(code=4004, reason="Invalid channel or tenant context")
+        return
+    if not _role_allowed(websocket.state.user_role, channel):
+        await websocket.close(code=4003, reason="Insufficient role for channel")
+        return
+    scoped = _scoped_channel(websocket.state.tenant_id, channel)
     await websocket.accept()
-    manager.ws_clients[channel].add(websocket)
+    manager.ws_clients[scoped].add(websocket)
     try:
-        history = manager.channel_history.get(channel, [])
+        history = manager.channel_history.get(scoped, [])
         for msg in history[-50:]:
             await websocket.send_json(msg)
         while True:
@@ -678,7 +810,7 @@ async def websocket_channel(websocket: WebSocket, channel: str, token: Optional[
     except WebSocketDisconnect:
         pass
     finally:
-        manager.ws_clients[channel].discard(websocket)
+        manager.ws_clients[scoped].discard(websocket)
 
 ws_handlers: dict[str, callable] = {}
 
@@ -686,42 +818,66 @@ ws_handlers: dict[str, callable] = {}
 async def websocket_chat(websocket: WebSocket, token: Optional[str] = Query(None)):
     if not await verify_ws_token(websocket, token):
         return
+    if not _valid_tenant(websocket.state.tenant_id):
+        await websocket.close(code=4004, reason="Invalid tenant context")
+        return
     await websocket.accept()
-    manager.ws_clients["chat"].add(websocket)
+    tenant_id = websocket.state.tenant_id
+    joined: set[str] = set()
     try:
         while True:
             data = await websocket.receive_json()
-            msg = ChatMessage(**data)
+            try:
+                msg = ChatMessage(**data)
+            except (ValueError, TypeError) as e:
+                await websocket.send_json({"event": "chat.error", "data": {"detail": f"Invalid message: {type(e).__name__}"}})
+                continue
+            if not _valid_room_name(msg.room):
+                await websocket.send_json({"event": "chat.error", "data": {"detail": "Invalid room name"}})
+                continue
+            room_key = _scoped_key(tenant_id, "chat", msg.room)
+            if room_key not in manager.chat_room_meta:
+                # Rooms are created server-side per tenant; clients cannot
+                # conjure a room by naming it.
+                await websocket.send_json({"event": "chat.error", "data": {"detail": "Unknown room"}})
+                continue
             entry = {"id": str(uuid.uuid4()), "sender": msg.sender, "message": msg.message, "message_type": msg.message_type, "room": msg.room, "timestamp": _utc_now_iso()}
-            manager.chat_rooms[msg.room].append(entry)
-            if len(manager.chat_rooms[msg.room]) > 200:
-                manager.chat_rooms[msg.room] = manager.chat_rooms[msg.room][-200:]
-            await manager.broadcast_ws(f"chat:{msg.room}", {"event": "chat.message", "data": entry})
+            manager.chat_rooms[room_key].append(entry)
+            if len(manager.chat_rooms[room_key]) > 200:
+                manager.chat_rooms[room_key] = manager.chat_rooms[room_key][-200:]
+            joined.add(room_key)
+            manager.ws_clients[room_key].add(websocket)
+            await manager.broadcast_ws(room_key, {"event": "chat.message", "data": entry})
     except WebSocketDisconnect:
         pass
     finally:
-        manager.ws_clients["chat"].discard(websocket)
+        for room_key in joined:
+            manager.ws_clients[room_key].discard(websocket)
 
 @app.websocket("/api/v1/live/ws/presence")
 async def websocket_presence(websocket: WebSocket, token: Optional[str] = Query(None)):
     if not await verify_ws_token(websocket, token):
         return
+    if not _valid_tenant(websocket.state.tenant_id):
+        await websocket.close(code=4004, reason="Invalid tenant context")
+        return
+    scoped = _scoped_channel(websocket.state.tenant_id, "presence")
     await websocket.accept()
-    manager.ws_clients["presence"].add(websocket)
+    manager.ws_clients[scoped].add(websocket)
     try:
         while True:
             data = await websocket.receive_json()
             update = PresenceUpdate(**data)
             entry = update.model_dump()
             entry["_last_seen"] = _utc_now_ts()
-            manager.presence[update.user_id] = entry
+            manager.presence[_presence_key(websocket.state.tenant_id, update.user_id)] = entry
             public = _strip_internal(entry)
-            await manager.broadcast_ws("presence", {"event": "presence.update", "data": public})
-            await manager.broadcast_sse("presence", "presence.update", public)
+            await manager.broadcast_ws(scoped, {"event": "presence.update", "data": public})
+            await manager.broadcast_sse(scoped, "presence.update", public)
     except WebSocketDisconnect:
         pass
     finally:
-        manager.ws_clients["presence"].discard(websocket)
+        manager.ws_clients[scoped].discard(websocket)
 
 # ── REST Endpoints ──────────────────────────────────────────────────────────
 
@@ -736,171 +892,198 @@ async def publish_event(channel: str, request: Request, event: str = Query(..., 
         raise HTTPException(status_code=400, detail=f"Invalid JSON body: {type(e).__name__}")
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Request body must be a JSON object")
-    if channel not in manager.channel_history and len(manager.channel_history) >= MAX_CHANNELS:
+    tenant_id = _require_channel_access(request, channel)
+    scoped = _scoped_channel(tenant_id, channel)
+    tenant_channels = [key for key in manager.channel_history if key.startswith(f"{tenant_id}:")]
+    if scoped not in manager.channel_history and len(tenant_channels) >= MAX_CHANNELS:
         raise HTTPException(status_code=400, detail="Channel limit reached")
-    await manager.broadcast_sse(channel, event, body)
-    await manager.broadcast_ws(channel, {"event": event, "data": body})
+    await _publish_scoped(scoped, event, body)
     return {"status": "published", "channel": channel, "event": event}
 
 @app.post("/api/v1/live/presence")
-async def update_presence(update: PresenceUpdate):
+async def update_presence(update: PresenceUpdate, request: Request):
+    tenant_id = _tenant_from_request(request)
     entry = update.model_dump()
     entry["_last_seen"] = _utc_now_ts()
-    manager.presence[update.user_id] = entry
+    manager.presence[_presence_key(tenant_id, update.user_id)] = entry
     public = _strip_internal(entry)
-    await manager.broadcast_sse("presence", "presence.update", public)
-    await manager.broadcast_ws("presence", {"event": "presence.update", "data": public})
+    await _publish_scoped(_scoped_channel(tenant_id, "presence"), "presence.update", public)
     return {"status": "ok"}
 
 @app.get("/api/v1/live/presence")
-async def get_presence():
-    return {"users": _strip_internal_from_list(manager.presence.values())}
+async def get_presence(request: Request):
+    tenant_id = _tenant_from_request(request)
+    users = [manager.presence[key] for key in _tenant_keys(manager.presence, tenant_id, "presence")]
+    return {"users": _strip_internal_from_list(users)}
 
 @app.post("/api/v1/live/attendance")
-async def publish_attendance(event: AttendanceEvent):
-    await manager.broadcast_sse("attendance", "attendance.event", event.model_dump())
+async def publish_attendance(event: AttendanceEvent, request: Request):
+    await _publish_for_request(request, "attendance", "attendance.event", event.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/payroll")
-async def publish_payroll(progress: PayrollProgress):
-    await manager.broadcast_sse("payroll", "payroll.progress", progress.model_dump())
+async def publish_payroll(progress: PayrollProgress, request: Request):
+    await _publish_for_request(request, "payroll", "payroll.progress", progress.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/leave")
-async def publish_leave(approval: LeaveApproval):
-    await manager.broadcast_sse("leave", "leave.approval", approval.model_dump())
+async def publish_leave(approval: LeaveApproval, request: Request):
+    await _publish_for_request(request, "leave", "leave.approval", approval.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/kpi")
-async def publish_kpi(kpi: KPIUpdate):
-    await manager.broadcast_sse("kpi", "kpi.update", kpi.model_dump())
+async def publish_kpi(kpi: KPIUpdate, request: Request):
+    await _publish_for_request(request, "kpi", "kpi.update", kpi.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/activity")
-async def publish_activity(event: ActivityEvent):
-    await manager.broadcast_sse("activity", "activity.event", event.model_dump())
+async def publish_activity(event: ActivityEvent, request: Request):
+    await _publish_for_request(request, "activity", "activity.event", event.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/alert")
-async def publish_alert(alert: Alert):
-    await manager.broadcast_sse("alert", "alert.new", alert.model_dump())
+async def publish_alert(alert: Alert, request: Request):
+    await _publish_for_request(request, "alert", "alert.new", alert.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/announcement")
-async def publish_announcement(ann: Announcement):
-    await manager.broadcast_sse("announcement", "announcement.new", ann.model_dump())
+async def publish_announcement(ann: Announcement, request: Request):
+    await _publish_for_request(request, "announcement", "announcement.new", ann.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/heatmap")
-async def publish_heatmap(data: WorkforceHeatmap):
-    await manager.broadcast_sse("heatmap", "heatmap.update", data.model_dump())
+async def publish_heatmap(data: WorkforceHeatmap, request: Request):
+    await _publish_for_request(request, "heatmap", "heatmap.update", data.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/task")
-async def publish_task(task: TaskAssignment):
-    await manager.broadcast_sse("task", "task.assign", task.model_dump())
+async def publish_task(task: TaskAssignment, request: Request):
+    await _publish_for_request(request, "task", "task.assign", task.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/escalation")
-async def publish_escalation(esc: Escalation):
-    await manager.broadcast_sse("escalation", "escalation.new", esc.model_dump())
+async def publish_escalation(esc: Escalation, request: Request):
+    await _publish_for_request(request, "escalation", "escalation.new", esc.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/compliance")
-async def publish_compliance(violation: ComplianceViolation):
-    await manager.broadcast_sse("compliance", "compliance.violation", violation.model_dump())
+async def publish_compliance(violation: ComplianceViolation, request: Request):
+    await _publish_for_request(request, "compliance", "compliance.violation", violation.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/onboarding")
-async def publish_onboarding(progress: OnboardingProgress):
-    await manager.broadcast_sse("onboarding", "onboarding.progress", progress.model_dump())
+async def publish_onboarding(progress: OnboardingProgress, request: Request):
+    await _publish_for_request(request, "onboarding", "onboarding.progress", progress.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/recruitment")
-async def publish_recruitment(update: RecruitmentUpdate):
-    await manager.broadcast_sse("recruitment", "recruitment.update", update.model_dump())
+async def publish_recruitment(update: RecruitmentUpdate, request: Request):
+    await _publish_for_request(request, "recruitment", "recruitment.update", update.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/forecast")
-async def publish_forecast(update: ForecastUpdate):
-    await manager.broadcast_sse("forecast", "forecast.update", update.model_dump())
+async def publish_forecast(update: ForecastUpdate, request: Request):
+    await _publish_for_request(request, "forecast", "forecast.update", update.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/sla")
-async def publish_sla(update: SLAUpdate):
-    manager.sla_status[update.service] = update.model_dump()
-    await manager.broadcast_sse("sla", "sla.update", update.model_dump())
+async def publish_sla(update: SLAUpdate, request: Request):
+    tenant_id = _require_channel_access(request, "sla")
+    payload = update.model_dump()
+    manager.sla_status[_scoped_key(tenant_id, "sla", update.service)] = payload
+    await _publish_scoped(_scoped_channel(tenant_id, "sla"), "sla.update", payload)
     return {"status": "ok"}
 
 @app.get("/api/v1/live/sla")
-async def get_sla():
-    return {"services": list(manager.sla_status.values())}
+async def get_sla(request: Request):
+    tenant_id = _tenant_from_request(request)
+    services = [manager.sla_status[key] for key in _tenant_keys(manager.sla_status, tenant_id, "sla")]
+    return {"services": services}
 
 @app.post("/api/v1/live/staffing")
-async def publish_staffing(update: StaffingUpdate):
-    await manager.broadcast_sse("staffing", "staffing.update", update.model_dump())
+async def publish_staffing(update: StaffingUpdate, request: Request):
+    await _publish_for_request(request, "staffing", "staffing.update", update.model_dump())
     return {"status": "ok"}
 
 @app.post("/api/v1/live/poll/create")
-async def create_poll(poll: Poll):
+async def create_poll(poll: Poll, request: Request):
+    tenant_id = _tenant_from_request(request)
     if not poll.poll_id:
         poll.poll_id = str(uuid.uuid4())
     if not poll.votes:
         poll.votes = {opt: 0 for opt in poll.options}
     entry = poll.model_dump()
     entry["_created_at"] = _utc_now_ts()
-    manager.polls[poll.poll_id] = entry
+    manager.polls[_scoped_key(tenant_id, "poll", poll.poll_id)] = entry
     public = _strip_internal(entry)
-    await manager.broadcast_ws("poll", {"event": "poll.created", "data": public})
+    await manager.broadcast_ws(_scoped_channel(tenant_id, "poll"), {"event": "poll.created", "data": public})
     return public
 
 @app.post("/api/v1/live/poll/vote")
-async def vote_poll(vote: PollVote):
+async def vote_poll(vote: PollVote, request: Request):
+    tenant_id = _tenant_from_request(request)
+    poll_key = _scoped_key(tenant_id, "poll", vote.poll_id)
     async with manager.poll_lock:
-        poll = manager.polls.get(vote.poll_id)
+        poll = manager.polls.get(poll_key)
         if not poll:
             raise HTTPException(status_code=404, detail="Poll not found")
         if vote.option not in poll["options"]:
             raise HTTPException(status_code=400, detail="Invalid option")
         poll["votes"][vote.option] = poll["votes"].get(vote.option, 0) + 1
         votes_snapshot = dict(poll["votes"])
-    await manager.broadcast_ws("poll", {"event": "poll.vote", "data": {"poll_id": vote.poll_id, "votes": votes_snapshot}})
+    await manager.broadcast_ws(_scoped_channel(tenant_id, "poll"),
+        {"event": "poll.vote", "data": {"poll_id": vote.poll_id, "votes": votes_snapshot}})
     return _strip_internal(poll)
 
 @app.get("/api/v1/live/polls")
-async def get_polls(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
-    items = _strip_internal_from_list(list(manager.polls.values()))
+async def get_polls(request: Request, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+    tenant_id = _tenant_from_request(request)
+    items = _strip_internal_from_list([manager.polls[key] for key in _tenant_keys(manager.polls, tenant_id, "poll")])
     total = len(items)
     start = (page - 1) * page_size
     return {"polls": items[start:start + page_size], "page": page, "page_size": page_size, "total": total}
 
 @app.post("/api/v1/live/emergency")
-async def broadcast_emergency(emergency: EmergencyBroadcast):
-    for ch in ["emergency", "alert", "incident"]:
-        await manager.broadcast_sse(ch, "emergency.broadcast", emergency.model_dump())
-        await manager.broadcast_ws(ch, {"event": "emergency.broadcast", "data": emergency.model_dump()})
-    return {"status": "broadcasted"}
+async def broadcast_emergency(emergency: EmergencyBroadcast, request: Request):
+    tenant_id = _tenant_from_request(request)
+    role = getattr(request.state, "user_role", "employee")
+    targets: list[str] = []
+    for target in emergency.targets or list(EMERGENCY_DEFAULT_CHANNELS):
+        if not _valid_channel_name(target):
+            raise HTTPException(status_code=400, detail="Invalid emergency target channel")
+        if target in targets:
+            continue
+        if not _role_allowed(role, target):
+            raise HTTPException(status_code=403, detail="Insufficient role for emergency target")
+        targets.append(target)
+    if not targets:
+        raise HTTPException(status_code=400, detail="No emergency targets")
+    payload = emergency.model_dump()
+    for target in targets:
+        await _publish_scoped(_scoped_channel(tenant_id, target), "emergency.broadcast", payload)
+    return {"status": "broadcasted", "channels": targets}
 
 @app.post("/api/v1/live/incident")
-async def report_incident(incident: IncidentManagement):
+async def report_incident(incident: IncidentManagement, request: Request):
+    tenant_id = _tenant_from_request(request)
     if not incident.incident_id:
         incident.incident_id = str(uuid.uuid4())
     entry = incident.model_dump()
     entry["_created_at"] = _utc_now_ts()
-    inc_id = incident.incident_id
-    manager.incidents[inc_id].append(entry)
-    if len(manager.incidents[inc_id]) > MAX_INCIDENTS_PER_ID:
-        manager.incidents[inc_id] = manager.incidents[inc_id][-MAX_INCIDENTS_PER_ID:]
+    incident_key = _scoped_key(tenant_id, "incident", incident.incident_id)
+    manager.incidents[incident_key].append(entry)
+    if len(manager.incidents[incident_key]) > MAX_INCIDENTS_PER_ID:
+        manager.incidents[incident_key] = manager.incidents[incident_key][-MAX_INCIDENTS_PER_ID:]
     public = _strip_internal(entry)
-    await manager.broadcast_sse("incident", "incident.new", public)
-    await manager.broadcast_ws("incident", {"event": "incident.new", "data": public})
+    await _publish_scoped(_scoped_channel(tenant_id, "incident"), "incident.new", public)
     return public
 
 @app.get("/api/v1/live/incidents")
-async def get_incidents(status: Optional[str] = Query(None, max_length=50), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+async def get_incidents(request: Request, status: Optional[str] = Query(None, max_length=50), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+    tenant_id = _tenant_from_request(request)
     all_inc = []
-    for inc_list in manager.incidents.values():
-        for inc in inc_list:
+    for incident_key in _tenant_keys(manager.incidents, tenant_id, "incident"):
+        for inc in manager.incidents[incident_key]:
             if not status or inc.get("status") == status:
                 all_inc.append(inc)
     sorted_inc = sorted(all_inc, key=lambda x: x.get("_created_at", 0), reverse=True)
@@ -909,31 +1092,54 @@ async def get_incidents(status: Optional[str] = Query(None, max_length=50), page
     return {"incidents": _strip_internal_from_list(sorted_inc[start:start + page_size]), "page": page, "page_size": page_size, "total": total}
 
 @app.get("/api/v1/live/history/{channel}")
-async def get_channel_history(channel: str, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+async def get_channel_history(channel: str, request: Request, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
     _validate_channel(channel)
-    items = manager.channel_history.get(channel, [])
+    scoped = _scoped_channel(_require_channel_access(request, channel), channel)
+    items = manager.channel_history.get(scoped, [])
     total = len(items)
     start = (page - 1) * page_size
     return {"channel": channel, "messages": items[start:start + page_size], "page": page, "page_size": page_size, "total": total}
 
+@app.post("/api/v1/live/chat/room")
+async def create_chat_room(room: ChatRoom, request: Request):
+    _validate_room(room.room)
+    tenant_id = _tenant_from_request(request)
+    room_key = _scoped_key(tenant_id, "chat", room.room)
+    if room_key in manager.chat_room_meta:
+        return {"room": room.room, "created": False}
+    manager.chat_rooms.setdefault(room_key, [])
+    manager.chat_room_meta[room_key] = {
+        "room": room.room,
+        "created_by": room.created_by,
+        "_created_at": _utc_now_ts(),
+    }
+    return {"room": room.room, "created": True}
+
+@app.get("/api/v1/live/chat/rooms")
+async def list_chat_rooms(request: Request):
+    tenant_id = _tenant_from_request(request)
+    rooms = [manager.chat_room_meta[key].get("room", "") for key in _tenant_keys(manager.chat_room_meta, tenant_id, "chat")]
+    return {"rooms": sorted(room for room in rooms if room)}
+
 @app.get("/api/v1/live/chat/{room}")
-async def get_chat_history(room: str, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
-    if not room or len(room) > 64:
-        raise HTTPException(status_code=400, detail="Invalid room name")
-    items = manager.chat_rooms.get(room, [])
+async def get_chat_history(room: str, request: Request, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+    _validate_room(room)
+    tenant_id = _tenant_from_request(request)
+    items = manager.chat_rooms.get(_scoped_key(tenant_id, "chat", room), [])
     total = len(items)
     start = (page - 1) * page_size
     return {"room": room, "messages": items[start:start + page_size], "page": page, "page_size": page_size, "total": total}
 
 @app.get("/api/v1/live/stats")
-async def get_stats():
+async def get_stats(request: Request):
+    tenant_id = _tenant_from_request(request)
     return {
-        "channels": len(manager.channel_history),
-        "chat_rooms": len(manager.chat_rooms),
-        "polls": len(manager.polls),
-        "presence_users": len(manager.presence),
-        "incident_groups": len(manager.incidents),
-        "sla_services": len(manager.sla_status),
+        "channels": len([key for key in manager.channel_history if key.startswith(f"{tenant_id}:")]),
+        "chat_rooms": len(_tenant_keys(manager.chat_room_meta, tenant_id, "chat")),
+        "polls": len(_tenant_keys(manager.polls, tenant_id, "poll")),
+        "presence_users": len(_tenant_keys(manager.presence, tenant_id, "presence")),
+        "incident_groups": len(_tenant_keys(manager.incidents, tenant_id, "incident")),
+        "sla_services": len(_tenant_keys(manager.sla_status, tenant_id, "sla")),
     }
 
 @app.get("/health")
