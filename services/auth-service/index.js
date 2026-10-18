@@ -1558,9 +1558,23 @@ async function initDB() {
       mfa_secret VARCHAR(255) NOT NULL,
       backup_codes JSONB DEFAULT '[]'::jsonb,
       mfa_enabled BOOLEAN DEFAULT false,
-      backup_codes_shown BOOLEAN DEFAULT false
+      backup_codes_shown BOOLEAN DEFAULT false,
+      backup_codes_issued_at TIMESTAMP,
+      backup_codes_expires_at TIMESTAMP
     );
   `);
+  // Existing installs get the freshness columns; legacy code sets are given a
+  // bounded lifetime from the moment this ships rather than living forever.
+  try {
+    await pool.query('ALTER TABLE user_mfa ADD COLUMN IF NOT EXISTS backup_codes_issued_at TIMESTAMP');
+    await pool.query('ALTER TABLE user_mfa ADD COLUMN IF NOT EXISTS backup_codes_expires_at TIMESTAMP');
+    await pool.query(`
+      UPDATE user_mfa
+      SET backup_codes_issued_at = COALESCE(backup_codes_issued_at, NOW()),
+          backup_codes_expires_at = COALESCE(backup_codes_expires_at, NOW() + INTERVAL '90 days')
+      WHERE backup_codes_expires_at IS NULL
+    `);
+  } catch (err) { /* column already present */ }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_devices (
@@ -2139,21 +2153,50 @@ app.post('/logout', createUserRateLimiter('logout', 100), requireCsrfDoubleSubmi
 app.post('/mfa/setup', requireRole(), createUserRateLimiter('mfa_setup', 5), async (req, res) => {
   try {
     const userId = req.user.id;
+    const { password, token } = req.body || {};
+    // Setup is the highest-stakes settings change in the account flow: it
+    // must not silently disarm MFA on a bare session. Require proof of the
+    // existing factor first - either the account password or a current TOTP
+    // code - and never toggle mfa_enabled off as a side effect.
+    const userResult = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+    const user = userResult.rows[0];
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    let confirmed = false;
+    if (password) {
+      confirmed = await bcrypt.compare(password, user.password);
+    }
+    const existingMfa = await pool.query('SELECT * FROM user_mfa WHERE user_id = $1', [userId]);
+    if (!confirmed && token && existingMfa.rows[0]?.mfa_secret) {
+      confirmed = authenticator.check(token, existingMfa.rows[0].mfa_secret);
+    }
+    if (!confirmed) {
+      await sendAuditEvent('auth.mfa_setup_denied', userId, req.user.email, {});
+      return res.status(403).json({ message: 'Confirm with your password or current MFA code to change MFA settings' });
+    }
     const secret = authenticator.generateSecret();
-    const backupCodes = Array.from({ length: 10 }, () => crypto.randomBytes(5).toString('hex').slice(0, 8).toUpperCase());
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+    const backupCodes = Array.from({ length: 10 }, () => ({
+      code: crypto.randomBytes(5).toString('hex').slice(0, 8).toUpperCase(),
+      issued_at: now.toISOString(),
+      expires_at: expiresAt.toISOString(),
+    }));
 
-    const existing = await pool.query('SELECT backup_codes_shown FROM user_mfa WHERE user_id = $1', [userId]);
+    const existing = await pool.query('SELECT backup_codes_shown, mfa_enabled FROM user_mfa WHERE user_id = $1', [userId]);
     const alreadyShown = existing.rows[0]?.backup_codes_shown === true;
+    const wasEnabled = existing.rows[0]?.mfa_enabled === true;
 
     await pool.query(`
-      INSERT INTO user_mfa (user_id, mfa_secret, backup_codes, mfa_enabled)
-      VALUES ($1, $2, $3::jsonb, false)
+      INSERT INTO user_mfa (user_id, mfa_secret, backup_codes, mfa_enabled, backup_codes_issued_at, backup_codes_expires_at)
+      VALUES ($1, $2, $3::jsonb, $4, NOW(), $5)
       ON CONFLICT (user_id) DO UPDATE SET
         mfa_secret = EXCLUDED.mfa_secret,
         backup_codes = EXCLUDED.backup_codes,
-        mfa_enabled = false,
-        backup_codes_shown = false
-    `, [userId, secret, JSON.stringify(backupCodes)]);
+        backup_codes_issued_at = EXCLUDED.backup_codes_issued_at,
+        backup_codes_expires_at = EXCLUDED.backup_codes_expires_at
+    `, [userId, secret, JSON.stringify(backupCodes), wasEnabled, expiresAt]);
 
     const otpauth = authenticator.keyuri(req.user.email, 'Atlas Workforce', secret);
 
@@ -2162,9 +2205,12 @@ app.post('/mfa/setup', requireRole(), createUserRateLimiter('mfa_setup', 5), asy
       response.message = 'Backup codes were regenerated. Use /mfa/rotate-backup-codes to view new codes with re-authentication.';
     } else {
       await pool.query('UPDATE user_mfa SET backup_codes_shown = true WHERE user_id = $1', [userId]);
-      response.backup_codes = backupCodes;
+      response.backup_codes = backupCodes.map((entry) => entry.code);
+      response.backup_codes_expires_at = expiresAt.toISOString();
       response.message = 'Save these backup codes. They will not be shown again.';
     }
+
+    await sendAuditEvent('auth.mfa_setup_confirmed', userId, req.user.email, { was_enabled: wasEnabled });
 
     res.json(response);
   } catch (error) {
@@ -2191,15 +2237,30 @@ app.post('/mfa/rotate-backup-codes', requireRole(), createUserRateLimiter('mfa_v
       return res.status(400).json({ message: 'Invalid token' });
     }
 
-    const newCodes = Array.from({ length: 10 }, () => crypto.randomBytes(5).toString('hex').slice(0, 8).toUpperCase());
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+    const newCodes = Array.from({ length: 10 }, () => ({
+      code: crypto.randomBytes(5).toString('hex').slice(0, 8).toUpperCase(),
+      issued_at: now.toISOString(),
+      expires_at: expiresAt.toISOString(),
+    }));
 
     await pool.query(`
-      UPDATE user_mfa SET backup_codes = $1::jsonb, backup_codes_shown = true WHERE user_id = $2
-    `, [JSON.stringify(newCodes), userId]);
+      UPDATE user_mfa
+      SET backup_codes = $1::jsonb,
+          backup_codes_shown = true,
+          backup_codes_issued_at = NOW(),
+          backup_codes_expires_at = $2
+      WHERE user_id = $3
+    `, [JSON.stringify(newCodes), expiresAt, userId]);
 
     await sendAuditEvent('auth.mfa_rotate_codes', userId, req.user.email);
 
-    res.json({ message: 'Backup codes rotated successfully. Save these codes as they will not be shown again.', backup_codes: newCodes });
+    res.json({
+      message: 'Backup codes rotated successfully. Save these codes as they will not be shown again.',
+      backup_codes: newCodes.map((entry) => entry.code),
+      backup_codes_expires_at: expiresAt.toISOString(),
+    });
   } catch (error) {
     safeLog(console.error, 'Request failed', error);
     res.status(500).json({ message: 'Failed to rotate backup codes' });
@@ -2332,14 +2393,54 @@ app.post('/mfa/validate', createUserRateLimiter('mfa_validate', 10), async (req,
       }
     }
     if (!validated && backup_code) {
-      const codes = typeof mfa.backup_codes === 'string' ? JSON.parse(mfa.backup_codes) : mfa.backup_codes;
-      if (Array.isArray(codes)) {
-        const idx = codes.indexOf(backup_code);
-        if (idx !== -1) {
-          codes.splice(idx, 1);
-          await pool.query('UPDATE user_mfa SET backup_codes = $1::jsonb WHERE user_id = $2', [JSON.stringify(codes), userId]);
-          validated = true;
-          method = 'backup_code';
+      // One guarded statement: match (case-insensitive, trimmed) and consume
+      // the code in the same UPDATE, refuse when the set is expired, and
+      // re-check on write conflict so two concurrent submits cannot both win.
+      // Doing the work inside jsonb removes the JS-side JSON.parse throw on
+      // corrupted rows entirely.
+      const normalizedCode = String(backup_code).trim().toUpperCase();
+      const codeMatch = `(
+        (jsonb_typeof(t.value) = 'string' AND upper(btrim(t.value #>> '{}')) = $2)
+        OR
+        (jsonb_typeof(t.value) = 'object' AND upper(btrim(t.value ->> 'code')) = $2)
+      )`;
+      const consumed = await pool.query(
+        `UPDATE user_mfa
+         SET backup_codes = (
+           SELECT COALESCE(jsonb_agg(t.value) FILTER (WHERE NOT (${codeMatch})), '[]'::jsonb)
+           FROM jsonb_array_elements(COALESCE(user_mfa.backup_codes, '[]'::jsonb)) AS t(value)
+         )
+         WHERE user_id = $1
+           AND backup_codes_expires_at IS NOT NULL
+           AND backup_codes_expires_at > NOW()
+           AND EXISTS (
+             SELECT 1
+             FROM jsonb_array_elements(COALESCE(user_mfa.backup_codes, '[]'::jsonb)) AS t(value)
+             WHERE ${codeMatch}
+           )
+         RETURNING user_id`,
+        [userId, normalizedCode]
+      );
+      if (consumed.rowCount === 1) {
+        validated = true;
+        method = 'backup_code';
+      } else {
+        // Distinguish an expired set from a wrong code so users know to rotate.
+        const expired = await pool.query(
+          `SELECT 1 FROM user_mfa
+           WHERE user_id = $1
+             AND (backup_codes_expires_at IS NULL OR backup_codes_expires_at <= NOW())
+             AND EXISTS (
+               SELECT 1
+               FROM jsonb_array_elements(COALESCE(backup_codes, '[]'::jsonb)) AS t(value)
+               WHERE ${codeMatch}
+             )`,
+          [userId, normalizedCode]
+        );
+        if (expired.rowCount === 1) {
+          return res.status(400).json({
+            message: 'Backup codes have expired. Rotate them with /mfa/rotate-backup-codes using a TOTP code.',
+          });
         }
       }
     }
