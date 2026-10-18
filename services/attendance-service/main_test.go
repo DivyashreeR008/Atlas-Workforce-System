@@ -444,3 +444,179 @@ func TestTrendDirection(t *testing.T) {
 		t.Error("expected stable for zero trend")
 	}
 }
+
+// postJSON is a small helper for the validation tests below.
+func postJSON(t *testing.T, handler fiber.Handler, path, body string) (int, map[string]interface{}) {
+	t.Helper()
+	app := setupTestApp()
+	app.Post(path, handler)
+	req := httptest.NewRequest("POST", path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
+	return resp.StatusCode, result
+}
+
+func TestCreateGeoFence_Validation(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"missing name", `{"latitude":10,"longitude":20,"radiusMeters":100}`, 400},
+		{"latitude out of range", `{"name":"HQ","latitude":91,"longitude":20,"radiusMeters":100}`, 400},
+		{"longitude out of range", `{"name":"HQ","latitude":10,"longitude":181,"radiusMeters":100}`, 400},
+		{"zero radius", `{"name":"HQ","latitude":10,"longitude":20,"radiusMeters":0}`, 400},
+		{"unreasonable radius", `{"name":"HQ","latitude":10,"longitude":20,"radiusMeters":100001}`, 400},
+		{"valid fence", `{"name":"HQ","latitude":12.9716,"longitude":77.5946,"radiusMeters":150}`, 201},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, _ := postJSON(t, createGeoFence, "/api/attendance/geo-fences", tc.body); got != tc.want {
+				t.Errorf("expected %d, got %d", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestCreateShift_RequiresName(t *testing.T) {
+	body := `{"startTime": "09:00", "endTime": "17:00"}`
+	if got, _ := postJSON(t, createShift, "/api/attendance/shifts", body); got != 400 {
+		t.Errorf("expected 400 for a nameless shift, got %d", got)
+	}
+}
+
+func TestAssignEmployeeShift_Validation(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"missing employeeId", `{"shiftId":1,"startDate":"2026-01-05"}`, 400},
+		{"invalid startDate", `{"employeeId":"emp-1","shiftId":1,"startDate":"05-01-2026"}`, 400},
+		{"invalid endDate", `{"employeeId":"emp-1","shiftId":1,"startDate":"2026-01-05","endDate":"not-a-date"}`, 400},
+		{"endDate before startDate", `{"employeeId":"emp-1","shiftId":1,"startDate":"2026-01-05","endDate":"2026-01-04"}`, 400},
+		{"valid assignment", `{"employeeId":"emp-1","shiftId":1,"startDate":"2026-01-05"}`, 201},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, _ := postJSON(t, assignEmployeeShift, "/api/attendance/employee-shifts", tc.body); got != tc.want {
+				t.Errorf("expected %d, got %d", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestCreateRoster_Validation(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"missing employeeId", `{"date":"2026-01-05","shiftId":1}`, 400},
+		{"invalid date", `{"employeeId":"emp-1","date":"2026-13-40","shiftId":1}`, 400},
+		{"valid roster", `{"employeeId":"emp-1","date":"2026-01-05","shiftId":1}`, 201},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, _ := postJSON(t, createRoster, "/api/attendance/rosters", tc.body); got != tc.want {
+				t.Errorf("expected %d, got %d", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestBulkCreateRoster_Validation(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"empty list", `{"employeeIds":[],"date":"2026-01-05","shiftId":1}`, 400},
+		{"invalid date", `{"employeeIds":["emp-1"],"date":"05/01/2026","shiftId":1}`, 400},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, _ := postJSON(t, bulkCreateRoster, "/api/attendance/rosters/bulk", tc.body); got != tc.want {
+				t.Errorf("expected %d, got %d", tc.want, got)
+			}
+		})
+	}
+
+	var oversized strings.Builder
+	oversized.WriteString(`{"employeeIds":[`)
+	for i := 0; i <= 200; i++ {
+		if i > 0 {
+			oversized.WriteString(",")
+		}
+		fmt.Fprintf(&oversized, `"emp-%d"`, i)
+	}
+	oversized.WriteString(`],"date":"2026-01-05","shiftId":1}`)
+	if got, _ := postJSON(t, bulkCreateRoster, "/api/attendance/rosters/bulk", oversized.String()); got != 400 {
+		t.Errorf("expected 400 for more than 200 employees, got %d", got)
+	}
+}
+
+func TestVerifyBiometric_RequiresIds(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing hash", `{"employeeId":"emp-1","hash":""}`},
+		{"missing employeeId", `{"employeeId":"","hash":"abc"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, _ := postJSON(t, verifyBiometric, "/api/attendance/biometric/verify", tc.body); got != 400 {
+				t.Errorf("expected 400, got %d", got)
+			}
+		})
+	}
+}
+
+func TestVerifyBiometric_FailsClosedWithoutDB(t *testing.T) {
+	code, result := postJSON(t, verifyBiometric, "/api/attendance/biometric/verify", `{"employeeId":"emp-1","hash":"abc"}`)
+	if code != 200 {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if result["verified"] != false {
+		t.Errorf("expected verified=false without a database, got %v", result["verified"])
+	}
+}
+
+func TestRegisterBiometric_RequiresFields(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing employeeId", `{"deviceUid":"dev-1","hash":"abc"}`},
+		{"missing deviceUid", `{"employeeId":"emp-1","hash":"abc"}`},
+		{"missing hash", `{"employeeId":"emp-1","deviceUid":"dev-1"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, _ := postJSON(t, registerBiometric, "/api/attendance/biometric/register", tc.body); got != 400 {
+				t.Errorf("expected 400, got %d", got)
+			}
+		})
+	}
+}
+
+func TestEnrollFace_RequiresEmployeeID(t *testing.T) {
+	body := fmt.Sprintf(`{"imageUrl":"https://example.com/face.jpg","faceVector":%q}`, strings.Repeat("v", 64))
+	if got, _ := postJSON(t, enrollFace, "/api/attendance/face/enroll", body); got != 400 {
+		t.Errorf("expected 400 without an employeeId, got %d", got)
+	}
+}
+
+func TestVerifyFace_FailsClosedByDefault(t *testing.T) {
+	// allowDevFaceMock is false in tests; verification must not pass even
+	// with a long image string.
+	if verifyFace("tenant-1", "emp-1", strings.Repeat("x", 128)) {
+		t.Error("expected verifyFace to fail closed while the dev mock is disabled")
+	}
+}

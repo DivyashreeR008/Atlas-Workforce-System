@@ -56,8 +56,8 @@ type GeoFence struct {
 // Shift definition
 type Shift struct {
 	ID            uint   `gorm:"primaryKey" json:"id"`
-	TenantID      string `gorm:"index;default:'default'" json:"tenantId"`
-	Name          string `json:"name"`
+	TenantID      string `gorm:"index;uniqueIndex:idx_shifts_tenant_name;default:'default'" json:"tenantId"`
+	Name          string `gorm:"uniqueIndex:idx_shifts_tenant_name" json:"name"`
 	StartTime     string `json:"startTime"`
 	EndTime       string `json:"endTime"`
 	GraceMinutes  int    `json:"graceMinutes"`
@@ -73,13 +73,13 @@ type Shift struct {
 // Employee shift assignment
 type EmployeeShift struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
-	TenantID   string    `gorm:"index;default:'default'" json:"tenantId"`
-	EmployeeID string    `gorm:"index" json:"employeeId"`
+	TenantID   string    `gorm:"index;index:idx_emp_shift_lookup,priority:1;default:'default'" json:"tenantId"`
+	EmployeeID string    `gorm:"index;index:idx_emp_shift_lookup,priority:2" json:"employeeId"`
 	ShiftID    uint      `json:"shiftId"`
 	Shift      Shift     `gorm:"foreignKey:ShiftID" json:"shift,omitempty"`
 	StartDate  string    `json:"startDate"`
 	EndDate    string    `json:"endDate,omitempty"`
-	IsActive   bool      `json:"isActive"`
+	IsActive   bool      `gorm:"index:idx_emp_shift_lookup,priority:3" json:"isActive"`
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time  `json:"updatedAt"`
 }
@@ -87,9 +87,9 @@ type EmployeeShift struct {
 // Dynamic roster
 type Roster struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
-	TenantID    string    `gorm:"index;default:'default'" json:"tenantId"`
-	EmployeeID  string    `gorm:"index" json:"employeeId"`
-	Date        string    `json:"date"`
+	TenantID    string    `gorm:"index;uniqueIndex:idx_roster_employee_date;default:'default'" json:"tenantId"`
+	EmployeeID  string    `gorm:"index;uniqueIndex:idx_roster_employee_date" json:"employeeId"`
+	Date        string    `gorm:"uniqueIndex:idx_roster_employee_date" json:"date"`
 	ShiftID     uint      `json:"shiftId"`
 	Shift       Shift     `gorm:"foreignKey:ShiftID" json:"shift,omitempty"`
 	IsPublished bool      `json:"isPublished"`
@@ -113,12 +113,12 @@ type QRAttendance struct {
 // Biometric device registration
 type BiometricDevice struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
-	TenantID    string    `gorm:"index;default:'default'" json:"tenantId"`
-	EmployeeID  string    `gorm:"index" json:"employeeId"`
+	TenantID    string    `gorm:"index;index:idx_biometric_lookup,priority:1;default:'default'" json:"tenantId"`
+	EmployeeID  string    `gorm:"index;index:idx_biometric_lookup,priority:2" json:"employeeId"`
 	DeviceType  string    `json:"deviceType"`
 	DeviceUID   string    `gorm:"uniqueIndex" json:"deviceUid"`
 	Hash        string    `json:"-"`
-	IsActive    bool      `json:"isActive"`
+	IsActive    bool      `gorm:"index:idx_biometric_lookup,priority:3" json:"isActive"`
 	LastUsedAt  *time.Time `json:"lastUsedAt"`
 	CreatedAt   time.Time `json:"createdAt"`
 }
@@ -126,8 +126,8 @@ type BiometricDevice struct {
 // Face recognition enrollment
 type FaceEnrollment struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
-	TenantID   string    `gorm:"index;default:'default'" json:"tenantId"`
-	EmployeeID string    `gorm:"uniqueIndex:idx_face_employee" json:"employeeId"`
+	TenantID   string    `gorm:"index;uniqueIndex:idx_face_tenant_employee;default:'default'" json:"tenantId"`
+	EmployeeID string    `gorm:"uniqueIndex:idx_face_tenant_employee" json:"employeeId"`
 	FaceVector string    `json:"-"`
 	ImageURL   string    `json:"imageUrl"`
 	IsActive   bool      `json:"isActive"`
@@ -178,6 +178,13 @@ type NFCRegistration struct {
 }
 
 func migrateDB(db *gorm.DB) {
+	// The original schema made face_enrollments.employee_id globally unique,
+	// which blocked the same employee id from enrolling under two tenants. The
+	// composite (tenant_id, employee_id) index replaces it; drop the legacy
+	// index when it still exists.
+	if db.Migrator().HasIndex(&FaceEnrollment{}, "idx_face_employee") {
+		db.Migrator().DropIndex(&FaceEnrollment{}, "idx_face_employee")
+	}
 	if err := db.AutoMigrate(
 		&AttendanceRecord{},
 		&GeoFence{},

@@ -371,9 +371,15 @@ func createGeoFence(c *fiber.Ctx) error {
 	if err := c.BodyParser(&fence); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
+	if err := validateGeoFenceFields(fence.Name, fence.Latitude, fence.Longitude, fence.RadiusMeters); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
 	fence.TenantID = getTenant(c)
-	if db != nil {
-		db.Create(&fence)
+	if db == nil {
+		return c.Status(201).JSON(fence)
+	}
+	if err := db.Create(&fence).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to create geo-fence"})
 	}
 	return c.Status(201).JSON(fence)
 }
@@ -389,8 +395,13 @@ func updateGeoFence(c *fiber.Ctx) error {
 	if err := c.BodyParser(&updates); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
-	db.Model(&fence).Updates(updates)
-	db.First(&fence)
+	if err := validateGeoFenceUpdateMap(updates); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := db.Model(&fence).Updates(updates).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to update geo-fence"})
+	}
+	db.Where("id = ? AND tenant_id = ?", id, tenantId).First(&fence)
 	return c.JSON(fence)
 }
 
@@ -459,6 +470,9 @@ func createShift(c *fiber.Ctx) error {
 	if err := c.BodyParser(&shift); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
+	if strings.TrimSpace(shift.Name) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "name is required"})
+	}
 	if err := validateShiftTimes(shift.StartTime, shift.EndTime); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -466,8 +480,18 @@ func createShift(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	shift.TenantID = getTenant(c)
-	if db != nil {
-		db.Create(&shift)
+	if db == nil {
+		return c.Status(201).JSON(shift)
+	}
+	var existing Shift
+	if err := db.Where("tenant_id = ? AND name = ?", shift.TenantID, shift.Name).First(&existing).Error; err == nil {
+		return c.Status(409).JSON(fiber.Map{"error": "A shift with this name already exists"})
+	}
+	if err := db.Create(&shift).Error; err != nil {
+		if isDuplicateKeyError(err) {
+			return c.Status(409).JSON(fiber.Map{"error": "A shift with this name already exists"})
+		}
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to create shift"})
 	}
 	return c.Status(201).JSON(shift)
 }
@@ -499,6 +523,12 @@ func validateShiftPolicyNumbers(maxOT, multiplier float64) error {
 // validateShiftUpdateMap checks time/policy fields when they are part of a
 // partial shift update. Missing keys are left untouched.
 func validateShiftUpdateMap(updates map[string]interface{}) error {
+	if v, ok := updates["name"]; ok {
+		name, isString := v.(string)
+		if !isString || strings.TrimSpace(name) == "" {
+			return fmt.Errorf("name cannot be empty")
+		}
+	}
 	start, hasStart := updates["startTime"].(string)
 	end, hasEnd := updates["endTime"].(string)
 	if hasStart && hasEnd {
@@ -541,6 +571,81 @@ func toFloat(v interface{}) (float64, bool) {
 	return 0, false
 }
 
+// validateISODate rejects missing or non YYYY-MM-DD dates so roster and
+// assignment rows cannot be saved with unparseable strings.
+func validateISODate(field, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s is required", field)
+	}
+	if _, err := time.Parse("2006-01-02", value); err != nil {
+		return fmt.Errorf("invalid %s: expected YYYY-MM-DD", field)
+	}
+	return nil
+}
+
+// assignmentRangesOverlap reports whether two assignment windows share at
+// least one day. An empty end date means the window is open-ended. Values are
+// validated YYYY-MM-DD strings, so plain string comparison is date order.
+func assignmentRangesOverlap(startA, endA, startB, endB string) bool {
+	if endA != "" && endA < startB {
+		return false
+	}
+	if endB != "" && endB < startA {
+		return false
+	}
+	return true
+}
+
+// validateGeoFenceFields rejects fences that could never match a location.
+func validateGeoFenceFields(name string, latitude, longitude, radiusMeters float64) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("name is required")
+	}
+	if latitude < -90 || latitude > 90 {
+		return fmt.Errorf("latitude must be between -90 and 90")
+	}
+	if longitude < -180 || longitude > 180 {
+		return fmt.Errorf("longitude must be between -180 and 180")
+	}
+	if radiusMeters <= 0 {
+		return fmt.Errorf("radiusMeters must be greater than 0")
+	}
+	if radiusMeters > 100000 {
+		return fmt.Errorf("radiusMeters cannot exceed 100000")
+	}
+	return nil
+}
+
+// validateGeoFenceUpdateMap checks the present fields of a partial geo-fence
+// update; missing keys are left untouched.
+func validateGeoFenceUpdateMap(updates map[string]interface{}) error {
+	if v, ok := updates["name"]; ok {
+		name, isString := v.(string)
+		if !isString || strings.TrimSpace(name) == "" {
+			return fmt.Errorf("name cannot be empty")
+		}
+	}
+	if v, ok := updates["latitude"]; ok {
+		f, isNumber := toFloat(v)
+		if !isNumber || f < -90 || f > 90 {
+			return fmt.Errorf("latitude must be between -90 and 90")
+		}
+	}
+	if v, ok := updates["longitude"]; ok {
+		f, isNumber := toFloat(v)
+		if !isNumber || f < -180 || f > 180 {
+			return fmt.Errorf("longitude must be between -180 and 180")
+		}
+	}
+	if v, ok := updates["radiusMeters"]; ok {
+		f, isNumber := toFloat(v)
+		if !isNumber || f <= 0 || f > 100000 {
+			return fmt.Errorf("radiusMeters must be between 0 and 100000")
+		}
+	}
+	return nil
+}
+
 func updateShift(c *fiber.Ctx) error {
 	id := c.Params("id")
 	tenantId := getTenant(c)
@@ -555,8 +660,13 @@ func updateShift(c *fiber.Ctx) error {
 	if err := validateShiftUpdateMap(updates); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
-	db.Model(&shift).Updates(updates)
-	db.First(&shift)
+	if err := db.Model(&shift).Updates(updates).Error; err != nil {
+		if isDuplicateKeyError(err) {
+			return c.Status(409).JSON(fiber.Map{"error": "A shift with this name already exists"})
+		}
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to update shift"})
+	}
+	db.Where("id = ? AND tenant_id = ?", id, tenantId).First(&shift)
 	return c.JSON(shift)
 }
 
@@ -573,9 +683,42 @@ func assignEmployeeShift(c *fiber.Ctx) error {
 	if err := c.BodyParser(&es); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
+	if strings.TrimSpace(es.EmployeeID) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "employeeId is required"})
+	}
+	if err := validateISODate("startDate", es.StartDate); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	if es.EndDate != "" {
+		if _, err := time.Parse("2006-01-02", es.EndDate); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid endDate: expected YYYY-MM-DD"})
+		}
+		if es.EndDate < es.StartDate {
+			return c.Status(400).JSON(fiber.Map{"error": "endDate cannot be before startDate"})
+		}
+	}
 	es.TenantID = getTenant(c)
-	if db != nil {
-		db.Create(&es)
+	if db == nil {
+		return c.Status(201).JSON(es)
+	}
+	var shift Shift
+	if err := db.Where("id = ? AND tenant_id = ?", es.ShiftID, es.TenantID).First(&shift).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "Shift not found"})
+	}
+	// One employee cannot hold two active assignments whose date windows
+	// intersect; that is how double-booking slips through.
+	var active []EmployeeShift
+	if err := db.Where("tenant_id = ? AND employee_id = ? AND is_active = ?",
+		es.TenantID, es.EmployeeID, true).Find(&active).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to check existing assignments"})
+	}
+	for _, existing := range active {
+		if assignmentRangesOverlap(existing.StartDate, existing.EndDate, es.StartDate, es.EndDate) {
+			return c.Status(409).JSON(fiber.Map{"error": "Employee already has an overlapping shift assignment"})
+		}
+	}
+	if err := db.Create(&es).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to assign shift"})
 	}
 	return c.Status(201).JSON(es)
 }
@@ -625,9 +768,30 @@ func createRoster(c *fiber.Ctx) error {
 	if err := c.BodyParser(&roster); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
+	if strings.TrimSpace(roster.EmployeeID) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "employeeId is required"})
+	}
+	if err := validateISODate("date", roster.Date); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
 	roster.TenantID = getTenant(c)
-	if db != nil {
-		db.Create(&roster)
+	if db == nil {
+		return c.Status(201).JSON(roster)
+	}
+	var shift Shift
+	if err := db.Where("id = ? AND tenant_id = ?", roster.ShiftID, roster.TenantID).First(&shift).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "Shift not found"})
+	}
+	var existing Roster
+	if err := db.Where("tenant_id = ? AND employee_id = ? AND date = ?",
+		roster.TenantID, roster.EmployeeID, roster.Date).First(&existing).Error; err == nil {
+		return c.Status(409).JSON(fiber.Map{"error": "Employee already has a roster entry for this date"})
+	}
+	if err := db.Create(&roster).Error; err != nil {
+		if isDuplicateKeyError(err) {
+			return c.Status(409).JSON(fiber.Map{"error": "Employee already has a roster entry for this date"})
+		}
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to create roster entry"})
 	}
 	return c.Status(201).JSON(roster)
 }
@@ -648,20 +812,48 @@ func bulkCreateRoster(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
-	tenantId := getTenant(c)
-	if db != nil {
-		for _, empID := range req.EmployeeIDs {
-			roster := Roster{
-				TenantID:   tenantId,
-				EmployeeID: empID,
-				Date:       req.Date,
-				ShiftID:    req.ShiftID,
-			}
-			db.Where("tenant_id = ? AND employee_id = ? AND date = ?", tenantId, empID, req.Date).
-				Assign(roster).FirstOrCreate(&roster)
-		}
+	if len(req.EmployeeIDs) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "employeeIds is required"})
 	}
-	return c.JSON(fiber.Map{"message": "Roster created for " + fmt.Sprintf("%d employees", len(req.EmployeeIDs))})
+	if len(req.EmployeeIDs) > 200 {
+		return c.Status(400).JSON(fiber.Map{"error": "employeeIds cannot exceed 200 entries"})
+	}
+	if err := validateISODate("date", req.Date); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	tenantId := getTenant(c)
+	if db == nil {
+		return c.JSON(fiber.Map{"message": "Roster saved", "upserted": 0, "failed": 0})
+	}
+	var shift Shift
+	if err := db.Where("id = ? AND tenant_id = ?", req.ShiftID, tenantId).First(&shift).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "Shift not found"})
+	}
+	upserted := 0
+	failed := 0
+	for _, empID := range req.EmployeeIDs {
+		if strings.TrimSpace(empID) == "" {
+			failed++
+			continue
+		}
+		roster := Roster{
+			TenantID:   tenantId,
+			EmployeeID: empID,
+			Date:       req.Date,
+			ShiftID:    req.ShiftID,
+		}
+		if err := db.Where("tenant_id = ? AND employee_id = ? AND date = ?", tenantId, empID, req.Date).
+			Assign(roster).FirstOrCreate(&roster).Error; err != nil {
+			failed++
+			continue
+		}
+		upserted++
+	}
+	return c.JSON(fiber.Map{
+		"message":  fmt.Sprintf("Roster saved for %d of %d employees", upserted, len(req.EmployeeIDs)),
+		"upserted": upserted,
+		"failed":   failed,
+	})
 }
 
 // ============================================================
@@ -803,6 +995,9 @@ func enrollFace(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
+	if strings.TrimSpace(req.EmployeeID) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "employeeId is required"})
+	}
 	if len(req.FaceVector) < 64 {
 		return c.Status(400).JSON(fiber.Map{"error": "FaceVector must be at least 64 characters"})
 	}
@@ -861,9 +1056,28 @@ func registerBiometric(c *fiber.Ctx) error {
 	if err := c.BodyParser(&device); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
+	if strings.TrimSpace(device.EmployeeID) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "employeeId is required"})
+	}
+	if strings.TrimSpace(device.DeviceUID) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "deviceUid is required"})
+	}
+	if strings.TrimSpace(device.Hash) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "hash is required"})
+	}
 	device.TenantID = getTenant(c)
-	if db != nil {
-		db.Create(&device)
+	if db == nil {
+		return c.Status(201).JSON(device)
+	}
+	var existing BiometricDevice
+	if err := db.Where("device_uid = ?", device.DeviceUID).First(&existing).Error; err == nil {
+		return c.Status(409).JSON(fiber.Map{"error": "A device with this deviceUid is already registered"})
+	}
+	if err := db.Create(&device).Error; err != nil {
+		if isDuplicateKeyError(err) {
+			return c.Status(409).JSON(fiber.Map{"error": "A device with this deviceUid is already registered"})
+		}
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to register biometric device"})
 	}
 	return c.Status(201).JSON(device)
 }
@@ -890,11 +1104,20 @@ func verifyBiometric(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
 	}
-	if db == nil {
-		return c.JSON(fiber.Map{"verified": true})
+	if strings.TrimSpace(req.EmployeeID) == "" || strings.TrimSpace(req.Hash) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "employeeId and hash are required"})
 	}
+	if db == nil {
+		// Fail closed: with no database there is nothing to match a hash
+		// against, so a verification cannot honestly succeed.
+		return c.JSON(fiber.Map{"verified": false, "error": "Biometric verification unavailable"})
+	}
+	// The hash is tenant-scoped: a device registered in one tenant must never
+	// satisfy a verification for another tenant's employee.
+	tenantId := getTenant(c)
 	var device BiometricDevice
-	err := db.Where("employee_id = ? AND hash = ? AND is_active = ?", req.EmployeeID, req.Hash, true).First(&device).Error
+	err := db.Where("tenant_id = ? AND employee_id = ? AND hash = ? AND is_active = ?",
+		tenantId, req.EmployeeID, req.Hash, true).First(&device).Error
 	if err != nil {
 		return c.JSON(fiber.Map{"verified": false, "error": "Biometric not matched"})
 	}
@@ -1482,8 +1705,18 @@ func checkLateArrival(tenantID, employeeID, date, currentStatus string) string {
 	return currentStatus
 }
 
+// allowDevFaceMock enables the development-only stand-in for face matching.
+// main() wires it from ATLAS_ALLOW_DEV_FACE_MOCK and refuses to start when the
+// flag is set outside NODE_ENV=development. There is no real vector comparison
+// yet, so with the flag off verification fails closed instead of trusting the
+// length of the submitted string.
+var allowDevFaceMock = false
+
 func verifyFace(tenantID, employeeID, faceImage string) bool {
-	if db == nil || faceImage == "" {
+	if db == nil || faceImage == "" || employeeID == "" {
+		return false
+	}
+	if !allowDevFaceMock {
 		return false
 	}
 	var enrollment FaceEnrollment
@@ -1491,11 +1724,9 @@ func verifyFace(tenantID, employeeID, faceImage string) bool {
 	if err != nil {
 		return false
 	}
-	// Use Levenshtein-like similarity on face vectors (mock for now)
-	if enrollment.FaceVector != "" && len(faceImage) > 10 {
-		return true
-	}
-	return false
+	// Development-only stand-in for a vector comparison; a real similarity
+	// check is a follow-up once the vector format exists.
+	return enrollment.FaceVector != "" && len(faceImage) > 10
 }
 
 func detectAnomaliesAfterClockIn(ctx context.Context, record AttendanceRecord) {
