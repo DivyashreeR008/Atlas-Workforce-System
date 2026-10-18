@@ -219,7 +219,9 @@ manager = ChannelManager()
 # ── Message Schemas ─────────────────────────────────────────────────────────
 
 class PresenceUpdate(BaseModel):
-    user_id: str = Field(..., min_length=1, max_length=200)
+    # user_id is accepted for backward compatibility but always overwritten
+    # from the verified token by the handlers; a client cannot set it.
+    user_id: Optional[str] = Field(default=None, max_length=200)
     name: str = Field(..., min_length=1, max_length=200)
     status: Literal["online", "offline", "away", "busy"]
     department: Optional[str] = Field(default=None, max_length=100)
@@ -340,7 +342,9 @@ class StaffingUpdate(BaseModel):
 
 class ChatMessage(BaseModel):
     room: str = Field(..., min_length=1, max_length=100)
-    sender: str = Field(..., min_length=1, max_length=200)
+    # sender is accepted for backward compatibility but always overwritten
+    # from the verified token by the handlers; a client cannot set it.
+    sender: Optional[str] = Field(default=None, max_length=200)
     message: str = Field(..., min_length=1, max_length=2000)
     message_type: Literal["text", "image", "system"] = "text"
 
@@ -692,7 +696,15 @@ async def websocket_chat(websocket: WebSocket, token: Optional[str] = Query(None
         while True:
             data = await websocket.receive_json()
             msg = ChatMessage(**data)
-            entry = {"id": str(uuid.uuid4()), "sender": msg.sender, "message": msg.message, "message_type": msg.message_type, "room": msg.room, "timestamp": _utc_now_iso()}
+            # Sender comes from the verified connection claims, never the
+            # payload: otherwise any socket could speak as a colleague,
+            # manager or executive, and the forged name would persist in room
+            # history and be broadcast to everyone under that name.
+            sender = websocket.state.user_id
+            if not sender:
+                logger.warning("chat.ws_missing_identity", extra={"room": msg.room})
+                continue
+            entry = {"id": str(uuid.uuid4()), "sender": sender, "message": msg.message, "message_type": msg.message_type, "room": msg.room, "timestamp": _utc_now_iso()}
             manager.chat_rooms[msg.room].append(entry)
             if len(manager.chat_rooms[msg.room]) > 200:
                 manager.chat_rooms[msg.room] = manager.chat_rooms[msg.room][-200:]
@@ -712,6 +724,13 @@ async def websocket_presence(websocket: WebSocket, token: Optional[str] = Query(
         while True:
             data = await websocket.receive_json()
             update = PresenceUpdate(**data)
+            # Identity comes from the verified connection claims, never the
+            # payload: otherwise any socket could move any colleague to
+            # offline or away. The body fields for identity are overwritten.
+            update.user_id = websocket.state.user_id
+            if not update.user_id:
+                logger.warning("presence.ws_missing_identity")
+                continue
             entry = update.model_dump()
             entry["_last_seen"] = _utc_now_ts()
             manager.presence[update.user_id] = entry
@@ -743,7 +762,19 @@ async def publish_event(channel: str, request: Request, event: str = Query(..., 
     return {"status": "published", "channel": channel, "event": event}
 
 @app.post("/api/v1/live/presence")
-async def update_presence(update: PresenceUpdate):
+async def update_presence(update: PresenceUpdate, request: Request):
+    # Identity comes from the verified token, never the body: otherwise any
+    # connected caller could move any colleague to offline or away. The caller
+    # may only write their own presence record.
+    verified_user_id = getattr(request.state, "user_id", "")
+    if not verified_user_id:
+        raise HTTPException(status_code=403, detail="Missing verified user identity")
+    claimed = update.user_id
+    if claimed is not None and claimed != verified_user_id:
+        logger.warning("presence.identity_override_blocked",
+            extra={"claimed_user_id": claimed, "verified_user_id": verified_user_id})
+        raise HTTPException(status_code=403, detail="Presence can only be updated for the authenticated user")
+    update.user_id = verified_user_id
     entry = update.model_dump()
     entry["_last_seen"] = _utc_now_ts()
     manager.presence[update.user_id] = entry
