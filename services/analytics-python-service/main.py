@@ -218,11 +218,70 @@ def _rabbitmq_params():
     )
 
 EMPLOYEE_SERVICE_URL = os.environ.get("EMPLOYEE_SERVICE_URL", "http://employee-service:8001")
+ATS_SERVICE_URL = os.environ.get("ATS_SERVICE_URL", "http://ats-service:8012")
 # The employee service caps page_size at 100 (employee-python-service/main.py:313)
 # and reports a `total` plus `total_pages`; walk pages until the reported total.
 EMPLOYEE_PAGE_SIZE = 100
 EMPLOYEE_MAX_PAGES = 500
 EMPLOYEE_SERVICE_AUDIENCE = "employee-service"
+ATS_PAGE_SIZE = 100
+ATS_MAX_PAGES = 200
+
+# Canned command-center fixtures were authored against this date. They are
+# surfaced with dataSource.kind = "not-live" until each view gets a real
+# source, so nothing on the dashboard pretends to be measured tenant data.
+CANNED_FIXTURE_AS_OF = "2026-05-25T00:00:00Z"
+
+
+def _iso_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def fixture_data_source(basis="Canned fixture data for UI development; not tenant data"):
+    """Explicit provenance marker for endpoints that are not live yet."""
+    return {
+        "kind": "not-live",
+        "services": [],
+        "basis": basis,
+        "liveFields": [],
+        "notLiveFields": [],
+        "unavailableFields": [],
+        "asOf": CANNED_FIXTURE_AS_OF,
+    }
+
+
+def build_data_source(kind, services, basis, live_fields=None,
+                      not_live_fields=None, unavailable_fields=None):
+    return {
+        "kind": kind,
+        "services": services,
+        "basis": basis,
+        "liveFields": sorted(live_fields or []),
+        "notLiveFields": sorted(not_live_fields or []),
+        "unavailableFields": sorted(unavailable_fields or []),
+        "asOf": _iso_now(),
+    }
+
+
+def build_internal_service_headers(tenant_id, audience):
+    """Headers for an internal service-to-service call.
+
+    The token is minted with the shared credential helper so its signature
+    cannot drift from verify_internal_auth; downstream services bind the
+    tenant from the claim instead of trusting the header value.
+    """
+    try:
+        token = mint_internal_auth(
+            INTERNAL_JWT_SECRET, "analytics-service",
+            tenant_id=tenant_id, audience=audience, ttl_seconds=60,
+        )
+    except ValueError:
+        logger.error("analytics.internal_service_auth_not_configured", extra={"audience": audience})
+        raise HTTPException(
+            status_code=502,
+            detail="Internal service unavailable (internal auth not configured)",
+        )
+    return {"X-Tenant-Id": tenant_id, "x-internal-auth": token}
 
 
 def build_employee_service_headers(tenant_id):
@@ -232,18 +291,7 @@ def build_employee_service_headers(tenant_id):
     signature format cannot drift from verify_internal_auth; the employee
     service binds the tenant from these claims, not from the header value.
     """
-    try:
-        token = mint_internal_auth(
-            INTERNAL_JWT_SECRET, "analytics-service",
-            tenant_id=tenant_id, audience=EMPLOYEE_SERVICE_AUDIENCE, ttl_seconds=60,
-        )
-    except ValueError:
-        logger.error("analytics.employee_service_auth_not_configured")
-        raise HTTPException(
-            status_code=502,
-            detail="Employee service unavailable (internal auth not configured)",
-        )
-    return {"X-Tenant-Id": tenant_id, "x-internal-auth": token}
+    return build_internal_service_headers(tenant_id, EMPLOYEE_SERVICE_AUDIENCE)
 
 
 def fetch_tenant_employees(tenant_id):
@@ -292,6 +340,106 @@ def fetch_tenant_employees(tenant_id):
         logger.warning("analytics.department_pagination_cap_reached",
                        extra={"tenant_id": tenant_id, "max_pages": EMPLOYEE_MAX_PAGES})
     return items
+
+
+def fetch_ats_json(path, tenant_id, params=None):
+    resp = requests.get(
+        urljoin(ATS_SERVICE_URL, path),
+        params=params,
+        headers=build_internal_service_headers(tenant_id, "ats-service"),
+        timeout=10,
+    )
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"ATS service unavailable (upstream status {resp.status_code})",
+        )
+    try:
+        return resp.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail="ATS service returned an invalid payload")
+
+
+def fetch_ats_open_positions(tenant_id):
+    payload = fetch_ats_json("/api/v1/jobs", tenant_id,
+                             params={"status": "PUBLISHED", "page": 1, "page_size": 1})
+    total = payload.get("total")
+    return int(total) if isinstance(total, int) else 0
+
+
+def fetch_ats_time_to_hire_days(tenant_id):
+    payload = fetch_ats_json("/api/v1/analytics/time-to-hire", tenant_id)
+    days = payload.get("average_days")
+    return round(float(days), 1) if isinstance(days, (int, float)) else None
+
+
+def fetch_ats_pipeline_snapshot(tenant_id):
+    """Return the ATS candidate overview plus every published job."""
+    overview = fetch_ats_json("/api/v1/analytics/overview", tenant_id)
+    jobs = []
+    page = 1
+    while page <= ATS_MAX_PAGES:
+        payload = fetch_ats_json("/api/v1/jobs", tenant_id, params={
+            "status": "PUBLISHED", "page": page, "page_size": ATS_PAGE_SIZE,
+        })
+        batch = payload.get("items", [])
+        jobs.extend(batch)
+        if not batch:
+            break
+        total_pages = payload.get("total_pages")
+        if isinstance(total_pages, int) and page >= total_pages:
+            break
+        page += 1
+    return overview, jobs
+
+
+def fetch_payroll_mtd(tenant_id):
+    """Gross payroll (base + allowances) booked in the current month."""
+    if not engine:
+        raise RuntimeError("database engine unavailable")
+    period = datetime.now(timezone.utc).strftime("%Y-%m")
+    query = text("""
+        SELECT COALESCE(sum(base_salary + allowances), 0) AS total
+        FROM payroll_records
+        WHERE tenant_id = :tenant_id AND period = :period
+    """)
+    df = pd.read_sql_query(query.bindparams(tenant_id=tenant_id, period=period), engine)
+    if df.empty:
+        return 0.0
+    return float(df.iloc[0]["total"])
+
+
+def fetch_payroll_by_employee(tenant_id):
+    """Per-employee payroll aggregates for the cost view."""
+    if not engine:
+        raise RuntimeError("database engine unavailable")
+    query = text("""
+        SELECT employee_id,
+               sum(base_salary) AS base_salary,
+               sum(allowances) AS allowances,
+               sum(tax) AS tax
+        FROM payroll_records
+        WHERE tenant_id = :tenant_id
+        GROUP BY employee_id
+    """)
+    df = pd.read_sql_query(query.bindparams(tenant_id=tenant_id), engine)
+    return df.to_dict(orient="records")
+
+
+def fetch_payroll_by_period(tenant_id, limit=6):
+    """Cost per payroll period, oldest first, capped to the recent window."""
+    if not engine:
+        raise RuntimeError("database engine unavailable")
+    query = text("""
+        SELECT period, sum(base_salary + allowances) AS cost
+        FROM payroll_records
+        WHERE tenant_id = :tenant_id
+        GROUP BY period
+        ORDER BY period DESC
+        LIMIT :limit
+    """)
+    df = pd.read_sql_query(query.bindparams(tenant_id=tenant_id, limit=limit), engine)
+    return list(reversed(df.to_dict(orient="records")))
 
 
 @app.get("/analytics/department", tags=["analytics"], summary="Department headcount breakdown")
@@ -435,25 +583,75 @@ def get_ai_insights(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
 
 @app.get("/api/v1/command-center/overview", tags=["command-center"], summary="Command Center overview")
 def get_overview(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
-    """Returns comprehensive organization overview with key metrics."""
+    """Organization overview. Live fields are computed per request; fields
+    without a live source are null and named in dataSource."""
+    unavailable = []
+    total_headcount = None
+    try:
+        total_headcount = len(fetch_tenant_employees(x_tenant_id))
+    except HTTPException as e:
+        logger.warning("analytics.overview_headcount_unavailable",
+                       extra={"tenant_id": x_tenant_id, "status_code": e.status_code})
+        unavailable.append("totalHeadcount")
+
+    payroll_mtd = None
+    try:
+        payroll_mtd = fetch_payroll_mtd(x_tenant_id)
+    except Exception as e:
+        logger.warning("analytics.overview_payroll_unavailable",
+                       extra={"tenant_id": x_tenant_id, "error": str(e), "error_type": type(e).__name__})
+        unavailable.append("payrollMtd")
+
+    open_positions = None
+    try:
+        open_positions = fetch_ats_open_positions(x_tenant_id)
+    except HTTPException as e:
+        logger.warning("analytics.overview_open_positions_unavailable",
+                       extra={"tenant_id": x_tenant_id, "status_code": e.status_code})
+        unavailable.append("openPositions")
+
+    avg_time_to_hire = None
+    try:
+        avg_time_to_hire = fetch_ats_time_to_hire_days(x_tenant_id)
+    except HTTPException as e:
+        logger.warning("analytics.overview_time_to_hire_unavailable",
+                       extra={"tenant_id": x_tenant_id, "status_code": e.status_code})
+        unavailable.append("avgTimeToHire")
+
     return {
-        "totalHeadcount": 1248,
-        "headcountChange": 3.2,
-        "payrollMtd": 2840000,
-        "payrollChange": 4.1,
-        "openPositions": 23,
-        "positionsChange": -2,
-        "trainingCompletion": 86,
-        "trainingChange": 5,
-        "satisfactionScore": 82,
-        "satisfactionChange": 2,
-        "orgHealthScore": 78,
-        "productivityScore": 85,
-        "riskScore": 22,
-        "newHiresThisMonth": 12,
-        "departuresThisMonth": 8,
-        "avgTenure": 3.4,
-        "avgTimeToHire": 28,
+        "totalHeadcount": total_headcount,
+        "headcountChange": None,
+        "payrollMtd": payroll_mtd,
+        "payrollChange": None,
+        "openPositions": open_positions,
+        "positionsChange": None,
+        "trainingCompletion": None,
+        "trainingChange": None,
+        "satisfactionScore": None,
+        "satisfactionChange": None,
+        "orgHealthScore": None,
+        "productivityScore": None,
+        "riskScore": None,
+        "newHiresThisMonth": None,
+        "departuresThisMonth": None,
+        "avgTenure": None,
+        "avgTimeToHire": avg_time_to_hire,
+        "dataSource": build_data_source(
+            "mixed",
+            ["employee-python-service", "ats-service", "payroll_records (primary database)"],
+            "totalHeadcount is the employee service total, payrollMtd is gross payroll "
+            "(base + allowances) booked this month, and openPositions/avgTimeToHire come "
+            "from the ATS service. Every other field has no live source yet and is null.",
+            live_fields=["totalHeadcount", "payrollMtd", "openPositions", "avgTimeToHire"],
+            not_live_fields=[
+                "headcountChange", "payrollChange", "positionsChange",
+                "trainingCompletion", "trainingChange", "satisfactionScore",
+                "satisfactionChange", "orgHealthScore", "productivityScore",
+                "riskScore", "newHiresThisMonth", "departuresThisMonth", "avgTenure",
+            ],
+            unavailable_fields=unavailable,
+        ),
+        "asOf": _iso_now(),
     }
 
 
@@ -461,6 +659,8 @@ def get_overview(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
 def get_org_health(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Returns organizational health breakdown by dimension with trend data."""
     return {
+        "dataSource": fixture_data_source("Static health-dimension fixture; not tenant data"),
+        "asOf": CANNED_FIXTURE_AS_OF,
         "overall": 78,
         "dimensions": [
             {"name": "Engagement", "score": 82, "change": 3, "status": "healthy"},
@@ -485,6 +685,8 @@ def get_org_health(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
 def get_department_heatmap(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Returns organization heatmap with department-level metrics and health scores."""
     return {
+        "dataSource": fixture_data_source("Static department heatmap fixture; not tenant data"),
+        "asOf": CANNED_FIXTURE_AS_OF,
         "departments": [
             {"name": "Engineering",
              "metrics": {"productivity": 92, "engagement": 85, "retention": 88,
@@ -525,34 +727,80 @@ def get_department_heatmap(x_tenant_id: str = Header("default", alias="X-Tenant-
 
 @app.get("/api/v1/command-center/workforce-cost", tags=["command-center"], summary="Workforce cost visualization")
 def get_workforce_cost(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
-    """Returns cost visualization data including total costs, departmental breakdown, and trends."""
+    """Cost visualization computed from payroll_records and employee data."""
+    unavailable = []
+    try:
+        payroll_rows = fetch_payroll_by_employee(x_tenant_id)
+    except Exception as e:
+        logger.warning("analytics.workforce_cost_payroll_unavailable",
+                       extra={"tenant_id": x_tenant_id, "error": str(e), "error_type": type(e).__name__})
+        raise HTTPException(status_code=502, detail="Payroll data unavailable")
+
+    employees = None
+    try:
+        employees = fetch_tenant_employees(x_tenant_id)
+    except HTTPException as e:
+        logger.warning("analytics.workforce_cost_headcount_unavailable",
+                       extra={"tenant_id": x_tenant_id, "status_code": e.status_code})
+        unavailable.append("byDepartment.headcount")
+
+    department_by_employee = {}
+    if employees is not None:
+        for emp in employees:
+            emp_id = emp.get("_id") or emp.get("id")
+            if emp_id:
+                department_by_employee[str(emp_id)] = emp.get("department", "Unknown")
+
+    totals_by_department = {}
+    for row in payroll_rows:
+        department = department_by_employee.get(str(row.get("employee_id")), "Unmapped")
+        entry = totals_by_department.setdefault(department, {"payroll": 0.0, "taxes": 0.0, "headcount": 0})
+        entry["payroll"] += float(row.get("base_salary") or 0) + float(row.get("allowances") or 0)
+        entry["taxes"] += float(row.get("tax") or 0)
+        entry["headcount"] += 1
+
+    total_payroll = round(sum(e["payroll"] for e in totals_by_department.values()), 2)
+    total_taxes = round(sum(e["taxes"] for e in totals_by_department.values()), 2)
+    by_department = [
+        {
+            "department": dept,
+            "headcount": entry["headcount"],
+            "payroll": round(entry["payroll"], 2),
+            "benefits": None,
+            "total": round(entry["payroll"], 2),
+            "percentOfTotal": round((entry["payroll"] / total_payroll) * 100, 1) if total_payroll else 0.0,
+        }
+        for dept, entry in sorted(totals_by_department.items(), key=lambda x: -x[1]["payroll"])
+    ]
+
+    cost_trend = None
+    try:
+        cost_trend = fetch_payroll_by_period(x_tenant_id)
+    except Exception as e:
+        logger.warning("analytics.workforce_cost_trend_unavailable",
+                       extra={"tenant_id": x_tenant_id, "error": str(e), "error_type": type(e).__name__})
+        unavailable.append("costTrend")
+
+    headcount = len(employees) if employees is not None else None
     return {
-        "totalPayroll": 2840000,
-        "totalBenefits": 420000,
-        "totalTaxes": 560000,
-        "totalCost": 3820000,
-        "byDepartment": [
-            {"department": "Engineering", "headcount": 420, "payroll": 1100000,
-                "benefits": 168000, "total": 1268000, "percentOfTotal": 33.2},
-            {"department": "Sales", "headcount": 280, "payroll": 700000,
-                "benefits": 112000, "total": 812000, "percentOfTotal": 21.3},
-            {"department": "Operations", "headcount": 210, "payroll": 480000,
-                "benefits": 84000, "total": 564000, "percentOfTotal": 14.8},
-            {"department": "HR", "headcount": 95, "payroll": 180000,
-                "benefits": 38000, "total": 218000, "percentOfTotal": 5.7},
-            {"department": "Finance", "headcount": 143, "payroll": 280000,
-                "benefits": 57200, "total": 337200, "percentOfTotal": 8.8},
-            {"department": "Marketing", "headcount": 100, "payroll": 200000,
-                "benefits": 40000, "total": 240000, "percentOfTotal": 6.3},
-        ],
-        "costPerEmployee": 3061,
-        "costTrend": [
-            {"month": "2026-01", "cost": 3500000},
-            {"month": "2026-02", "cost": 3580000},
-            {"month": "2026-03", "cost": 3650000},
-            {"month": "2026-04", "cost": 3740000},
-            {"month": "2026-05", "cost": 3820000},
-        ],
+        "totalPayroll": total_payroll,
+        "totalBenefits": None,
+        "totalTaxes": total_taxes,
+        "totalCost": total_payroll,
+        "byDepartment": by_department,
+        "costPerEmployee": round(total_payroll / headcount, 2) if headcount else None,
+        "costTrend": cost_trend,
+        "dataSource": build_data_source(
+            "mixed",
+            ["payroll_records (primary database)", "employee-python-service"],
+            "Cost is gross payroll (base + allowances) from payroll_records; departments "
+            "come from the employee service via employee_id. Benefits have no live source "
+            "and are null, and unmatched payroll rows are grouped as Unmapped.",
+            live_fields=["totalPayroll", "totalTaxes", "totalCost", "byDepartment", "costTrend", "costPerEmployee"],
+            not_live_fields=["totalBenefits", "byDepartment.benefits"],
+            unavailable_fields=unavailable,
+        ),
+        "asOf": _iso_now(),
     }
 
 
@@ -560,6 +808,8 @@ def get_workforce_cost(x_tenant_id: str = Header("default", alias="X-Tenant-Id")
 def get_attrition_risk_map(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Returns attrition risk analysis with department breakdown, high-risk employees, and trend."""
     return {
+        "dataSource": fixture_data_source("Static attrition fixture; not tenant data"),
+        "asOf": CANNED_FIXTURE_AS_OF,
         "overallRiskScore": 22,
         "atRiskCount": 28,
         "highRiskCount": 8,
@@ -599,36 +849,66 @@ def get_attrition_risk_map(x_tenant_id: str = Header("default", alias="X-Tenant-
 
 @app.get("/api/v1/command-center/hiring-pipeline", tags=["command-center"], summary="Hiring pipeline dashboard")
 def get_hiring_pipeline(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
-    """Returns full hiring pipeline dashboard with stages, department breakdown, and upcoming interviews."""
+    """Hiring pipeline computed from ATS jobs and candidate records."""
+    overview, jobs = fetch_ats_pipeline_snapshot(x_tenant_id)
+
+    by_stage_raw = overview.get("by_stage", {}) if isinstance(overview, dict) else {}
+    total_candidates = overview.get("total_candidates") if isinstance(overview, dict) else None
+    if not isinstance(total_candidates, int):
+        total_candidates = sum(int(v) for v in by_stage_raw.values() if isinstance(v, int))
+    pipeline_stages = sorted(
+        ({"stage": str(stage), "count": int(count)}
+         for stage, count in by_stage_raw.items() if isinstance(count, int)),
+        key=lambda s: -s["count"],
+    )
+
+    by_job = overview.get("by_job", []) if isinstance(overview, dict) else []
+    applications_by_job = {
+        str(job.get("job_id")): int(job.get("applications") or 0)
+        for job in by_job if isinstance(job, dict)
+    }
+    departments = {}
+    for job in jobs:
+        dept = job.get("department") or "Unmapped"
+        entry = departments.setdefault(dept, {"openings": 0, "candidates": 0})
+        entry["openings"] += 1
+        entry["candidates"] += applications_by_job.get(str(job.get("id")), 0)
+    by_department = [
+        {
+            "department": dept,
+            "openings": entry["openings"],
+            "candidates": entry["candidates"],
+            "interviews": None,
+            "offers": None,
+        }
+        for dept, entry in sorted(departments.items(), key=lambda x: -x[1]["openings"])
+    ]
+
+    time_to_hire = fetch_ats_time_to_hire_days(x_tenant_id)
     return {
-        "openPositions": 23,
-        "activeCandidates": 156,
-        "interviewsThisWeek": 18,
-        "offersOutstanding": 7,
-        "timeToHireAvg": 28,
-        "acceptanceRate": 82,
-        "pipelineStages": [
-            {"stage": "Applied", "count": 156},
-            {"stage": "Screening", "count": 98},
-            {"stage": "Interview", "count": 45},
-            {"stage": "Final Round", "count": 18},
-            {"stage": "Offer", "count": 7},
-        ],
-        "byDepartment": [
-            {"department": "Engineering", "openings": 10, "candidates": 72, "interviews": 8, "offers": 3},
-            {"department": "Sales", "openings": 5, "candidates": 35, "interviews": 4, "offers": 2},
-            {"department": "Marketing", "openings": 3, "candidates": 22, "interviews": 3, "offers": 1},
-            {"department": "Operations", "openings": 3, "candidates": 18, "interviews": 2, "offers": 1},
-            {"department": "Finance", "openings": 2, "candidates": 9, "interviews": 1, "offers": 0},
-        ],
-        "upcomingInterviews": [
-            {"candidate": "Sarah Chen", "position": "Senior Developer",
-                "date": "Today 2:00 PM", "interviewer": "Mike Ross"},
-            {"candidate": "James Wilson", "position": "Sales Manager",
-                "date": "Tomorrow 10:00 AM", "interviewer": "Lisa Park"},
-            {"candidate": "Maria Garcia", "position": "Marketing Director",
-                "date": "Wed 1:00 PM", "interviewer": "David Kim"},
-        ],
+        "openPositions": len(jobs),
+        "activeCandidates": total_candidates,
+        "interviewsThisWeek": None,
+        "offersOutstanding": None,
+        "timeToHireAvg": time_to_hire,
+        "acceptanceRate": None,
+        "pipelineStages": pipeline_stages,
+        "byDepartment": by_department,
+        "upcomingInterviews": None,
+        "dataSource": build_data_source(
+            "mixed",
+            ["ats-service"],
+            "Open positions, candidate stage counts, per-department openings/candidates "
+            "and average time to hire come from the ATS service (published jobs and "
+            "candidate/application records; activeCandidates is the ATS candidate total "
+            "across all statuses). Interview and offer fields have no live "
+            "source in this view yet and are null.",
+            live_fields=["openPositions", "activeCandidates", "pipelineStages",
+                         "byDepartment.openings", "byDepartment.candidates", "timeToHireAvg"],
+            not_live_fields=["interviewsThisWeek", "offersOutstanding", "acceptanceRate",
+                             "byDepartment.interviews", "byDepartment.offers", "upcomingInterviews"],
+        ),
+        "asOf": _iso_now(),
     }
 
 
@@ -636,6 +916,8 @@ def get_hiring_pipeline(x_tenant_id: str = Header("default", alias="X-Tenant-Id"
 def get_budget_forecast(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Returns budget dashboard with departmental spending, burn rate, and monthly burn trends."""
     return {
+        "dataSource": fixture_data_source("Static budget fixture; not tenant data"),
+        "asOf": CANNED_FIXTURE_AS_OF,
         "totalBudget": 4500000,
         "totalSpent": 3820000,
         "remainingBudget": 680000,
@@ -699,6 +981,8 @@ def get_budget_forecast(x_tenant_id: str = Header("default", alias="X-Tenant-Id"
 def get_utilization(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Returns workforce utilization metrics including billable utilization, capacity, and trend."""
     return {
+        "dataSource": fixture_data_source("Static utilization fixture; not tenant data"),
+        "asOf": CANNED_FIXTURE_AS_OF,
         "overallUtilization": 83,
         "billableUtilization": 76,
         "byDepartment": [
@@ -729,6 +1013,8 @@ def get_utilization(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
 def get_benchmarking(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Returns department benchmarking against company and industry averages."""
     return {
+        "dataSource": fixture_data_source("Static benchmarking fixture; not tenant data"),
+        "asOf": CANNED_FIXTURE_AS_OF,
         "companyAvg": {"productivity": 87.5, "engagement": 78.8,
                        "retention": 82.7, "attrition": 9.3,
                        "costPerEmployee": 3061},
@@ -756,6 +1042,8 @@ def get_benchmarking(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
 def get_ai_briefing(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Returns executive AI briefing with key findings, recommendations, and risk flags."""
     return {
+        "dataSource": fixture_data_source("Static briefing fixture; not tenant data"),
+        "asOf": CANNED_FIXTURE_AS_OF,
         "generatedAt": "2026-05-25T10:30:00Z",
         "executiveSummary": (
             "The organization is in strong health overall with an 78/100 health score. "
@@ -806,6 +1094,8 @@ def get_ai_briefing(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
 def get_risk_dashboard(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Returns composite risk assessment with category breakdown, risk levels, and trend."""
     return {
+        "dataSource": fixture_data_source("Static risk fixture; not tenant data"),
+        "asOf": CANNED_FIXTURE_AS_OF,
         "overallRiskScore": 22,
         "riskLevel": "low",
         "categories": [
@@ -917,6 +1207,8 @@ def verify_payroll_consistency(
 def get_activity_feed(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
     """Returns real-time activity feed with varied event types."""
     return {
+        "dataSource": fixture_data_source("Static activity feed fixture; not tenant data"),
+        "asOf": CANNED_FIXTURE_AS_OF,
         "activities": [
             {"id": 1, "type": "hire", "department": "Engineering", "severity": "info",
              "message": "Sarah Chen accepted Senior Developer offer",
