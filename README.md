@@ -319,6 +319,17 @@ rotation without blocking sign-in. An embedded common-password denylist
 (`denylist_version` is returned by the policy API) is always enforced at set
 time.
 
+OIDC logins (Google, Microsoft, Okta) carry a per-request nonce through the
+`oauth_states` row and validate it against the `id_token`, whose RS256 family
+signature is verified against the provider JWKS resolved from the provider's
+`/.well-known/openid-configuration` (cached, with a documented one-hour
+refresh interval and an immediate refetch when a rotated `kid` is unknown).
+Issuer, audience, expiry, and `email_verified` checks all fail closed, so a
+discovery outage rejects the login instead of skipping verification. GitHub
+logins require a verified address from `GET /user/emails`; synthetic
+addresses are never created. Per-tenant generic OIDC issuers are the
+follow-up slice of this work.
+
 ---
 
 ## Getting Started

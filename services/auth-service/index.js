@@ -396,8 +396,49 @@ function resolveOktaBaseUrl(clientId) {
   return null;
 }
 
-function validateOAuthIdToken(idToken, provider, expectedClientId, expectedEmail) {
-  if (!idToken) return { valid: true, skipped: true };
+// Exact issuer matching: a prefix/substring test would accept
+// "https://accounts.google.com.evil.com" and "https://evil.com/?x=.okta.com".
+function issuerMatchesProvider(iss, provider) {
+  if (!iss || typeof iss !== 'string') return false;
+  // Google historically issues both the bare host and the https URL.
+  if (provider === 'google' && iss === 'accounts.google.com') return true;
+  let parsed;
+  try {
+    parsed = new URL(iss);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:') return false;
+  const host = parsed.hostname.toLowerCase();
+  switch (provider) {
+    case 'google':
+      return host === 'accounts.google.com' || host === 'oauth2.googleapis.com';
+    case 'microsoft':
+      return host === 'login.microsoftonline.com';
+    case 'okta':
+      // Hostname-suffix check on the parsed URL: a substring test would accept
+      // "https://evil.com/?x=.okta.com" as a genuine Okta issuer.
+      return host.endsWith('.okta.com');
+    default:
+      return false;
+  }
+}
+
+// Claim-level id_token validation. Fail closed on missing expiry/audience:
+// an attacker-supplied token must not pass by simply omitting claims. When a
+// nonce was sent in the authorize request, the token must echo it.
+function validateOAuthIdToken(idToken, provider, expectedClientId, expectedEmail, options = {}) {
+  const expectedNonce = options.nonce || null;
+  const now = options.now || Date.now();
+  if (!idToken) {
+    // An id_token is mandatory whenever a nonce was sent (every OIDC
+    // provider); GitHub's plain OAuth2 flow has neither.
+    if (expectedNonce) return { valid: false, reason: 'id_token required because a nonce was sent' };
+    return { valid: true, skipped: true };
+  }
+  if (provider === 'github') {
+    return { valid: false, reason: 'GitHub OAuth2 does not issue id_token' };
+  }
   let payload;
   try {
     payload = jwt.decode(idToken);
@@ -407,38 +448,32 @@ function validateOAuthIdToken(idToken, provider, expectedClientId, expectedEmail
   } catch {
     return { valid: false, reason: 'id_token decode failed' };
   }
-  if (payload.exp && Date.now() >= payload.exp * 1000) {
+  if (typeof payload.exp !== 'number') return { valid: false, reason: 'id_token missing exp claim' };
+  if (now >= payload.exp * 1000) {
     return { valid: false, reason: 'id_token expired' };
   }
-  if (payload.nbf && Date.now() < payload.nbf * 1000) {
-    return { valid: false, reason: 'id_token not yet valid' };
-  }
-  const iss = payload.iss || '';
-  const expectedIssPrefixes = {
-    google: ['https://accounts.google.com', 'https://oauth2.googleapis.com'],
-    microsoft: ['https://login.microsoftonline.com'],
-    okta: ['.okta.com'],
-    github: [],
-  };
-  const prefixes = expectedIssPrefixes[provider] || [];
-  if (provider === 'okta') {
-    // Hostname-suffix check on the parsed URL: a substring test would accept
-    // "https://evil.com/?x=.okta.com" as a genuine Okta issuer.
-    let host = '';
-    try {
-      host = new URL(iss).hostname.toLowerCase();
-    } catch {
-      host = '';
+  if (payload.nbf !== undefined) {
+    if (typeof payload.nbf !== 'number') return { valid: false, reason: 'id_token malformed nbf claim' };
+    if (now < payload.nbf * 1000) {
+      return { valid: false, reason: 'id_token not yet valid' };
     }
-    if (!host.endsWith('.okta.com')) return { valid: false, reason: 'issuer mismatch: ' + iss };
-  } else if (prefixes.length > 0) {
-    const matched = prefixes.some(function (p) { return iss.indexOf(p) === 0; });
-    if (!matched) return { valid: false, reason: 'issuer mismatch: ' + iss };
   }
-  if (payload.aud && payload.aud !== expectedClientId) {
+  if (!issuerMatchesProvider(payload.iss, provider)) {
+    return { valid: false, reason: 'issuer mismatch: ' + String(payload.iss || '') };
+  }
+  const audiences = Array.isArray(payload.aud) ? payload.aud : (payload.aud === undefined ? [] : [payload.aud]);
+  if (audiences.length === 0) return { valid: false, reason: 'id_token missing aud claim' };
+  if (!audiences.some((aud) => aud === expectedClientId)) {
     return { valid: false, reason: 'audience mismatch' };
   }
-  if (payload.email && expectedEmail && payload.email.toLowerCase() !== expectedEmail.toLowerCase()) {
+  if (payload.azp !== undefined && payload.azp !== expectedClientId) {
+    return { valid: false, reason: 'authorized party mismatch' };
+  }
+  if (expectedNonce) {
+    if (payload.nonce === undefined) return { valid: false, reason: 'id_token missing nonce claim' };
+    if (payload.nonce !== expectedNonce) return { valid: false, reason: 'nonce mismatch' };
+  }
+  if (payload.email && expectedEmail && String(payload.email).toLowerCase() !== String(expectedEmail).toLowerCase()) {
     return { valid: false, reason: 'email mismatch between id_token and userinfo' };
   }
   if (payload.email_verified !== undefined) {
@@ -448,6 +483,162 @@ function validateOAuthIdToken(idToken, provider, expectedClientId, expectedEmail
     }
   }
   return { valid: true };
+}
+
+// ---- OIDC discovery and JWKS verification (fail closed) ----
+
+// Refresh interval for cached discovery documents and JWKS bundles. A
+// provider Cache-Control max-age overrides this inside sane bounds; before it
+// expires a rotated key is picked up by the unknown-kid refetch in
+// verifyOAuthIdTokenSignature, so no restart or cache flush is needed.
+const OIDC_DISCOVERY_DEFAULT_TTL_MS = 60 * 60 * 1000;
+const OIDC_DISCOVERY_MIN_TTL_MS = 60 * 1000;
+const OIDC_DISCOVERY_MAX_TTL_MS = 24 * 60 * 60 * 1000;
+const OIDC_HTTP_TIMEOUT_MS = 5000;
+const OIDC_SIGNING_ALGORITHMS = ['RS256', 'RS384', 'RS512'];
+
+// Built-in OIDC providers resolve endpoints from their discovery document;
+// GitHub is plain OAuth2 with no discovery. A generic per-tenant OIDC
+// provider (issuer configured per tenant) is slice two of this issue.
+const OIDC_DISCOVERY_URLS = {
+  google: 'https://accounts.google.com/.well-known/openid-configuration',
+  microsoft: 'https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration',
+};
+
+function oidcDiscoveryUrlFor(provider, oktaBase) {
+  if (provider === 'okta') {
+    return oktaBase ? `${oktaBase}/.well-known/openid-configuration` : null;
+  }
+  return OIDC_DISCOVERY_URLS[provider] || null;
+}
+
+function computeCacheTtlMs(cacheControlHeader, now = Date.now()) {
+  const match = String(cacheControlHeader || '').match(/max-age\s*=\s*(\d+)/i);
+  if (!match) return OIDC_DISCOVERY_DEFAULT_TTL_MS;
+  const seconds = parseInt(match[1], 10);
+  if (!Number.isFinite(seconds)) return OIDC_DISCOVERY_DEFAULT_TTL_MS;
+  return Math.min(Math.max(seconds * 1000, OIDC_DISCOVERY_MIN_TTL_MS), OIDC_DISCOVERY_MAX_TTL_MS);
+}
+
+async function defaultOidcFetchJson(url) {
+  const response = await axios.get(url, { timeout: OIDC_HTTP_TIMEOUT_MS, headers: { Accept: 'application/json' } });
+  return { data: response.data, headers: response.headers || {} };
+}
+
+const oidcDiscoveryCache = new Map();
+const oidcJwksCache = new Map();
+
+async function fetchDiscoveryDocument(url, options = {}) {
+  const fetchJson = options.fetchJson || defaultOidcFetchJson;
+  const cache = options.cache || oidcDiscoveryCache;
+  const now = options.now || Date.now();
+  const cached = cache.get(url);
+  if (!options.force && cached && cached.expiresAt > now) return cached.document;
+  const response = await fetchJson(url);
+  const document = response && response.data;
+  if (!document || typeof document !== 'object' || typeof document.jwks_uri !== 'string' || !document.jwks_uri) {
+    throw new Error('OIDC discovery document is missing jwks_uri');
+  }
+  const expiresAt = now + computeCacheTtlMs(response.headers && response.headers['cache-control'], now);
+  cache.set(url, { document, fetchedAt: now, expiresAt });
+  return document;
+}
+
+function jwkToPem(jwk) {
+  if (!jwk || jwk.kty !== 'RSA' || !jwk.n || !jwk.e) throw new Error('unsupported JWK');
+  return crypto.createPublicKey({ key: { kty: 'RSA', n: jwk.n, e: jwk.e }, format: 'jwk' })
+    .export({ type: 'spki', format: 'pem' });
+}
+
+// Map kid -> PEM. Keys must be RSA and carry a kid: rotation matching is by
+// kid, and a key without one can never be selected deterministically.
+function normalizeJwksBundle(document) {
+  const keys = new Map();
+  const list = document && Array.isArray(document.keys) ? document.keys : [];
+  for (const jwk of list) {
+    if (!jwk || jwk.kty !== 'RSA' || !jwk.kid) continue;
+    if (jwk.use && jwk.use !== 'sig') continue;
+    try {
+      keys.set(String(jwk.kid), jwkToPem(jwk));
+    } catch { /* skip malformed key material */ }
+  }
+  return keys;
+}
+
+function verifyIdTokenSignature(idToken, jwks, options = {}) {
+  let header = null;
+  try {
+    const decoded = jwt.decode(idToken, { complete: true });
+    header = decoded && decoded.header;
+  } catch {
+    header = null;
+  }
+  if (!header) return { valid: false, reason: 'id_token header decode failed' };
+  if (!OIDC_SIGNING_ALGORITHMS.includes(header.alg)) {
+    return { valid: false, reason: 'unsupported id_token signature algorithm' };
+  }
+  if (!header.kid) return { valid: false, reason: 'id_token missing kid header' };
+  const keys = jwks instanceof Map ? jwks : normalizeJwksBundle(jwks);
+  const pem = keys.get(String(header.kid));
+  if (!pem) return { valid: false, reason: 'signing key not found for kid', unknownKey: true };
+  try {
+    jwt.verify(idToken, pem, { algorithms: [header.alg], clockTolerance: 30 });
+  } catch {
+    return { valid: false, reason: 'id_token signature verification failed' };
+  }
+  return { valid: true };
+}
+
+async function getSigningKeys(jwksUri, options = {}) {
+  const fetchJson = options.fetchJson || defaultOidcFetchJson;
+  const cache = options.cache || oidcJwksCache;
+  const now = options.now || Date.now();
+  const cached = cache.get(jwksUri);
+  if (!options.force && cached && cached.expiresAt > now) return cached.keys;
+  const response = await fetchJson(jwksUri);
+  const keys = normalizeJwksBundle(response && response.data);
+  if (keys.size === 0) throw new Error('JWKS contains no usable RSA signing keys');
+  const expiresAt = now + computeCacheTtlMs(response.headers && response.headers['cache-control'], now);
+  cache.set(jwksUri, { keys, fetchedAt: now, expiresAt });
+  return keys;
+}
+
+// Verify an id_token signature against the provider's JWKS. When the kid is
+// unknown (key rotation between cache refreshes) the bundle is fetched once
+// more before failing, so a rotation does not lock users out.
+async function verifyOAuthIdTokenSignature(idToken, jwksUri, options = {}) {
+  let keys = await getSigningKeys(jwksUri, options);
+  let result = verifyIdTokenSignature(idToken, keys, options);
+  if (!result.valid && result.unknownKey) {
+    keys = await getSigningKeys(jwksUri, { ...options, force: true });
+    result = verifyIdTokenSignature(idToken, keys, options);
+  }
+  return result;
+}
+
+// Full id_token verification used by the callback: claim checks (expiry,
+// exact issuer, audience, nonce, email) first, then signature against the
+// discovery document's JWKS. Anything that cannot be verified - discovery
+// unreachable, malformed document, unknown key - fails closed.
+async function verifyOAuthIdToken(idToken, provider, providerConfig, expectedEmail, options = {}) {
+  const payloadCheck = validateOAuthIdToken(idToken, provider, providerConfig.client_id, expectedEmail, {
+    nonce: options.nonce || null,
+    now: options.now,
+  });
+  if (!payloadCheck.valid) return payloadCheck;
+  if (payloadCheck.skipped) return payloadCheck;
+  const oktaBase = provider === 'okta' ? resolveOktaBaseUrl(providerConfig.client_id) : null;
+  const discoveryUrl = oidcDiscoveryUrlFor(provider, oktaBase);
+  if (!discoveryUrl) return { valid: false, reason: 'no discovery document configured for provider' };
+  try {
+    const document = await fetchDiscoveryDocument(discoveryUrl, options);
+    const signatureCheck = await verifyOAuthIdTokenSignature(idToken, document.jwks_uri, options);
+    if (!signatureCheck.valid) return signatureCheck;
+    return { valid: true, jwks_uri: document.jwks_uri };
+  } catch (err) {
+    safeLog(console.error, `OIDC discovery/JWKS verification failed for ${provider} (failing closed):`, err);
+    return { valid: false, reason: 'id_token signature could not be verified against provider JWKS' };
+  }
 }
 
 if (!process.env.POSTGRES_URL) {
@@ -1529,6 +1720,11 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+  // OIDC nonce issued with the authorize request and validated against the
+  // id_token on callback (replay/injection defence for the login ceremony).
+  try {
+    await pool.query('ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS nonce VARCHAR(64)');
+  } catch (err) { /* column may already exist */ }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS oauth_links (
@@ -3913,10 +4109,15 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
     const prov = provResult.rows[0];
     const state = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    // OIDC providers bind a nonce into the id_token; GitHub's plain OAuth2
+    // flow has no nonce parameter.
+    const nonce = ['google', 'microsoft', 'okta'].includes(provider)
+      ? crypto.randomBytes(16).toString('hex')
+      : null;
 
     await pool.query(
-      'INSERT INTO oauth_states (state, provider, tenant_id, redirect_to, expires_at) VALUES ($1, $2, $3, $4, $5)',
-      [state, provider, tenantId, redirectTo, expiresAt]
+      'INSERT INTO oauth_states (state, provider, tenant_id, redirect_to, nonce, expires_at) VALUES ($1, $2, $3, $4, $5, $6)',
+      [state, provider, tenantId, redirectTo, nonce, expiresAt]
     );
 
     const oktaBase = provider === 'okta' ? resolveOktaBaseUrl(prov.client_id) : null;
@@ -3932,6 +4133,7 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
           response_type: 'code',
           scope: prov.scopes || 'openid email profile',
           state,
+          nonce,
           access_type: 'offline',
           prompt: 'consent',
         },
@@ -3944,6 +4146,7 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
           response_type: 'code',
           scope: prov.scopes || 'openid email profile',
           state,
+          nonce,
         },
       },
       github: {
@@ -3963,6 +4166,7 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
           response_type: 'code',
           scope: prov.scopes || 'openid email profile',
           state,
+          nonce,
         },
       },
     };
@@ -3978,6 +4182,7 @@ app.post('/oauth/login/:provider', createUserRateLimiter('oauth_login', 20), asy
       redirect_url: redirectUrl,
       state,
       provider,
+      nonce,
     });
   } catch (err) {
     safeLog(console.error, 'Request failed', err);
@@ -4074,13 +4279,46 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
       });
 
       const userInfo = userInfoResponse.data;
-      const email = userInfo.email || userInfo.mail || userInfo.userPrincipalName || `${userInfo.login}@${provider}.oauth`;
-      const name = userInfo.name || userInfo.displayName || userInfo.login || email;
-      const providerUserId = String(userInfo.id || userInfo.sub || userInfo.login || email);
+      // No synthetic identities: an address derived from the login handle
+      // would let an unverified account masquerade as a mailbox it does not
+      // own. Every provider must return a real, provider-verified address.
+      const rawEmail = userInfo.email || userInfo.mail || userInfo.userPrincipalName || '';
+      let email = normalizeEmail(rawEmail);
+      const name = userInfo.name || userInfo.displayName || userInfo.login || email || String(userInfo.sub || '');
+      const providerUserId = String(userInfo.id || userInfo.sub || userInfo.login || '');
+      if (!providerUserId) {
+        return res.status(403).json({ message: 'Provider did not return a stable subject identifier' });
+      }
 
-      const idTokenValidation = validateOAuthIdToken(idToken, provider, prov.client_id, email);
+      // id_token: claim checks (expiry, exact issuer, audience, nonce) then
+      // signature verification against the provider JWKS. Fails closed, so a
+      // discovery outage rejects the login instead of skipping the check.
+      const idTokenValidation = await verifyOAuthIdToken(idToken, provider, prov, email, { nonce: oauthState.nonce });
       if (!idTokenValidation.valid) {
         return res.status(401).json({ message: 'OAuth id_token validation failed: ' + idTokenValidation.reason });
+      }
+
+      // GitHub exposes the authoritative verified address only via
+      // /user/emails; the profile email is frequently private or unverified.
+      // A verified address is mandatory - there is no synthetic fallback.
+      if (provider === 'github') {
+        let emailsData;
+        try {
+          const emailsRes = await axios.get('https://api.github.com/user/emails', {
+            headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+            timeout: 5000,
+          });
+          emailsData = emailsRes.data;
+        } catch (err) {
+          return res.status(403).json({ message: 'GitHub email could not be verified' });
+        }
+        const emails = Array.isArray(emailsData) ? emailsData : [];
+        const verifiedEmail = emails.find(function (entry) { return entry && entry.primary === true && entry.verified === true; })
+          || emails.find(function (entry) { return entry && entry.verified === true; });
+        if (!verifiedEmail || !verifiedEmail.email) {
+          return res.status(403).json({ message: 'GitHub account has no verified email' });
+        }
+        email = normalizeEmail(verifiedEmail.email);
       }
 
       let emailVerifiedRaw = userInfo.email_verified;
@@ -4089,27 +4327,6 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
       let emailVerified = emailVerifiedRaw;
       if (typeof emailVerified === 'string') emailVerified = emailVerified.toLowerCase() === 'true';
 
-      if (provider === 'github' && (emailVerified === null || emailVerified === undefined)) {
-        try {
-          const emailsRes = await axios.get('https://api.github.com/user/emails', {
-            headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
-            timeout: 5000,
-          });
-          if (Array.isArray(emailsRes.data)) {
-            const match = emailsRes.data.find(function (e) { return e.email && e.email.toLowerCase() === String(email).toLowerCase(); });
-            if (match) {
-              emailVerified = match.verified === true;
-            } else if (email && String(email).indexOf('@') !== -1 && !String(email).endsWith('.oauth')) {
-              emailVerified = false;
-            }
-          }
-        } catch (e) {
-          if (String(email).endsWith('.oauth')) {
-            return res.status(403).json({ message: 'GitHub email not verified' });
-          }
-        }
-      }
-
       if (['google', 'microsoft', 'okta'].includes(provider)) {
         const decoded = idToken ? jwt.decode(idToken) : null;
         const idTokenEmailVerified = decoded && (decoded.email_verified === true || decoded.email_verified === 'true');
@@ -4117,13 +4334,11 @@ app.post('/oauth/callback/:provider', createUserRateLimiter('oauth_callback', 20
         if (!verified) {
           return res.status(403).json({ message: 'Email not verified by provider' });
         }
-        if (!email || String(email).indexOf('@') === -1 || String(email).endsWith('.oauth')) {
-          return res.status(403).json({ message: 'Verified email required for provisioning' });
-        }
       }
 
-      if (String(email).endsWith('.oauth') && ['google', 'microsoft', 'okta'].includes(provider)) {
-        return res.status(403).json({ message: 'Verified email required' });
+      const emailError = validateEmail(email);
+      if (emailError) {
+        return res.status(403).json({ message: 'Verified email required for provisioning' });
       }
 
       let userResult = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
@@ -4276,6 +4491,17 @@ module.exports = {
   storeMfaChallengeJti,
   mfaChallengeJtiExists,
   consumeMfaChallengeJti,
+  issuerMatchesProvider,
+  oidcDiscoveryUrlFor,
+  computeCacheTtlMs,
+  fetchDiscoveryDocument,
+  normalizeJwksBundle,
+  verifyIdTokenSignature,
+  getSigningKeys,
+  verifyOAuthIdTokenSignature,
+  verifyOAuthIdToken,
+  OIDC_DISCOVERY_DEFAULT_TTL_MS,
+  OIDC_SIGNING_ALGORITHMS,
 };
 
 if (require.main === module) {
