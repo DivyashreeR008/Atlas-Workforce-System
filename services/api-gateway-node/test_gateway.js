@@ -9,7 +9,7 @@ const assert = require('assert');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const path = require('path');
-const { csrfMiddleware, rbacMiddleware, services, isPublicOrAuthPath, authMiddleware, mfaStepUpMiddleware, auditProxyMiddleware, deviceTrustHeaderMiddleware, checkCache, cacheInvalidationMiddleware, verifySlackRequest, isWsPath, globalErrorHandler, consumeMfaJti, revokeCheck, SENSITIVE_ROUTES, SENSITIVE_ROUTE_REGISTRY, isSensitiveRoute, sessionMfaStampIsFresh, stepUpPayloadIsFresh, MFA_STAMP_MAX_AGE_MS, normalizeCheckoutRequest, resolveCheckoutPricing, fetchTenantHeadcount } = require('./index');
+const { csrfMiddleware, rbacMiddleware, services, isPublicOrAuthPath, authMiddleware, mfaStepUpMiddleware, auditProxyMiddleware, deviceTrustHeaderMiddleware, checkCache, cacheInvalidationMiddleware, verifySlackRequest, isWsPath, globalErrorHandler, consumeMfaJti, revokeCheck, SENSITIVE_ROUTES, SENSITIVE_ROUTE_REGISTRY, isSensitiveRoute, sessionMfaStampIsFresh, stepUpPayloadIsFresh, MFA_STAMP_MAX_AGE_MS, normalizeCheckoutRequest, resolveCheckoutPricing, fetchTenantHeadcount, verifySlackHmac, resolveSlackSigningSecret, verifySlackTenantRequest, resolveSlackAtlasIdentity, handleAtlasBalanceCommand, handleAtlasDirectoryCommand, handleAtlasApprovalCommand, apiClient } = require('./index');
 
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:8080';
 
@@ -750,6 +750,164 @@ async function testBillingRoute() {
   console.log('PASS: headcount lookup signs the call, times out, and validates the total');
 }
 
+// Slack interactive command gate: per-tenant secrets fail closed without one,
+// and only a correctly signed request for a configured workspace passes.
+function signSlackRaw(secret, timestamp, rawBody) {
+  return 'v0=' + crypto.createHmac('sha256', secret).update(`v0:${timestamp}:${rawBody}`).digest('hex');
+}
+
+function testSlackTenantGate() {
+  const TENANT_SECRET = 'unit-test-tenant-signing-secret-16';
+  const previous = process.env.SLACK_TENANT_SIGNING_SECRETS;
+  process.env.SLACK_TENANT_SIGNING_SECRETS = JSON.stringify({ T0001TEST: TENANT_SECRET });
+  try {
+    // Secret resolution honors the explicit per-tenant map
+    assert.strictEqual(resolveSlackSigningSecret('T0001TEST'), TENANT_SECRET, 'Per-tenant secret resolves from the map');
+    assert.strictEqual(resolveSlackSigningSecret('T_UNKNOWN'), '', 'Unmapped workspace has no secret');
+
+    // Missing workspace context
+    let gate = verifySlackTenantRequest({ body: {}, rawBody: '' }, null);
+    assert.strictEqual(gate.code, 400, 'Missing team_id is a 400');
+    assert.ok(gate.body.text.includes('team_id'), 'Missing team_id response mentions team_id');
+
+    // Fail closed without a configured secret (route stays off): the
+    // per-workspace map is an explicit allowlist, so an empty map disables
+    // every workspace deterministically.
+    process.env.SLACK_TENANT_SIGNING_SECRETS = '{}';
+    gate = verifySlackTenantRequest({ body: { team_id: 'T_UNKNOWN' }, rawBody: '' }, 'T_UNKNOWN');
+    assert.strictEqual(gate.code, 503, 'Workspace without a secret stays off (503)');
+
+    // Forged signature for a configured workspace is rejected
+    process.env.SLACK_TENANT_SIGNING_SECRETS = JSON.stringify({ T0001TEST: TENANT_SECRET });
+    const sour = { body: { team_id: 'T0001TEST' }, headers: { 'x-slack-signature': 'v0=deadbeef', 'x-slack-request-timestamp': String(Math.floor(Date.now() / 1000)) }, rawBody: 'text=balance' };
+    gate = verifySlackTenantRequest(sour, 'T0001TEST');
+    assert.strictEqual(gate.code, 401, 'Forged signature is a 401');
+
+    // Correctly signed request passes the gate
+    const ts = String(Math.floor(Date.now() / 1000));
+    const rawBody = 'team_id=T0001TEST&text=balance';
+    const signed = { body: { team_id: 'T0001TEST' }, headers: { 'x-slack-signature': signSlackRaw(TENANT_SECRET, ts, rawBody), 'x-slack-request-timestamp': ts }, rawBody };
+    assert.strictEqual(verifySlackTenantRequest(signed, 'T0001TEST'), null, 'Validly signed request passes the gate');
+
+    console.log('PASS: slack tenant gate fails closed and verifies signatures');
+  } finally {
+    if (previous === undefined) delete process.env.SLACK_TENANT_SIGNING_SECRETS;
+    else process.env.SLACK_TENANT_SIGNING_SECRETS = previous;
+  }
+}
+
+// Slack user to Atlas identity resolution: Slack email is verified via
+// users.info, then mapped inside the workspace tenant via the internal
+// lookup. Unknown Slack users or unknown Atlas users resolve to null.
+async function testSlackAtlasIdentity() {
+  const originalGet = apiClient.get;
+  try {
+    // Happy path: Slack email maps to an active Atlas user; role is
+    // normalized for downstream role checks.
+    let lookupHeaders = null;
+    apiClient.get = async (url, config) => {
+      if (url.endsWith('/users.info')) {
+        return { data: { ok: true, user: { profile: { email: '  Link.User@Atlas.IO ' } } } };
+      }
+      if (url.includes('/internal/atlas-user')) {
+        lookupHeaders = config.headers;
+        return { data: { id: 7, email: 'link.user@atlas.io', name: 'Link User', role: 'Manager', tenant_id: 'T0001TEST' } };
+      }
+      throw new Error('unexpected url ' + url);
+    };
+    const identity = await resolveSlackAtlasIdentity('U123REAL', 'T0001TEST');
+    assert.ok(identity, 'Known Slack user maps to an Atlas identity');
+    assert.strictEqual(identity.email, 'link.user@atlas.io', 'Slack email is trimmed and lowercased');
+    assert.strictEqual(identity.role, 'manager', 'Role is normalized to lowercase');
+    assert.strictEqual(identity.tenant_id, 'T0001TEST', 'Identity is tenant scoped');
+    assert.ok(lookupHeaders && typeof lookupHeaders['x-internal-auth'] === 'string', 'Atlas lookup sends the internal token');
+    const claims = jwt.verify(lookupHeaders['x-internal-auth'], process.env.INTERNAL_JWT_SECRET, { algorithms: ['HS256'] });
+    assert.strictEqual(claims.tenant_id, 'T0001TEST', 'Internal lookup token is scoped to the workspace tenant');
+
+    // Unknown Slack user: no lookup, no identity
+    apiClient.get = async (url) => {
+      if (url.endsWith('/users.info')) {
+        return { data: { ok: false } };
+      }
+      throw new Error('identity lookup must not be called for unknown Slack users');
+    };
+    assert.strictEqual(await resolveSlackAtlasIdentity('U404', 'T0001TEST'), null, 'Unknown Slack user resolves to null');
+
+    // Slack user known but no matching Atlas user in this workspace
+    apiClient.get = async (url) => {
+      if (url.endsWith('/users.info')) {
+        return { data: { ok: true, user: { profile: { email: 'stranger@atlas.io' } } } };
+      }
+      if (url.includes('/internal/atlas-user')) {
+        throw Object.assign(new Error('no row'), { response: { status: 404 } });
+      }
+      throw new Error('unexpected url ' + url);
+    };
+    assert.strictEqual(await resolveSlackAtlasIdentity('U123REAL', 'T0001TEST'), null, 'Atlas user outside the workspace resolves to null');
+
+    console.log('PASS: slack identity mapping is verified, tenant scoped, and fails closed');
+  } finally {
+    apiClient.get = originalGet;
+  }
+}
+
+// Command handlers: role-denied approvals happen server-side before any
+// downstream call, and reads go out with the resolved identity's claims.
+async function testAtlasCommandHandlers() {
+  const originalGet = apiClient.get;
+  const originalPut = apiClient.put;
+  try {
+    // Approve denied for a plain employee role: nothing is sent downstream
+    let downstreamCalled = false;
+    apiClient.put = async () => { downstreamCalled = true; throw new Error('must not be called'); };
+    const denied = await handleAtlasApprovalCommand({ id: 7, email: 'emp@example.com', role: 'employee', tenant_id: 'T0001TEST' }, '42', 'approve', 'T0001TEST');
+    assert.strictEqual(denied.status, 403, 'Employee role is denied server-side');
+    assert.strictEqual(downstreamCalled, false, 'Denied approval must not reach leave-service');
+
+    // Manager approval travels as the resolved identity, not as Slack input
+    let putCall = null;
+    apiClient.put = async (url, data, config) => {
+      putCall = { url, data, config };
+      return { data: { id: 42 } };
+    };
+    const approved = await handleAtlasApprovalCommand({ id: 7, email: 'mgr@example.com', role: 'manager', tenant_id: 'T0001TEST' }, '42', 'approve', 'T0001TEST');
+    assert.strictEqual(approved.status, 200, 'Manager approval succeeds');
+    assert.ok(approved.body.text.includes('approved'), 'Approval reply confirms the decision');
+    assert.ok(putCall.url.endsWith('/api/leave/42/status'), 'Approval calls the leave-service status endpoint');
+    assert.strictEqual(putCall.data.status, 'APPROVED', 'Approval maps to the leave-service status value');
+    assert.strictEqual(putCall.config.headers['X-Tenant-Id'], 'T0001TEST', 'Approval carries the workspace tenant');
+    const putClaims = jwt.verify(putCall.config.headers['x-internal-auth'], process.env.INTERNAL_JWT_SECRET, { algorithms: ['HS256'] });
+    assert.strictEqual(putClaims.user_role, 'manager', 'Internal token carries the verified role');
+    assert.strictEqual(putClaims.user_id, 7, 'Internal token carries the verified Atlas id');
+
+    // Balance command renders the leave-service balances
+    apiClient.get = async () => ({ data: { balances: [
+      { leaveType: 'VACATION', entitlementDays: 20, usedDays: 3, remainingDays: 17 }
+    ] } });
+    const balance = await handleAtlasBalanceCommand({ id: 7, email: 'emp@example.com', role: 'employee', tenant_id: 'T0001TEST' }, 'T0001TEST');
+    assert.strictEqual(balance.status, 200, 'Balance command succeeds');
+    assert.ok(balance.body.text.includes('VACATION: 17'), 'Balance reply lists the remaining days');
+
+    // Directory command renders a compact listing scoped to the tenant
+    let dirCall = null;
+    apiClient.get = async (url, config) => {
+      dirCall = { url, config };
+      return { data: { items: [{ name: 'Ana Ray', position: 'SWE', department: 'Eng', email: 'ana@x.io' }] } };
+    };
+    const directory = await handleAtlasDirectoryCommand({ id: 7, email: 'emp@example.com', role: 'employee', tenant_id: 'T0001TEST' }, 'T0001TEST', 'ana');
+    assert.strictEqual(directory.status, 200, 'Directory command succeeds');
+    assert.ok(directory.body.text.includes('Ana Ray'), 'Directory reply lists matches');
+    assert.ok(dirCall.url.includes('/employees'), 'Directory reads the employee service');
+    assert.strictEqual(dirCall.config.params.search, 'ana', 'Directory passes the caller query');
+    assert.strictEqual(dirCall.config.headers['X-Tenant-Id'], 'T0001TEST', 'Directory is tenant scoped');
+
+    console.log('PASS: atlas command handlers enforce roles server-side and sign downstream calls');
+  } finally {
+    apiClient.get = originalGet;
+    apiClient.put = originalPut;
+  }
+}
+
 // Upgrade path tests
 function testUpgradePath() {
   assert.strictEqual(isWsPath('/ws'), true, '/ws should be a WS path');
@@ -799,6 +957,9 @@ async function run() {
   testDeviceTrustMiddleware();
   await testCachingPair();
   testWebhookVerification();
+  testSlackTenantGate();
+  await testSlackAtlasIdentity();
+  await testAtlasCommandHandlers();
   await testBillingRoute();
   testUpgradePath();
   testErrorShape();
@@ -827,6 +988,9 @@ module.exports = {
   testDeviceTrustMiddleware,
   testCachingPair,
   testWebhookVerification,
+  testSlackTenantGate,
+  testSlackAtlasIdentity,
+  testAtlasCommandHandlers,
   testBillingRoute,
   testUpgradePath,
   testErrorShape,

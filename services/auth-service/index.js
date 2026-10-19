@@ -3975,6 +3975,55 @@ app.delete('/auth/admin/api-keys/:keyId', requireRole('admin'), createUserRateLi
   }
 });
 
+// Internal identity lookup used by the api-gateway to map a Slack workspace
+// user to an Atlas user for slash commands and interactive approvals. Requires
+// the internal service token (x-internal-auth, same trust as gateway-to-service
+// calls); the tenant comes from the token claims, never from query input, so a
+// caller scoped to one workspace cannot read identities from another. Returns a
+// minimal non-sensitive projection: id, email, name, role, tenant.
+app.get('/internal/atlas-user', (req, res) => {
+  const token = req.headers['x-internal-auth'];
+  if (!token) {
+    return res.status(401).json({ message: 'Internal authentication required' });
+  }
+  let claims;
+  try {
+    claims = jwt.verify(token, INTERNAL_JWT_SECRET, { algorithms: ['HS256'] });
+  } catch (err) {
+    safeLog(console.warn, 'Internal atlas-user lookup rejected:', err.message);
+    return res.status(401).json({ message: 'Invalid internal token' });
+  }
+
+  const email = typeof req.query.email === 'string' ? req.query.email.trim().toLowerCase() : '';
+  if (!/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(email)) {
+    return res.status(400).json({ message: 'A valid email is required' });
+  }
+  const tenantId = typeof claims.tenant_id === 'string' && claims.tenant_id.trim() ? claims.tenant_id.trim() : 'default';
+
+  pool
+    .query(
+      'SELECT id, email, name, role, tenant_id, active FROM users WHERE email = $1 AND tenant_id = $2 LIMIT 1',
+      [email, tenantId]
+    )
+    .then(({ rows }) => {
+      if (rows.length === 0 || rows[0].active === false) {
+        return res.status(404).json({ message: 'No matching Atlas user in this workspace' });
+      }
+      const row = rows[0];
+      return res.json({
+        id: row.id,
+        email: row.email,
+        name: row.name,
+        role: row.role,
+        tenant_id: row.tenant_id || tenantId
+      });
+    })
+    .catch((err) => {
+      safeLog(console.error, 'Request failed', err);
+      res.status(500).json({ message: 'Internal user lookup failed' });
+    });
+});
+
 app.get('/sessions', requireRole(), createUserRateLimiter('sessions_list', 60), async (req, res) => {
   try {
     const userId = req.user.id;

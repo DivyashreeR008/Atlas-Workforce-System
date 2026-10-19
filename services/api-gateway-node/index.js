@@ -1188,36 +1188,47 @@ function cacheInvalidationMiddleware(req, res, next) {
 
 app.use(cacheInvalidationMiddleware);
 
+// Slack signing (v0 scheme) over the raw body for a given secret. Extracted
+// from verifySlackRequest so both the global webhook gate and the per-tenant
+// command/interactive gates share one implementation.
+function verifySlackHmac(req, secret) {
+  const signature = req.headers['x-slack-signature'];
+  const timestamp = req.headers['x-slack-request-timestamp'];
+  if (!secret || !signature || !timestamp) {
+    return { valid: false, reason: 'Missing or invalid Slack signature' };
+  }
+  const ts = parseInt(String(timestamp), 10);
+  if (Number.isNaN(ts)) {
+    return { valid: false, reason: 'Invalid timestamp' };
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - ts) > 60 * 5) {
+    return { valid: false, reason: 'Stale timestamp' };
+  }
+  const rawBody = req.rawBody || '';
+  const baseString = `v0:${timestamp}:${rawBody}`;
+  const hmac = crypto.createHmac('sha256', secret).update(baseString, 'utf8').digest('hex');
+  const expected = `v0=${hmac}`;
+  try {
+    const sigBuf = Buffer.from(String(signature), 'utf8');
+    const expBuf = Buffer.from(expected, 'utf8');
+    if (sigBuf.length !== expBuf.length) {
+      return { valid: false, reason: 'Invalid signature length' };
+    }
+    if (!crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return { valid: false, reason: 'Invalid signature' };
+    }
+    return { valid: true };
+  } catch {
+    return { valid: false, reason: 'Signature verification failed' };
+  }
+}
+
 function verifySlackRequest(req) {
   const signature = req.headers['x-slack-signature'];
   const timestamp = req.headers['x-slack-request-timestamp'];
-
   if (SLACK_SIGNING_SECRET && signature && timestamp) {
-    const ts = parseInt(String(timestamp), 10);
-    if (Number.isNaN(ts)) {
-      return { valid: false, reason: 'Invalid timestamp' };
-    }
-    const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - ts) > 60 * 5) {
-      return { valid: false, reason: 'Stale timestamp' };
-    }
-    const rawBody = req.rawBody || '';
-    const baseString = `v0:${timestamp}:${rawBody}`;
-    const hmac = crypto.createHmac('sha256', SLACK_SIGNING_SECRET).update(baseString, 'utf8').digest('hex');
-    const expected = `v0=${hmac}`;
-    try {
-      const sigBuf = Buffer.from(String(signature), 'utf8');
-      const expBuf = Buffer.from(expected, 'utf8');
-      if (sigBuf.length !== expBuf.length) {
-        return { valid: false, reason: 'Invalid signature length' };
-      }
-      if (!crypto.timingSafeEqual(sigBuf, expBuf)) {
-        return { valid: false, reason: 'Invalid signature' };
-      }
-      return { valid: true };
-    } catch {
-      return { valid: false, reason: 'Signature verification failed' };
-    }
+    return verifySlackHmac(req, SLACK_SIGNING_SECRET);
   }
 
   if (SLACK_WEBHOOK_SECRET) {
@@ -1339,6 +1350,318 @@ app.post('/api/webhooks/slack', express.urlencoded({
     }
     return res.status(502).json({ response_type: 'ephemeral', text: 'Failed to submit leave request. Please try again.' });
   }
+});
+
+// ------------------------------------------------
+// Slack interactive commands + interactive components
+// (read-only commands are the auth-plumbing slice;
+// approvals ride the same identity resolution)
+// ------------------------------------------------
+const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
+const SLACK_API_URL = process.env.SLACK_API_URL || 'https://slack.com/api';
+const SLACK_TEAM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+// Per-tenant Slack signing secrets keyed by Slack workspace id (team_id),
+// e.g. SLACK_TENANT_SIGNING_SECRETS={"T0134ABC":"..."} . Parsed lazily so
+// tests can exercise different configurations in one process. A workspace
+// without a configured secret stays off: commands and interactions fail
+// closed, consistent with the slack webhook gate above.
+function resolveSlackSigningSecret(teamId) {
+  if (typeof teamId !== 'string' || !SLACK_TEAM_ID_RE.test(teamId)) {
+    return '';
+  }
+  const raw = process.env.SLACK_TENANT_SIGNING_SECRETS || '';
+  if (raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        // The per-workspace map is an explicit allowlist: a workspace missing
+        // from it stays off even when a global signing secret exists.
+        const secret = typeof parsed[teamId] === 'string' && parsed[teamId].length >= 16 ? parsed[teamId] : '';
+        if (!secret) {
+          console.warn(`Slack command interaction rejected: no signing secret configured for workspace ${teamId}`);
+        }
+        return secret;
+      }
+      console.warn('SLACK_TENANT_SIGNING_SECRETS must be a JSON object mapping team_id to signing secret');
+      return '';
+    } catch (err) {
+      console.warn(`SLACK_TENANT_SIGNING_SECRETS is not valid JSON: ${err.message}`);
+      return '';
+    }
+  }
+  return SLACK_SIGNING_SECRET;
+}
+
+// Injectable outbound HTTP client so unit tests can stub Slack users.info,
+// the auth-service identity lookup, and downstream service calls without a
+// real workspace or live services.
+const apiClient = {
+  get: (url, config) => axios.get(url, config),
+  put: (url, data, config) => axios.put(url, data, config),
+};
+
+function slackTenantIdFromCommandBody(req) {
+  const teamId = req.body?.team_id;
+  return typeof teamId === 'string' && SLACK_TEAM_ID_RE.test(teamId) ? teamId : null;
+}
+
+// Fail-closed per-tenant gate: no signing secret for the workspace means the
+// route stays off (503, same failure style as the global slack webhook gate).
+function verifySlackTenantRequest(req, teamId) {
+  if (!teamId) {
+    return { code: 400, body: { response_type: 'ephemeral', text: 'Missing Slack workspace context (team_id).' } };
+  }
+  const secret = resolveSlackSigningSecret(teamId);
+  if (!secret) {
+    console.warn(`Slack command interaction rejected: no signing secret configured for workspace ${teamId}`);
+    return { code: 503, body: { response_type: 'ephemeral', text: 'Slack commands are not enabled for this workspace.' } };
+  }
+  const verification = verifySlackHmac(req, secret);
+  if (!verification.valid) {
+    console.warn(`Slack command interaction auth failed: ${verification.reason}`);
+    return { code: 401, body: { response_type: 'ephemeral', text: 'Invalid request signature.' } };
+  }
+  return null;
+}
+
+// Internal service token carrying the *resolved* Atlas identity (never the
+// Slack payload audience) so downstream services enforce tenant + role rules
+// on verified claims, exactly like browser traffic proxied by the gateway.
+function slackInternalToken(identity) {
+  return jwt.sign({
+    user_id: identity.id,
+    user_role: identity.role,
+    tenant_id: identity.tenant_id,
+    email: identity.email,
+    exp: Math.floor(Date.now() / 1000) + 10
+  }, INTERNAL_JWT_SECRET, { algorithm: 'HS256' });
+}
+
+// Resolve a Slack user to an Atlas identity: Slack users.info (bot token) for
+// the verified email, then the auth-service directory scoped to the Slack
+// workspace tenant. Returns null when either step cannot prove the mapping to
+// avoid acting on ambient Slack payload trust.
+async function resolveSlackAtlasIdentity(slackUserId, teamId) {
+  if (!slackUserId || !teamId) {
+    return null;
+  }
+  let email = null;
+  try {
+    const slackResponse = await apiClient.get(`${SLACK_API_URL}/users.info`, {
+      params: { user: slackUserId },
+      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+      timeout: 5000
+    });
+    const slackUser = slackResponse.data && slackResponse.data.ok !== false ? slackResponse.data.user : null;
+    email = typeof slackUser?.profile?.email === 'string' ? slackUser.profile.email.trim().toLowerCase() : null;
+  } catch (err) {
+    console.error('Slack users.info lookup failed:', err.message);
+  }
+  if (!email) {
+    return null;
+  }
+
+  const internalToken = jwt.sign(
+    { sub: 'api-gateway-slack', service: 'api-gateway', tenant_id: teamId, exp: Math.floor(Date.now() / 1000) + 30 },
+    INTERNAL_JWT_SECRET,
+    { algorithm: 'HS256' }
+  );
+  try {
+    const lookupResponse = await apiClient.get(`${services.auth}/internal/atlas-user`, {
+      params: { email },
+      headers: { 'x-internal-auth': internalToken, 'X-Tenant-Id': teamId },
+      timeout: 5000
+    });
+    const atlasUser = lookupResponse.data || {};
+    if (atlasUser.active === false) {
+      return null;
+    }
+    return {
+      id: atlasUser.id,
+      email: atlasUser.email || email,
+      name: atlasUser.name || '',
+      role: String(atlasUser.role || '').toLowerCase(),
+      tenant_id: atlasUser.tenant_id || teamId
+    };
+  } catch (err) {
+    const status = err.response?.status;
+    if (status !== 404) {
+      console.error(`Atlas identity lookup failed for Slack user ${slackUserId}:`, err.message);
+    }
+    return null;
+  }
+}
+
+const SLACK_APPROVER_ROLES = new Set(['admin', 'hr', 'manager']);
+
+// Approve/deny a leave request on behalf of the resolved Atlas identity. The
+// role re-check happens here AND again inside leave-service via the internal
+// token claims; nothing in this path trusts the Slack payload for identity or
+// role. Four-eyes (two distinct approvers) has no backend rule yet and is
+// tracked as a follow-up.
+async function handleAtlasApprovalCommand(identity, leaveId, decision, teamId) {
+  if (!SLACK_APPROVER_ROLES.has(identity.role)) {
+    return { status: 403, body: { response_type: 'ephemeral', text: 'Only managers, HR, or admins can approve or deny leave from Slack.' } };
+  }
+  const status = decision === 'approve' ? 'APPROVED' : 'REJECTED';
+  try {
+    const response = await apiClient.put(`${services.leave}/api/leave/${leaveId}/status`, { status }, {
+      headers: { 'X-Tenant-Id': teamId, 'x-internal-auth': slackInternalToken(identity) },
+      timeout: 5000
+    });
+    const record = response.data || {};
+    return {
+      status: 200,
+      body: {
+        response_type: 'in_channel',
+        text: `Leave request #${record.id || leaveId} ${decision === 'approve' ? 'approved' : 'denied'} by ${identity.email || identity.name || 'a manager'}.`
+      }
+    };
+  } catch (err) {
+    console.error(`Slack leave ${decision} failed:`, err.message);
+    const downstreamStatus = err.response?.status;
+    if (downstreamStatus === 404 || downstreamStatus === 400) {
+      return { status: 404, body: { response_type: 'ephemeral', text: 'That leave request was not found in this workspace.' } };
+    }
+    if (downstreamStatus === 403) {
+      return { status: 403, body: { response_type: 'ephemeral', text: 'Leave service rejected this approval for your role.' } };
+    }
+    return { status: 502, body: { response_type: 'ephemeral', text: `Could not ${decision} the leave request. Please try again.` } };
+  }
+}
+
+async function handleAtlasBalanceCommand(identity, teamId) {
+  try {
+    const response = await apiClient.get(`${services.leave}/api/leave/me/balances`, {
+      headers: { 'X-Tenant-Id': teamId, 'x-internal-auth': slackInternalToken(identity) },
+      timeout: 5000
+    });
+    const balances = Array.isArray(response.data?.balances) ? response.data.balances : [];
+    if (balances.length === 0) {
+      return { status: 200, body: { response_type: 'ephemeral', text: 'No leave balances found for your account.' } };
+    }
+    const lines = balances.map((row) => `${row.leaveType}: ${row.remainingDays} day(s) remaining (of ${row.entitlementDays}, used ${row.usedDays})`);
+    return { status: 200, body: { response_type: 'ephemeral', text: `*Your Atlas leave balance*\n${lines.join('\n')}` } };
+  } catch (err) {
+    console.error('Slack balance command failed:', err.message);
+    return { status: 502, body: { response_type: 'ephemeral', text: 'Could not fetch your leave balance. Please try again.' } };
+  }
+}
+
+async function handleAtlasDirectoryCommand(identity, teamId, query) {
+  try {
+    const params = { page_size: 10 };
+    if (query) {
+      params.search = query;
+    }
+    const response = await apiClient.get(`${services.employee}/employees`, {
+      params,
+      headers: { 'X-Tenant-Id': teamId, 'x-internal-auth': slackInternalToken(identity) },
+      timeout: 5000
+    });
+    const items = Array.isArray(response.data?.items) ? response.data.items : [];
+    if (items.length === 0) {
+      return { status: 200, body: { response_type: 'ephemeral', text: query ? `No directory matches for "${query}".` : 'The directory is empty.' } };
+    }
+    const lines = items.map((emp) => `\u2022 ${emp.name} (${emp.position || 'n/a'}, ${emp.department || 'n/a'}) <${emp.email}>`);
+    return { status: 200, body: { response_type: 'ephemeral', text: `*Atlas directory*\n${lines.join('\n')}` } };
+  } catch (err) {
+    console.error('Slack directory command failed:', err.message);
+    return { status: 502, body: { response_type: 'ephemeral', text: 'Could not fetch the directory. Please try again.' } };
+  }
+}
+
+const SLACK_COMMANDS_USAGE =
+  '*Atlas commands*\n' +
+  '`/atlas balance` - your leave balance\n' +
+  '`/atlas directory [name|department]` - look up colleagues\n' +
+  '`/atlas help` - show this help';
+
+app.post('/api/integrations/slack/commands', express.urlencoded({
+  extended: true,
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  }
+}), async (req, res) => {
+  const teamId = slackTenantIdFromCommandBody(req);
+  const gate = verifySlackTenantRequest(req, teamId);
+  if (gate) {
+    return res.status(gate.code).json(gate.body);
+  }
+
+  const slackUserId = typeof req.body.user_id === 'string' && req.body.user_id.trim() ? req.body.user_id.trim() : null;
+  if (!slackUserId) {
+    return res.status(400).json({ response_type: 'ephemeral', text: 'Missing Slack user identity.' });
+  }
+
+  const parts = typeof req.body.text === 'string' ? req.body.text.trim().split(/\s+/).filter(Boolean) : [];
+  const command = (parts[0] || '').toLowerCase();
+  if (!command || command === 'help') {
+    return res.json({ response_type: 'ephemeral', text: SLACK_COMMANDS_USAGE });
+  }
+  if (!['balance', 'directory'].includes(command)) {
+    return res.status(400).json({ response_type: 'ephemeral', text: `Unknown command "${command}".\n${SLACK_COMMANDS_USAGE}` });
+  }
+
+  const identity = await resolveSlackAtlasIdentity(slackUserId, teamId);
+  if (!identity) {
+    return res.status(401).json({ response_type: 'ephemeral', text: 'I could not map your Slack account to an Atlas identity. Ask an admin to check your Slack email against the Atlas directory.' });
+  }
+
+  const result = command === 'balance'
+    ? await handleAtlasBalanceCommand(identity, teamId)
+    : await handleAtlasDirectoryCommand(identity, teamId, parts.slice(1).join(' ').slice(0, 200));
+  return res.status(result.status).json(result.body);
+});
+
+app.post('/api/integrations/slack/interactive', express.urlencoded({
+  extended: true,
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  }
+}), async (req, res) => {
+  let interactivePayload = null;
+  if (typeof req.body.payload === 'string') {
+    try {
+      interactivePayload = JSON.parse(req.body.payload);
+    } catch {
+      return res.status(400).json({ response_type: 'ephemeral', text: 'Malformed interaction payload.' });
+    }
+  }
+  if (!interactivePayload || typeof interactivePayload !== 'object') {
+    return res.status(400).json({ response_type: 'ephemeral', text: 'Missing interaction payload.' });
+  }
+
+  // The workspace id selects the signing secret; a forged payload pointing at
+  // another workspace still needs that workspace's secret to pass below.
+  const payloadTeam = typeof interactivePayload.team?.id === 'string' ? interactivePayload.team.id : null;
+  const teamId = payloadTeam && SLACK_TEAM_ID_RE.test(payloadTeam) ? payloadTeam : null;
+  const gate = verifySlackTenantRequest(req, teamId);
+  if (gate) {
+    return res.status(gate.code).json(gate.body);
+  }
+
+  const slackUserId = typeof interactivePayload.user?.id === 'string' && interactivePayload.user.id.trim() ? interactivePayload.user.id.trim() : null;
+  if (!slackUserId) {
+    return res.status(400).json({ response_type: 'ephemeral', text: 'Missing Slack user identity.' });
+  }
+
+  const identity = await resolveSlackAtlasIdentity(slackUserId, teamId);
+  if (!identity) {
+    return res.status(401).json({ response_type: 'ephemeral', text: 'I could not map your Slack account to an Atlas identity. Ask an admin to check your Slack email against the Atlas directory.' });
+  }
+
+  const action = Array.isArray(interactivePayload.actions) ? interactivePayload.actions[0] : null;
+  const actionId = typeof action?.action_id === 'string' ? action.action_id : '';
+  const decision = actionId === 'leave_approve' ? 'approve' : actionId === 'leave_deny' ? 'deny' : null;
+  const leaveId = typeof action?.value === 'string' && /^\d{1,12}$/.test(action.value) ? action.value : null;
+  if (!decision || !leaveId) {
+    return res.status(400).json({ response_type: 'ephemeral', text: 'Unsupported interaction. Atlas handles leave approve/deny buttons.' });
+  }
+
+  const result = await handleAtlasApprovalCommand(identity, leaveId, decision, teamId);
+  return res.status(result.status).json(result.body);
 });
 
 // Billing checkout plans: seat caps keep a mistyped seat count from creating
@@ -1704,6 +2027,14 @@ module.exports = {
   checkCache,
   cacheInvalidationMiddleware,
   verifySlackRequest,
+  verifySlackHmac,
+  resolveSlackSigningSecret,
+  verifySlackTenantRequest,
+  resolveSlackAtlasIdentity,
+  handleAtlasBalanceCommand,
+  handleAtlasDirectoryCommand,
+  handleAtlasApprovalCommand,
+  apiClient,
   isWsPath,
   globalErrorHandler,
   authStoreUnavailable,
