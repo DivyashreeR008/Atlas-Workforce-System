@@ -46,6 +46,12 @@ public class OutboxPublisherService {
                 String routingKey = resolveRoutingKey(event.getEventType());
                 Map<String, Object> payloadMap = deserializePayload(event.getPayload());
                 rabbitTemplate.convertAndSend(exchangeName, routingKey, payloadMap);
+                // Publisher confirms: the event is only marked SENT after the
+                // broker acknowledged it. An unconfirmed publish or a nack
+                // raises here, so the event stays PENDING and the existing
+                // retry loop republishes it; confirmed delivery is never
+                // silently dropped.
+                rabbitTemplate.waitForConfirmsOrDie(10_000L);
                 event.setStatus("SENT");
                 event.setProcessedAt(LocalDateTime.now());
                 outboxEventRepository.save(event);
