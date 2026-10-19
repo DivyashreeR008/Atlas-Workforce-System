@@ -7,14 +7,6 @@
 # attacker-controlled input, so the stack-exhaustion path is unreachable.
 CVE-2026-93687
 
-# CVE-2026-47890 (spring-webmvc SSE view-fragment CRLF) and CVE-2026-47884
-# (spring-webmvc XsltView SSRF/RCE): verified unreachable — no Java service
-# renders views or streams SSE view fragments (all are JSON REST APIs; the
-# only SSE engine is Python live-service). OSS fix exists only on the
-# Framework 7.x line (Spring Boot 4 migration tracked separately).
-CVE-2026-47890
-CVE-2026-47884
-
 # CVE-2026-41907 (uuid via exceljs, frontend): missing buffer-bounds check
 # triggers only when buf is passed to v3/v5/v6; exceljs never does. No
 # non-breaking upgrade path (exceljs 4.4.0 already latest).
