@@ -218,6 +218,11 @@ services:
       - SAML_IDP_ENTITY_ID=${SAML_IDP_ENTITY_ID:-https://idp.example.com/metadata}
       - SAML_IDP_CERT=${SAML_IDP_CERT:-}
       - OAUTH_ENCRYPTION_KEY=${OAUTH_ENCRYPTION_KEY:-}
+      # #478: bounded pool and statement/query budgets (docs/db-pool-policy.md)
+      - PG_POOL_MAX=${PG_POOL_MAX:-10}
+      - PG_CONNECT_TIMEOUT_MS=${PG_CONNECT_TIMEOUT_MS:-5000}
+      - PG_STATEMENT_TIMEOUT_MS=${PG_STATEMENT_TIMEOUT_MS:-15000}
+      - PG_QUERY_TIMEOUT_MS=${PG_QUERY_TIMEOUT_MS:-15000}
     networks:
       - atlas-network
     depends_on:
@@ -277,6 +282,11 @@ services:
       - RABBITMQ_USER=${RABBITMQ_USER:-atlas_rabbit}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASS:-changeme_rabbit_pass}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+      # #478: bounded pool + statement timeout (docs/db-pool-policy.md);
+      # pool saturation answers 503 with atlas_db_pool_exhausted_total.
+      - ANALYTICS_DATABASE_STATEMENT_TIMEOUT_MS=${ANALYTICS_DATABASE_STATEMENT_TIMEOUT_MS:-15000}
+      - ANALYTICS_DATABASE_POOL_SIZE=${ANALYTICS_DATABASE_POOL_SIZE:-5}
+      - ANALYTICS_DATABASE_MAX_OVERFLOW=${ANALYTICS_DATABASE_MAX_OVERFLOW:-10}
     networks:
       - atlas-network
     depends_on:

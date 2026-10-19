@@ -12,6 +12,7 @@ import pandas as pd
 import os
 import uvicorn
 from sqlalchemy import create_engine, text
+from atlas_observability.db_pool_config import engine_kwargs, install_pool_guard
 from openai import OpenAI
 import json
 import time
@@ -32,6 +33,7 @@ app = FastAPI(title="Analytics Service API", version="2.0.0")
 
 configure_logging("analytics-service", level=logging.INFO)
 logger = get_logger("analytics-service")
+install_pool_guard(app, "analytics-service")
 
 payroll_cache = {}
 payroll_cache_timestamp = {}
@@ -406,7 +408,11 @@ DATABASE_URL = os.environ.get(
 )
 
 try:
-    engine = create_engine(DATABASE_URL)
+    # #478: bounded pool + statement timeout instead of library defaults;
+    # a saturated pool answers 503 fast (install_pool_guard on the app).
+    engine = create_engine(
+        DATABASE_URL, **engine_kwargs(DATABASE_URL, prefix="ANALYTICS")
+    )
 except Exception:
     logger.exception("analytics.engine_creation_failed")
     engine = None

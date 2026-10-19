@@ -62,6 +62,22 @@ const redisDegradedTotal = new promClient.Counter({
   labelNames: ['check'],
 });
 
+// #478: database pressure signal. statement_timeout / connect errors surface
+// here; a rising rate is the cue to raise PG_POOL_MAX or add a read replica
+// rather than watching generic 500s.
+const dbPressureTotal = new promClient.Counter({
+  name: 'atlas_auth_db_pressure_total',
+  help: 'Postgres statement timeouts, connection-acquisition failures and idle-client errors',
+  labelNames: ['kind'],
+});
+
+pool.on('error', (err) => {
+  const kind = /timeout/i.test(String(err && err.message)) ? 'timeout' : 'error';
+  dbPressureTotal.inc({ kind });
+  safeLog(console.error, 'Auth Postgres pool error:', err.message);
+});
+
+
 promClient.collectDefaultMetrics();
 
 const app = express();
@@ -726,6 +742,15 @@ const sslConfig = process.env.POSTGRES_SSL === 'false'
 const pool = new Pool({
   connectionString: process.env.POSTGRES_URL,
   ssl: sslConfig,
+  // #478: bound runaway queries and pool waits so one slow tenant query
+  // cannot hold every auth path behind it. Both budgets are documented in
+  // .env.example and fail the statement fast (surface as 500 with the
+  // atlas_auth_db_pool_* metrics below).
+  max: Number(process.env.PG_POOL_MAX || 10),
+  idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
+  connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS || 5000),
+  statement_timeout: Number(process.env.PG_STATEMENT_TIMEOUT_MS || 15000),
+  query_timeout: Number(process.env.PG_QUERY_TIMEOUT_MS || 15000),
 });
 
 const REDIS_URL = process.env.REDIS_URL;
