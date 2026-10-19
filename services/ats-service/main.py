@@ -14,6 +14,7 @@ from atlas_observability import (
     SecurityHeadersMiddleware,
     configure_logging, get_logger, verify_internal_auth
 )
+from atlas_observability.sql_slow_query import install_slow_query_listener
 
 from models import Base
 from file_security import validate_file, get_secure_path, MAX_FILE_SIZE
@@ -28,6 +29,7 @@ DATABASE_URL = os.environ.get(
 )
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+install_slow_query_listener(engine, "ats-service")
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

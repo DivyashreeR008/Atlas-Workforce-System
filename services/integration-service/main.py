@@ -16,6 +16,7 @@ from atlas_observability import (
     SecurityHeadersMiddleware,
     configure_logging, get_logger, verify_internal_auth
 )
+from atlas_observability.sql_slow_query import install_slow_query_listener
 
 from crud import (
     MassAssignmentError,
@@ -83,6 +84,7 @@ CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 MAX_PAGE_SIZE = 100
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+install_slow_query_listener(engine, "integration-service")
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 set_db_session_factory(SessionLocal)
 

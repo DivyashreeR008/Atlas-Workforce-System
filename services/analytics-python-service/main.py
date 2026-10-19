@@ -25,6 +25,7 @@ from atlas_observability import (
     SecurityHeadersMiddleware,
     configure_logging, get_logger, mint_internal_auth, verify_internal_auth
 )
+from atlas_observability.sql_slow_query import install_slow_query_listener
 
 INTERNAL_JWT_SECRET = os.environ.get("INTERNAL_JWT_SECRET", "")
 
@@ -407,6 +408,7 @@ DATABASE_URL = os.environ.get(
 
 try:
     engine = create_engine(DATABASE_URL)
+    install_slow_query_listener(engine, "analytics-service")
 except Exception:
     logger.exception("analytics.engine_creation_failed")
     engine = None
