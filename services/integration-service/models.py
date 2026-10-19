@@ -129,6 +129,26 @@ class EventSubscription(Base):
     )
 
 
+class ProcessedEvent(Base):
+    """Idempotency ledger for consumed events (#479).
+
+    DB-backed instead of in-memory sets so duplicates stay blocked across
+    restarts; the primary key is a unique constraint, so a racing redelivery
+    and the first consumer both insert once and the loser rolls back.
+    """
+
+    __tablename__ = "integration_processed_events"
+
+    event_id = Column(String(200), primary_key=True)
+    consumer = Column(String(50), nullable=False, default="rabbitmq")
+    processed_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    ttl_expires_at = Column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("idx_processed_events_ttl", "ttl_expires_at"),
+    )
+
+
 class EventOutbox(Base):
     __tablename__ = "integration_event_outbox"
 

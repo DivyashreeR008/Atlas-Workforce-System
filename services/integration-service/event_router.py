@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from crud import (
     create_delivery_log,
     create_outbox_event,
+    discard_processed_event,
     get_event_subscription,
     get_pending_outbox_events,
     get_pending_retries,
@@ -20,6 +21,7 @@ from crud import (
     list_webhooks,
     mark_outbox_published,
     mark_outbox_failed,
+    register_processed_event,
     update_delivery_log,
     update_webhook,
 )
@@ -30,11 +32,32 @@ logger = logging.getLogger("event-router")
 
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://atlas_rabbit:changeme_rabbit_pass@rabbitmq:5672/")
 RABBITMQ_EXCHANGE = "notifications_exchange"
+# Dead-letter routing (#479): poison messages that fail their bounded retry
+# attempts land here with the full original delivery context instead of being
+# dropped or retried forever.
+RABBITMQ_DLX_EXCHANGE = "notifications_dlx"
+RABBITMQ_DLQ = "notifications_dlq"
 # Reconnection pacing: a broker restart is routine maintenance, so the consumer
 # must outlive it. Bounded exponential backoff with jitter prevents a
 # thundering herd against a recovering broker.
 _CONSUMER_BACKOFF_BASE_SEC = 1
 _CONSUMER_BACKOFF_CAP_SEC = 60
+
+# Redelivery observability (#479): duplicates observed and skipped by the
+# deduplication ledger, counted not dropped silently.
+_duplicate_events_observed = 0
+_duplicate_events_lock = threading.Lock()
+
+
+def duplicate_events_observed() -> int:
+    with _duplicate_events_lock:
+        return _duplicate_events_observed
+
+
+def _count_duplicate() -> None:
+    global _duplicate_events_observed
+    with _duplicate_events_lock:
+        _duplicate_events_observed += 1
 
 _rabbit_connection = None
 _rabbit_channel = None
@@ -122,10 +145,19 @@ def start_rabbitmq_consumer():
                 connection = pika.BlockingConnection(params)
                 channel = connection.channel()
                 channel.exchange_declare(exchange=RABBITMQ_EXCHANGE, exchange_type="fanout", durable=True)
+                # Poison messages dead-letter into a durable quarantine queue
+                # instead of disappearing with the consumer's temporary queue.
+                channel.exchange_declare(exchange=RABBITMQ_DLX_EXCHANGE, exchange_type="fanout", durable=True)
+                channel.queue_declare(queue=RABBITMQ_DLQ, durable=True)
                 # Exclusive auto-delete queue: on reconnect this consumer gets a
                 # fresh queue. Fanout messages published while disconnected are
                 # not replayed, but the consumer itself keeps running.
-                result = channel.queue_declare(queue="", exclusive=True, auto_delete=True)
+                result = channel.queue_declare(
+                    queue="",
+                    exclusive=True,
+                    auto_delete=True,
+                    arguments={"x-dead-letter-exchange": RABBITMQ_DLX_EXCHANGE},
+                )
                 queue_name = result.method.queue
                 channel.queue_bind(exchange=RABBITMQ_EXCHANGE, queue=queue_name)
                 # Manual ack: a failed message must not be acknowledged and
@@ -155,18 +187,67 @@ def start_rabbitmq_consumer():
     return thread
 
 
+def _inbound_event_id(message: Any) -> str:
+    """Extract the required event_id from an inbound event (#479).
+
+    Raises when missing or unusable so the message routes into the poison
+    path rather than being partially processed under a green ack.
+    """
+    event_id = str((message or {}).get("event_id") or "").strip()
+    if not event_id or len(event_id) > 200:
+        raise ValueError("inbound event is missing a usable event_id")
+    return event_id
+
+
+def _claim_event(consumer: str, event_id: str) -> bool:
+    """Record the event id in the dedup ledger. False means already seen."""
+    db = get_db()
+    if not db:
+        # Without the ledger we cannot prove the event is unseen; refusing
+        # (raise) routes the delivery to the poison path instead of risking a
+        # silently admitted duplicate.
+        raise RuntimeError("dedup ledger unavailable")
+    try:
+        return register_processed_event(db, consumer, event_id)
+    finally:
+        db.close()
+
+
+def _release_event(consumer: str, event_id: str) -> None:
+    """Undo a claim whose processing failed, so redelivery can retry it."""
+    db = get_db()
+    if not db:
+        return
+    try:
+        discard_processed_event(db, event_id)
+    except Exception as e:
+        logger.error("Failed to release dedup claim event_id=%s: %s (%s)", event_id, e, type(e).__name__)
+    finally:
+        db.close()
+
+
 def _handle_rabbitmq_message(ch, method, properties, body):
+    event_id = None
     try:
         message = json.loads(body.decode("utf-8"))
+        event_id = _inbound_event_id(message)
         event_type = message.get("event_type", "notification")
         tenant_id = message.get("tenant_id", "default")
-        logger.info(f"Received RabbitMQ event: {event_type} for tenant={tenant_id}")
+        if not _claim_event("rabbitmq", event_id):
+            _count_duplicate()
+            logger.info("Duplicate event skipped: event_id=%s event_type=%s", event_id, event_type)
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            return
+        logger.info("Received RabbitMQ event: %s for tenant=%s", event_type, tenant_id)
         route_event(event_type, tenant_id, message)
         ch.basic_ack(delivery_tag=method.delivery_tag)
     except Exception as e:
         # A failed message must not dissolve into the log stream under a green
-        # ack. Requeue once; reject on redelivery so a poison message cannot
-        # loop forever.
+        # ack. Release the dedup claim so the retry attempt is possible again,
+        # then requeue once; reject on redelivery so a poison message routes
+        # to the DLX instead of looping forever.
+        if event_id:
+            _release_event("rabbitmq", event_id)
         redelivered = bool(getattr(method, "redelivered", False))
         logger.error("Error handling RabbitMQ message: %s (redelivered=%s)", e, redelivered, exc_info=True)
         try:

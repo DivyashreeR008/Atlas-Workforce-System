@@ -3,7 +3,8 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
-from uuid import UUID
+from typing import Optional
+from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -26,6 +27,7 @@ from crud import (
     delete_event_subscription,
     delete_integration_config,
     delete_webhook,
+    gc_processed_events,
     get_dashboard_stats,
     get_delivery_log,
     get_event_subscription,
@@ -175,6 +177,9 @@ async def lifespan(app: FastAPI):
             try:
                 process_outbox()
                 retry_failed_deliveries()
+                # Idempotency-ledger GC: drop entries past their TTL so the
+                # table stays bounded (#479).
+                gc_processed_events()
             except Exception as e:
                 failures += 1
                 logger.exception(
@@ -533,8 +538,20 @@ async def publish_internal_event(
     if not verified_tenant:
         raise HTTPException(status_code=403, detail="Missing tenant context")
     check_body_tenant(request, payload.tenant_id)
-    route_event(payload.event_type, verified_tenant, payload.payload, payload.source_service)
-    return {"message": "Event accepted for routing", "event_type": payload.event_type, "tenant_id": verified_tenant}
+    # Events published into the routing pipeline carry an event_id so the
+    # downstream consumers' dedup ledger can identify redeliveries (#479).
+    # A caller-supplied event_id is honored; a new one is only minted when
+    # none is present.
+    event_payload = dict(payload.payload)
+    if not str(event_payload.get("event_id") or "").strip():
+        event_payload["event_id"] = str(uuid4())
+    route_event(payload.event_type, verified_tenant, event_payload, payload.source_service)
+    return {
+        "message": "Event accepted for routing",
+        "event_type": payload.event_type,
+        "tenant_id": verified_tenant,
+        "event_id": str(event_payload.get("event_id")),
+    }
 
 
 # ── Integration Config ──────────────────────────────────────────

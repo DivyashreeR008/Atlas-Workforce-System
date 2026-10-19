@@ -11,15 +11,78 @@ from models import (
     EventOutbox,
     EventSubscription,
     IntegrationConfig,
+    ProcessedEvent,
     Webhook,
     WebhookDeliveryLog,
 )
 from ssrf_guard import SSRFBlockedError, validate_webhook_headers, validate_webhook_url
 from webhook_engine import DEFAULT_ROTATION_GRACE_SEC, generate_webhook_secret, serialize_payload
 
+# How long a consumed event id stays in the ledger. Long enough to cover every
+# realistic broker redelivery window; the GC sweep in the background loop keeps
+# the table bounded.
+PROCESSED_EVENT_TTL_DAYS = 7
+
 
 class MassAssignmentError(ValueError):
     pass
+
+
+def register_processed_event(db: Session, consumer: str, event_id: str) -> bool:
+    """Transactionally record a consumed event id. Returns False on duplicate.
+
+    Check-then-insert with a unique primary key, mirroring the payroll outbox
+    pattern: the db-level constraint is the source of truth, so a racing
+    redelivery that slips past the SELECT still loses on the INSERT.
+    """
+    event_id = (str(event_id or "")).strip()
+    if not event_id or len(event_id) > 200:
+        return False
+    existing = db.query(ProcessedEvent).filter(ProcessedEvent.event_id == event_id).first()
+    if existing:
+        return False
+    try:
+        db.add(ProcessedEvent(
+            event_id=event_id,
+            consumer=consumer,
+            processed_at=datetime.now(timezone.utc),
+            ttl_expires_at=datetime.now(timezone.utc) + timedelta(days=PROCESSED_EVENT_TTL_DAYS),
+        ))
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        return False
+
+
+def discard_processed_event(db: Session, event_id: str) -> None:
+    """Withdraw a dedup claim whose processing failed, enabling redelivery."""
+    event_id = (str(event_id or "")).strip()
+    if not event_id:
+        return
+    db.query(ProcessedEvent).filter(ProcessedEvent.event_id == event_id).delete(synchronize_session=False)
+    db.commit()
+
+
+def gc_processed_events(db: Session, batch_size: int = 1000, now: Optional[datetime] = None) -> int:
+    """Delete expired entries past their TTL; returns how many were removed."""
+    cutoff = (now or datetime.now(timezone.utc))
+    ids = [
+        row[0]
+        for row in db.query(ProcessedEvent.event_id)
+        .filter(ProcessedEvent.ttl_expires_at < cutoff)
+        .limit(max(int(batch_size), 1))
+        .all()
+    ]
+    if not ids:
+        return 0
+    deleted = (
+        db.query(ProcessedEvent)
+        .filter(ProcessedEvent.event_id.in_(ids))
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return int(deleted or 0)
 
 
 def apply_updates(obj, data: dict, allowed_fields: set):
