@@ -115,42 +115,25 @@ public class PayrollEnterpriseService {
                 throw new IllegalArgumentException("Payroll already processed for this period");
             }
 
-            BigDecimal grossSalary = Money.subtract(Money.add(baseSalary, allowances), deductions);
-            CountryTaxConfig taxConfig = taxConfigRepo.findByTenantIdAndCountry(tenantId, country)
-                    .orElse(null);
-
-            BigDecimal tax = Money.zero();
-            BigDecimal socialSecurity = Money.zero();
-            BigDecimal medicare = Money.zero();
-
-            if (taxConfig != null) {
-                tax = calculateProgressiveTax(tenantId, country, taxConfig.getTaxYear(), grossSalary);
-                if (taxConfig.getSocialSecurityRate() != null) {
-                    socialSecurity = Money.percentOf(grossSalary, taxConfig.getSocialSecurityRate());
-                }
-                if (taxConfig.getMedicareRate() != null) {
-                    medicare = Money.percentOf(grossSalary, taxConfig.getMedicareRate());
-                }
-            } else {
-                tax = calculateSimpleTax(grossSalary);
-            }
-
-            BigDecimal netSalary = Money.subtract(Money.subtract(grossSalary, tax), Money.add(socialSecurity, medicare));
+            // Computation is shared with the dry-run preview below so a
+            // preview can never drift from what a commit writes.
+            PayrollPreview computed = computeMultiCountryBreakdown(tenantId, employeeId, period,
+                    baseSalary, allowances, deductions, country, currency);
 
             EnhancedPayrollRecord record = new EnhancedPayrollRecord();
-            record.setTenantId(tenantId);
-            record.setEmployeeId(employeeId);
-            record.setPeriod(period);
-            record.setCountry(country);
-            record.setCurrency(currency != null ? currency : "USD");
-            record.setBaseSalary(baseSalary);
-            record.setAllowances(allowances);
-            record.setDeductions(deductions);
-            record.setGrossSalary(grossSalary);
-            record.setTax(tax);
-            record.setSocialSecurity(socialSecurity);
-            record.setMedicare(medicare);
-            record.setNetSalary(netSalary);
+            record.setTenantId(computed.tenantId());
+            record.setEmployeeId(computed.employeeId());
+            record.setPeriod(computed.period());
+            record.setCountry(computed.country());
+            record.setCurrency(computed.currency());
+            record.setBaseSalary(computed.baseSalary());
+            record.setAllowances(computed.allowances());
+            record.setDeductions(computed.deductions());
+            record.setGrossSalary(computed.grossSalary());
+            record.setTax(computed.tax());
+            record.setSocialSecurity(computed.socialSecurity());
+            record.setMedicare(computed.medicare());
+            record.setNetSalary(computed.netSalary());
             record.setStatus("PROCESSED");
             record.setProcessedDate(LocalDateTime.now());
             record.setCreatedAt(LocalDateTime.now());
@@ -176,8 +159,8 @@ public class PayrollEnterpriseService {
                 "payrollId", record.getId(),
                 "employeeId", employeeId,
                 "period", period,
-                "grossAmount", grossSalary,
-                "netAmount", netSalary,
+                "grossAmount", computed.grossSalary(),
+                "netAmount", computed.netSalary(),
                 "currency", currency != null ? currency : "USD",
                 "status", "PROCESSED",
                 "timestamp", LocalDateTime.now().toString(),
@@ -196,6 +179,67 @@ public class PayrollEnterpriseService {
             failureOutbox.recordFailure(tenantId, employeeId, period, e.getMessage());
             throw e;
         }
+    }
+
+    /**
+     * The one computation path for the enterprise service. runMultiCountryPayroll
+     * uses the returned numbers verbatim when it persists and the preview
+     * returns them verbatim, so commit-after-preview is parity by construction.
+     */
+    PayrollPreview computeMultiCountryBreakdown(String tenantId, String employeeId, String period,
+                                                BigDecimal baseSalary, BigDecimal allowances, BigDecimal deductions,
+                                                String country, String currency) {
+        List<String> warnings = new ArrayList<>();
+        BigDecimal gross = Money.subtract(Money.add(Money.of(baseSalary), Money.of(allowances)), Money.of(deductions));
+        CountryTaxConfig taxConfig = taxConfigRepo.findByTenantIdAndCountry(tenantId, country)
+                .orElse(null);
+
+        BigDecimal tax = Money.zero();
+        BigDecimal socialSecurity = Money.zero();
+        BigDecimal medicare = Money.zero();
+
+        if (taxConfig != null) {
+            tax = calculateProgressiveTax(tenantId, country, taxConfig.getTaxYear(), gross);
+            if (taxConfig.getSocialSecurityRate() != null) {
+                socialSecurity = Money.percentOf(gross, taxConfig.getSocialSecurityRate());
+            }
+            if (taxConfig.getMedicareRate() != null) {
+                medicare = Money.percentOf(gross, taxConfig.getMedicareRate());
+            }
+        } else {
+            tax = calculateSimpleTax(gross);
+            // A preview must surface missing configuration instead of silently
+            // applying the fallback bands.
+            warnings.add("no country tax configuration for " + country + "; simple tax bands applied");
+        }
+
+        BigDecimal net = Money.subtract(Money.subtract(gross, tax), Money.add(socialSecurity, medicare));
+        return PayrollPreview.of(tenantId, employeeId, period, Money.of(baseSalary), Money.of(allowances),
+                Money.of(deductions), gross, tax, socialSecurity, medicare, net,
+                currency != null ? currency : "USD", country, warnings);
+    }
+
+    /**
+     * Dry-run of the multi-country path: identical computation to
+     * runMultiCountryPayroll, zero writes (no record, payslip, audit, anomaly
+     * or outbox). Duplicates are reported as a warning instead of an abort,
+     * and the payload is labeled PREVIEW.
+     */
+    public PayrollPreview previewMultiCountryPayroll(String tenantId, String employeeId, String period,
+                                                     BigDecimal baseSalary, BigDecimal allowances, BigDecimal deductions,
+                                                     String country, String currency) {
+        List<String> warnings = new ArrayList<>();
+        if (!payrollRepo.findByTenantIdAndEmployeeIdAndPeriod(tenantId, employeeId, period).isEmpty()) {
+            warnings.add("Payroll already processed for this period");
+        }
+        PayrollPreview computed = computeMultiCountryBreakdown(tenantId, employeeId, period, baseSalary,
+                allowances, deductions, country, currency);
+        warnings.addAll(computed.warnings());
+        return new PayrollPreview(computed.tenantId(), computed.employeeId(), computed.period(),
+                computed.baseSalary(), computed.allowances(), computed.deductions(),
+                computed.grossSalary(), computed.tax(), computed.socialSecurity(), computed.medicare(),
+                computed.netSalary(), computed.currency(), computed.country(),
+                PayrollPreview.PREVIEW_STATUS, warnings);
     }
 
     /**
@@ -904,10 +948,30 @@ public class PayrollEnterpriseService {
     public Map<String, Object> runBatchPayroll(String tenantId, String period, List<String> employeeIds,
                                                 BigDecimal defaultBaseSalary, BigDecimal defaultAllowances,
                                                 BigDecimal defaultDeductions, String country, String currency) {
+        return runBatchPayroll(tenantId, period, employeeIds, defaultBaseSalary, defaultAllowances,
+                defaultDeductions, country, currency, false);
+    }
+
+    /**
+     * Batch payroll with a dry-run mode. With dryRun=true the same component
+     * resolution and the same computeMultiCountryBreakdown used by the
+     * committed path run for every employee, but nothing is persisted: no
+     * records, payslips, audits, anomalies or outbox events, and no batch
+     * progress row. The result is an explicitly non-final preview with
+     * per-employee drill-down and totals.
+     */
+    public Map<String, Object> runBatchPayroll(String tenantId, String period, List<String> employeeIds,
+                                                BigDecimal defaultBaseSalary, BigDecimal defaultAllowances,
+                                                BigDecimal defaultDeductions, String country, String currency,
+                                                boolean dryRun) {
         int total = employeeIds.size();
         int processed = 0;
         int failed = 0;
         List<Map<String, Object>> failures = new ArrayList<>();
+        List<Map<String, Object>> employeePreviews = new ArrayList<>();
+        BigDecimal totalGross = Money.zero();
+        BigDecimal totalTax = Money.zero();
+        BigDecimal totalNet = Money.zero();
         long startTime = System.currentTimeMillis();
 
         for (int i = 0; i < total; i += BATCH_SIZE) {
@@ -919,8 +983,27 @@ public class PayrollEnterpriseService {
                     try {
                         SalaryComponents components = resolveComponents(
                                 tenantId, empId, defaultBaseSalary, defaultAllowances, defaultDeductions);
-                        runMultiCountryPayroll(tenantId, empId, period, components.baseSalary(),
-                                components.allowances(), components.deductions(), country, currency);
+                        if (dryRun) {
+                            PayrollPreview preview = previewMultiCountryPayroll(tenantId, empId, period,
+                                    components.baseSalary(), components.allowances(), components.deductions(),
+                                    country, currency);
+                            Map<String, Object> row = new LinkedHashMap<>();
+                            row.put("employeeId", empId);
+                            row.put("grossSalary", preview.grossSalary());
+                            row.put("tax", preview.tax());
+                            row.put("socialSecurity", preview.socialSecurity());
+                            row.put("medicare", preview.medicare());
+                            row.put("netSalary", preview.netSalary());
+                            row.put("warnings", preview.warnings());
+                            row.put("status", PayrollPreview.PREVIEW_STATUS);
+                            employeePreviews.add(row);
+                            totalGross = Money.add(totalGross, preview.grossSalary());
+                            totalTax = Money.add(totalTax, preview.tax());
+                            totalNet = Money.add(totalNet, preview.netSalary());
+                        } else {
+                            runMultiCountryPayroll(tenantId, empId, period, components.baseSalary(),
+                                    components.allowances(), components.deductions(), country, currency);
+                        }
                         processed++;
                     } catch (Exception e) {
                         failed++;
@@ -943,10 +1026,10 @@ public class PayrollEnterpriseService {
             }
         }
 
-        // Progress is recorded only for a clean run: a batch that failed part
-        // way through must not leave a BATCH_PROGRESS row that reads like a
-        // completed payroll.
-        if (failed == 0) {
+        // Progress is recorded only for a clean committed run: a batch that
+        // failed part way through must not leave a BATCH_PROGRESS row that
+        // reads like a completed payroll, and a dry run must leave nothing.
+        if (!dryRun && failed == 0) {
             updateBatchProgress(tenantId, period, processed, failed, total);
         }
 
@@ -958,6 +1041,15 @@ public class PayrollEnterpriseService {
         result.put("batches", (int) Math.ceil((double) total / BATCH_SIZE));
         result.put("durationMs", duration);
         result.put("failures", failures);
+        if (dryRun) {
+            result.put("dryRun", true);
+            result.put("status", PayrollPreview.PREVIEW_STATUS);
+            result.put("previewTotals", Map.of(
+                    "gross", totalGross,
+                    "tax", totalTax,
+                    "net", totalNet));
+            result.put("employeePreviews", employeePreviews);
+        }
         return result;
     }
 

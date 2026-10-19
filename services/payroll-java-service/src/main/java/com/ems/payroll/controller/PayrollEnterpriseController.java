@@ -71,6 +71,20 @@ public class PayrollEnterpriseController {
             return ResponseEntity.badRequest().body(Map.of("error", missingField + " is required"));
         }
         try {
+            Object dryRunFlag = req.get("dryRun");
+            boolean dryRun = Boolean.TRUE.equals(dryRunFlag) || "true".equalsIgnoreCase(String.valueOf(dryRunFlag));
+            if (dryRun) {
+                // Zero writes: the payload is labeled PREVIEW by the service.
+                return ResponseEntity.ok(service.previewMultiCountryPayroll(
+                        tenantId,
+                        (String) req.get("employeeId"),
+                        (String) req.get("period"),
+                        Money.of(req.get("baseSalary")),
+                        Money.of(req.get("allowances")),
+                        Money.of(req.get("deductions")),
+                        (String) req.getOrDefault("country", "US"),
+                        (String) req.getOrDefault("currency", "USD")));
+            }
             EnhancedPayrollRecord record = service.runMultiCountryPayroll(
                     tenantId,
                     (String) req.get("employeeId"),

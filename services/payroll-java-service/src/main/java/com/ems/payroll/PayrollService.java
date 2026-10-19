@@ -1,6 +1,7 @@
 package com.ems.payroll;
 
 import com.ems.payroll.model.OutboxEvent;
+import com.ems.payroll.model.PayrollPreview;
 import com.ems.payroll.repository.OutboxEventRepository;
 import com.ems.payroll.service.PayrollFailureOutboxWriter;
 import com.ems.payroll.util.Money;
@@ -14,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -72,19 +74,19 @@ public class PayrollService {
                 throw new IllegalArgumentException("Payroll already processed for this period");
             }
 
-            BigDecimal grossSalary = Money.subtract(Money.add(baseSalary, allowances), deductions);
-            BigDecimal tax = calculateTax(grossSalary);
-            BigDecimal netSalary = Money.subtract(grossSalary, tax);
+            // Computation is shared with the dry-run preview below so a
+            // preview can never drift from what a commit writes.
+            PayrollPreview computed = computeBreakdown(tenantId, employeeId, period, baseSalary, allowances, deductions);
 
             PayrollRecord record = new PayrollRecord();
             record.setTenantId(tenantId);
             record.setEmployeeId(employeeId);
             record.setPeriod(period);
-            record.setBaseSalary(baseSalary);
-            record.setAllowances(allowances);
-            record.setDeductions(deductions);
-            record.setTax(tax);
-            record.setNetSalary(netSalary);
+            record.setBaseSalary(computed.baseSalary());
+            record.setAllowances(computed.allowances());
+            record.setDeductions(computed.deductions());
+            record.setTax(computed.tax());
+            record.setNetSalary(computed.netSalary());
             record.setStatus("PROCESSED");
             record.setProcessedDate(LocalDateTime.now());
 
@@ -98,8 +100,8 @@ public class PayrollService {
                 "payrollId", record.getId(),
                 "employeeId", employeeId,
                 "period", period,
-                "grossAmount", grossSalary,
-                "netAmount", netSalary,
+                "grossAmount", computed.grossSalary(),
+                "netAmount", computed.netSalary(),
                 "currency", "USD",
                 "status", "PROCESSED",
                 "timestamp", LocalDateTime.now().toString(),
@@ -118,6 +120,47 @@ public class PayrollService {
             failureOutbox.recordFailure(tenantId, employeeId, period, e.getMessage());
             throw e;
         }
+    }
+
+    /**
+     * Dry-run: identical computation to runPayroll, zero writes. The payload
+     * is explicitly labeled PREVIEW and carries warnings for the classes of
+     * mistake a preview exists to catch (already-processed period, zero or
+     * missing components).
+     */
+    public PayrollPreview previewPayroll(String tenantId, String employeeId, String period,
+                                         BigDecimal baseSalary, BigDecimal allowances, BigDecimal deductions) {
+        return computeBreakdown(tenantId, employeeId, period, Money.of(baseSalary),
+                Money.of(allowances), Money.of(deductions));
+    }
+
+    /**
+     * The one computation path for this service. runPayroll uses the returned
+     * numbers verbatim when it persists, so commit-after-preview is a parity
+     * guarantee by construction rather than a second formula to keep in sync.
+     */
+    PayrollPreview computeBreakdown(String tenantId, String employeeId, String period,
+                                    BigDecimal baseSalary, BigDecimal allowances, BigDecimal deductions) {
+        List<String> warnings = new ArrayList<>();
+        List<PayrollRecord> existing = repository.findByTenantIdAndEmployeeIdAndPeriod(tenantId, employeeId, period);
+        if (!existing.isEmpty()) {
+            warnings.add("Payroll already processed for this period");
+        }
+        for (Object[] field : List.of(
+                new Object[]{"baseSalary", baseSalary},
+                new Object[]{"allowances", allowances},
+                new Object[]{"deductions", deductions})) {
+            BigDecimal value = (BigDecimal) field[1];
+            if (Money.of(value).signum() == 0) {
+                warnings.add(field[0] + " is zero; confirm this is intended and not a missing component");
+            }
+        }
+
+        BigDecimal gross = Money.subtract(Money.add(Money.of(baseSalary), Money.of(allowances)), Money.of(deductions));
+        BigDecimal tax = calculateTax(gross);
+        BigDecimal net = Money.subtract(gross, tax);
+        return PayrollPreview.of(tenantId, employeeId, period, Money.of(baseSalary), Money.of(allowances),
+                Money.of(deductions), gross, tax, Money.zero(), Money.zero(), net, "USD", null, warnings);
     }
 
     /**

@@ -91,4 +91,25 @@ class PayrollControllerTest {
                                 + "\"baseSalary\":\"5000.00\",\"allowances\":\"0.00\",\"deductions\":\"0.00\"}"))
                 .andExpect(status().isOk());
     }
+
+    @Test
+    void dryRunRoutesToTheZeroWritePreview() throws Exception {
+        when(service.previewPayroll(anyString(), anyString(), anyString(), any(), any(), any()))
+                .thenReturn(com.ems.payroll.model.PayrollPreview.of("", "", "2026-01",
+                        java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO,
+                        java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO,
+                        java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO,
+                        java.math.BigDecimal.ZERO, "USD", null, java.util.List.of()));
+
+        mockMvc.perform(post("/api/payroll/run")
+                        .requestAttr(TenantIdArgumentResolver.TENANT_ID_ATTRIBUTE, "t1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"employeeId\":\"e1\",\"period\":\"2026-01\",\"dryRun\":true,"
+                                + "\"baseSalary\":\"5000.00\",\"allowances\":\"0.00\",\"deductions\":\"0.00\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("PREVIEW"));
+
+        verify(service).previewPayroll(anyString(), anyString(), anyString(), any(), any(), any());
+        verify(service, never()).runPayroll(anyString(), anyString(), anyString(), any(), any(), any());
+    }
 }

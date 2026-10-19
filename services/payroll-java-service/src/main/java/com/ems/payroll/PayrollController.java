@@ -55,6 +55,14 @@ public class PayrollController {
             BigDecimal allowances = Money.of(request.get("allowances"));
             BigDecimal deductions = Money.of(request.get("deductions"));
 
+            // dryRun=true returns the full would-be result and writes nothing;
+            // the payload is labeled PREVIEW by the service.
+            Object dryRunFlag = request.get("dryRun");
+            if (Boolean.TRUE.equals(dryRunFlag) || "true".equalsIgnoreCase(String.valueOf(dryRunFlag))) {
+                return ResponseEntity.ok(service.previewPayroll(tenantId, employeeId, period,
+                        baseSalary, allowances, deductions));
+            }
+
             PayrollRecord record = service.runPayroll(tenantId, employeeId, period, baseSalary, allowances, deductions);
             return ResponseEntity.ok(record);
         } catch (IllegalArgumentException e) {
