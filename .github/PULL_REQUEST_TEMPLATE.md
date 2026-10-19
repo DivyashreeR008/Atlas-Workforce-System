@@ -40,6 +40,7 @@ Closes #<!-- issue number -->
 - [ ] No secrets / `.env` / tokens committed
 - [ ] No auth / rate-limit / CSRF / origin-check weakening (or explained below)
 - [ ] `npm audit --audit-level=high` clean (if Node/frontend touched)
+- [ ] No N+1 query loops in list endpoints: fetch-related rows in one batched IN query or eager load, not per row (see `docs/n1-query-audit.md`)
 
 ## Mentor / maintainer notes
 

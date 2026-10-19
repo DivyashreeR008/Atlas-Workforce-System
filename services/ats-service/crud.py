@@ -246,6 +246,20 @@ def delete_candidate(db: Session, candidate_id: str, tenant_id: str) -> bool:
     return True
 
 
+def _batch_join_maps(db: Session, applications):
+    """Resolve the job and candidate names for a page of applications with
+    two batched IN queries instead of one lazy relationship load per row
+    (the classic N+1 traversal through Application.job / Application.candidate)."""
+    job_ids = sorted({app.job_id for app in applications if app.job_id})
+    candidate_ids = sorted({app.candidate_id for app in applications if app.candidate_id})
+    jobs = {job.id: job for job in db.query(Job).filter(Job.id.in_(job_ids)).all()} if job_ids else {}
+    candidates = {
+        candidate.id: candidate
+        for candidate in db.query(Candidate).filter(Candidate.id.in_(candidate_ids)).all()
+    } if candidate_ids else {}
+    return jobs, candidates
+
+
 def get_candidate_applications(db: Session, candidate_id: str, tenant_id: str, page: int, page_size: int) -> dict:
     q = (
         db.query(Application)
@@ -255,11 +269,14 @@ def get_candidate_applications(db: Session, candidate_id: str, tenant_id: str, p
     )
     total = q.count()
     items = apply_pagination(q, page, page_size).all()
+    jobs, candidates = _batch_join_maps(db, items)
     result = []
     for app in items:
         d = serialize_uuid(app)
-        d["job_title"] = app.job.title if app.job else None
-        d["candidate_name"] = f"{app.candidate.first_name} {app.candidate.last_name}" if app.candidate else None
+        job = jobs.get(app.job_id)
+        candidate = candidates.get(app.candidate_id)
+        d["job_title"] = job.title if job else None
+        d["candidate_name"] = f"{candidate.first_name} {candidate.last_name}" if candidate else None
         result.append(d)
     return paginated_response(result, total, page, page_size)
 
@@ -298,11 +315,14 @@ def list_applications(
     q = q.order_by(Application.application_date.desc())
     total = q.count()
     items = apply_pagination(q, page, page_size).all()
+    jobs, candidates = _batch_join_maps(db, items)
     result = []
     for app in items:
         d = serialize_uuid(app)
-        d["job_title"] = app.job.title if app.job else None
-        d["candidate_name"] = f"{app.candidate.first_name} {app.candidate.last_name}" if app.candidate else None
+        job = jobs.get(app.job_id)
+        candidate = candidates.get(app.candidate_id)
+        d["job_title"] = job.title if job else None
+        d["candidate_name"] = f"{candidate.first_name} {candidate.last_name}" if candidate else None
         result.append(d)
     return paginated_response(result, total, page, page_size)
 
@@ -780,8 +800,27 @@ def rank_candidates_for_job(db: Session, tenant_id: str, job_id: str, candidate_
             if len(word) > 2:
                 job_skills.add(word)
 
-    for cid in candidate_ids:
-        candidate = db.query(Candidate).filter(Candidate.id == cid, Candidate.tenant_id == tenant_id).first()
+    requested = {str(cid) for cid in candidate_ids}
+    candidates = {
+        str(candidate.id): candidate
+        for candidate in (
+            db.query(Candidate).filter(
+                Candidate.tenant_id == tenant_id, Candidate.id.in_(candidate_ids)
+            ).all()
+            if candidate_ids else []
+        )
+    }
+    # Batched upsert source: one IN query instead of one lookup per
+    # candidate, and one commit instead of a commit per row.
+    existing_by_candidate = {
+        str(ranking.candidate_id): ranking
+        for ranking in db.query(ResumeRanking).filter(
+            ResumeRanking.job_id == job_id, ResumeRanking.candidate_id.in_(candidate_ids)
+        ).all()
+    } if candidate_ids else {}
+
+    for cid in requested:
+        candidate = candidates.get(cid)
         if not candidate:
             continue
 
@@ -797,15 +836,14 @@ def rank_candidates_for_job(db: Session, tenant_id: str, job_id: str, candidate_
 
         overall = round((skills_match * 0.5 + exp_match * 0.3 + edu_match * 0.2), 2)
 
-        existing = db.query(ResumeRanking).filter(
-            ResumeRanking.job_id == job_id, ResumeRanking.candidate_id == cid
-        ).first()
+        notes = f"Skills: {len(skills_overlap)} shared keywords"
+        existing = existing_by_candidate.get(cid)
         if existing:
             existing.match_score = overall
             existing.skills_match = skills_match
             existing.experience_match = exp_match
             existing.education_match = edu_match
-            existing.ai_notes = f"Skills: {len(skills_overlap)} shared keywords"
+            existing.ai_notes = notes
         else:
             ranking = ResumeRanking(
                 tenant_id=tenant_id,
@@ -815,10 +853,11 @@ def rank_candidates_for_job(db: Session, tenant_id: str, job_id: str, candidate_
                 skills_match=skills_match,
                 experience_match=exp_match,
                 education_match=edu_match,
-                ai_notes=f"Skills: {len(skills_overlap)} shared keywords",
+                ai_notes=notes,
             )
             db.add(ranking)
-        db.commit()
+
+    db.commit()
 
     all_rankings = (
         db.query(ResumeRanking)
@@ -830,9 +869,18 @@ def rank_candidates_for_job(db: Session, tenant_id: str, job_id: str, candidate_
         r.rank = i
     db.commit()
 
+    # Names for every ranked candidate in one batched IN query - rankings
+    # from earlier requests may include candidates outside this batch.
+    outstanding = sorted({str(r.candidate_id) for r in all_rankings} - set(candidates))
+    if outstanding:
+        candidates.update({
+            str(candidate.id): candidate
+            for candidate in db.query(Candidate).filter(Candidate.id.in_(outstanding)).all()
+        })
+
     result = []
     for r in all_rankings:
-        c = db.query(Candidate).filter(Candidate.id == r.candidate_id).first()
+        c = candidates.get(str(r.candidate_id))
         result.append({
             "candidate_id": str(r.candidate_id),
             "candidate_name": f"{c.first_name} {c.last_name}" if c else "Unknown",
@@ -1001,12 +1049,17 @@ def list_campus_drives(
     q = q.order_by(CampusDrive.drive_date.desc())
     total = q.count()
     items = apply_pagination(q, page, page_size).all()
+    # One grouped COUNT instead of one COUNT registration query per drive.
+    registration_counts = dict(
+        db.query(CampusRegistration.drive_id, func.count(CampusRegistration.id))
+        .filter(CampusRegistration.drive_id.in_([drive.id for drive in items]))
+        .group_by(CampusRegistration.drive_id)
+        .all()
+    ) if items else {}
     result = []
     for drive in items:
         d = serialize_uuid(drive)
-        d["registration_count"] = db.query(func.count(CampusRegistration.id)).filter(
-            CampusRegistration.drive_id == drive.id
-        ).scalar() or 0
+        d["registration_count"] = registration_counts.get(drive.id, 0)
         result.append(d)
     return paginated_response(result, total, page, page_size)
 
@@ -1379,13 +1432,18 @@ def get_recruitment_analytics(db: Session, tenant_id: str) -> dict:
 
     stages_order = ["APPLIED", "SCREENING", "INTERVIEW_STAGE_1", "INTERVIEW_STAGE_2",
                     "FINAL_INTERVIEW", "OFFER_EXTENDED", "OFFER_ACCEPTED", "HIRED"]
+    # One grouped COUNT per status instead of one query per funnel stage.
+    funnel_counts = dict(
+        db.query(Application.status, func.count(Application.id))
+        .filter(Application.tenant_id == tenant_id, Application.status.in_(stages_order))
+        .group_by(Application.status)
+        .all()
+    )
     funnel = []
     total_apps_for_funnel = total_applications or 1
     prev_count = total_apps_for_funnel
     for stage in stages_order:
-        count = db.query(func.count(Application.id)).filter(
-            Application.tenant_id == tenant_id, Application.status == stage
-        ).scalar() or 0
+        count = funnel_counts.get(stage, 0)
         funnel.append({
             "stage": stage, "count": count,
             "conversion_rate": round((count / max(prev_count, 1)) * 100, 1),
