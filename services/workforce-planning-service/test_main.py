@@ -6,6 +6,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///test.db")
 os.environ.setdefault("INTERNAL_JWT_SECRET", "test-secret")
 
 from main import app  # noqa: E402
+import crud  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -37,3 +38,27 @@ async def test_dashboard_requires_auth():
         resp = await client.get("/api/v1/workforce/dashboard")
         assert resp.status_code == 401
         assert "Missing internal authentication" in resp.json().get("error", "")
+
+
+def test_run_simulation_deterministic():
+    first = crud.run_simulation(None, "tenant-a", "HEADCOUNT", {"current_headcount": 100, "growth_rate": 0.05})
+    second = crud.run_simulation(None, "tenant-a", "HEADCOUNT", {"current_headcount": 100, "growth_rate": 0.05})
+    assert first == second
+    assert first["deterministic"] is True
+
+
+def test_run_simulation_depends_on_parameters():
+    first = crud.run_simulation(None, "tenant-a", "HEADCOUNT", {"current_headcount": 100})
+    second = crud.run_simulation(None, "tenant-a", "HEADCOUNT", {"current_headcount": 200})
+    assert first["results"] != second["results"]
+
+
+def test_run_simulation_known_types_deterministic():
+    for sim_type, params in (
+        ("SKILL_GAP", {"department": "Engineering", "baseline_skill_level": 2, "target_skill_level": 5}),
+        ("ATTRITION", {"current_headcount": 120, "base_attrition_rate": 0.1}),
+    ):
+        first = crud.run_simulation(None, "tenant-a", sim_type, params)
+        second = crud.run_simulation(None, "tenant-a", sim_type, params)
+        assert first == second
+        assert first["deterministic"] is True

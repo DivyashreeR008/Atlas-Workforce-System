@@ -51,6 +51,9 @@ class PredictionResponse(BaseModel):
     risk_factors: list[dict] = []
     recommendations: list[str] = []
     confidence_interval: Optional[dict] = None
+    simulated: bool = False
+    deterministic: bool = False
+    basis: Optional[str] = None
 
 class SalaryRecommendationRequest(BaseModel):
     employee_id: str
@@ -78,6 +81,9 @@ class WorkforceForecastResponse(BaseModel):
     total_headcount_projection: list[dict] = []
     key_insights: list[str] = []
     confidence: float
+    simulated: bool = False
+    deterministic: bool = False
+    basis: Optional[str] = None
 
 class PolicyQuery(BaseModel):
     query: str
@@ -221,6 +227,9 @@ class ShiftOptimizationResponse(BaseModel):
     coverage_gaps: list[dict] = []
     cost_savings: float
     efficiency_gain: float
+    simulated: bool = False
+    deterministic: bool = False
+    basis: Optional[str] = None
 
 class SuccessionPlanRequest(BaseModel):
     position: str = Field(..., min_length=1, max_length=200)

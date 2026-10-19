@@ -1,3 +1,5 @@
+import hashlib
+import json
 import random
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -17,6 +19,26 @@ def _paginate(query, page: int, page_size: int):
     total = query.count()
     items = query.order_by(None).offset((page - 1) * page_size).limit(page_size).all() if total else []
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+def _seeded_rng(*seed_material: Any) -> random.Random:
+    """Deterministic RNG: the same inputs always produce the same stream.
+
+    Simulation endpoints look like analytics on refresh; unseeded randomness
+    made stored projections change between calls. Seeding keeps identical
+    inputs yielding identical stored results while the heuristics stay rough.
+    """
+    key = "|".join(str(part) for part in seed_material)
+    digest = hashlib.sha256(key.encode("utf-8")).digest()
+    return random.Random(int.from_bytes(digest[:8], "big"))
+
+
+def _deterministic_seed_key(sim_type: str, parameters: dict) -> str:
+    try:
+        canonical = json.dumps(parameters or {}, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        canonical = repr(parameters)
+    return f"{sim_type}|{canonical}"
 
 
 def _now():
@@ -447,6 +469,7 @@ def delete_simulation(db: Session, sim_id: UUID, tenant_id: str) -> bool:
 
 
 def run_simulation(db: Session, tenant_id: str, sim_type: str, parameters: dict):
+    rng = _seeded_rng(_deterministic_seed_key(sim_type, parameters))
     if sim_type == "HEADCOUNT":
         current = parameters.get("current_headcount", 100)
         growth_rate = parameters.get("growth_rate", 0.05)
@@ -454,8 +477,8 @@ def run_simulation(db: Session, tenant_id: str, sim_type: str, parameters: dict)
         periods = parameters.get("periods", 4)
         results = []
         for p in range(1, periods + 1):
-            hires = int(current * growth_rate * random.uniform(0.8, 1.2))
-            leavers = int(current * attrition_rate * random.uniform(0.7, 1.3))
+            hires = int(current * growth_rate * rng.uniform(0.8, 1.2))
+            leavers = int(current * attrition_rate * rng.uniform(0.7, 1.3))
             current = current + hires - leavers
             results.append({"period": p, "headcount": current, "hires": hires, "leavers": leavers})
         return {
@@ -465,6 +488,8 @@ def run_simulation(db: Session, tenant_id: str, sim_type: str, parameters: dict)
             "final_headcount": current,
             "total_hires": sum(r["hires"] for r in results),
             "total_leavers": sum(r["leavers"] for r in results),
+            "deterministic": True,
+            "basis": "heuristic projection (deterministic simulation, not computed from actual HR events)",
         }
     elif sim_type == "SKILL_GAP":
         dept = parameters.get("department", "Engineering")
@@ -475,13 +500,15 @@ def run_simulation(db: Session, tenant_id: str, sim_type: str, parameters: dict)
         periods = parameters.get("periods", 4)
         results = []
         for p in range(1, periods + 1):
-            new_level = baseline + (training_impact + hiring_impact) * p * random.uniform(0.8, 1.0)
+            new_level = baseline + (training_impact + hiring_impact) * p * rng.uniform(0.8, 1.0)
             results.append({"period": p, "projected_level": round(min(new_level, target), 1), "gap": round(max(target - new_level, 0), 1)})
         return {
             "simulation_type": sim_type,
             "parameters": parameters,
             "results": results,
             "periods_to_close": next((p for p, r in enumerate(results, 1) if r["gap"] <= 0), None),
+            "deterministic": True,
+            "basis": "heuristic projection (deterministic simulation, not computed from actual skill assessments)",
         }
     elif sim_type == "ATTRITION":
         current = parameters.get("current_headcount", 100)
@@ -491,7 +518,7 @@ def run_simulation(db: Session, tenant_id: str, sim_type: str, parameters: dict)
         results = []
         for p in range(1, periods + 1):
             rate = base_rate * max(1 - intervention_impact * (p / periods), 0.3)
-            leavers = int(current * rate * random.uniform(0.8, 1.2))
+            leavers = int(current * rate * rng.uniform(0.8, 1.2))
             results.append({"period": p, "headcount": current, "attrition_rate": round(rate, 3), "projected_leavers": leavers})
             current = current - leavers
         return {
@@ -500,8 +527,10 @@ def run_simulation(db: Session, tenant_id: str, sim_type: str, parameters: dict)
             "results": results,
             "final_headcount": current,
             "avg_retained_rate": round(1 - sum(r["attrition_rate"] for r in results) / periods, 3),
+            "deterministic": True,
+            "basis": "heuristic projection (deterministic simulation, not computed from actual attrition records)",
         }
-    return {"simulation_type": sim_type, "parameters": parameters, "results": [], "message": "Simulation completed"}
+    return {"simulation_type": sim_type, "parameters": parameters, "results": [], "message": "Simulation completed", "deterministic": True}
 
 
 def list_what_if_analyses(db: Session, tenant_id: str, page: int, page_size: int, simulation_id: Optional[UUID] = None):
@@ -523,7 +552,10 @@ def create_what_if_analysis(db: Session, tenant_id: str, data: dict):
         base_params.update(data.get("assumptions", {}))
         impact = run_simulation(db, tenant_id, sim.simulation_type, base_params)
         data["projected_impact"] = impact
-        data["confidence"] = random.uniform(0.6, 0.95)
+        # Confidence stays a heuristic; seed it so the same simulation and
+        # assumptions do not produce a different confidence on every call.
+        conf_rng = _seeded_rng("what-if-confidence", sim.simulation_type, _deterministic_seed_key(sim.simulation_type, base_params))
+        data["confidence"] = round(0.6 + (0.95 - 0.6) * conf_rng.random(), 4)
     obj = WhatIfAnalysis(tenant_id=tenant_id, **data)
     db.add(obj); db.commit(); db.refresh(obj); return obj
 
@@ -583,6 +615,14 @@ def _analyze_org_impact(current: dict, proposed: dict) -> dict:
     prop_total = sum(d.get("headcount", 0) for d in prop_depts)
     cur_cost = sum(d.get("cost", 0) for d in cur_depts)
     prop_cost = sum(d.get("cost", 0) for d in prop_depts)
+    savings = cur_cost - prop_cost
+    savings_ratio = (savings / cur_cost) if cur_cost > 0 else 0.0
+    # Scores are derived from the actual proposed structure instead of drawn
+    # fresh from random each call, so the stored analysis is stable.
+    efficiency_score = round(min(0.95, max(0.0, 0.6 + savings_ratio)), 2)
+    headcount_change_ratio = (abs(prop_total - cur_total) / cur_total) if cur_total > 0 else 0.0
+    dept_change_ratio = (abs(prop_count - cur_count) / cur_count) if cur_count > 0 else 0.0
+    risk_score = round(min(0.4, 0.1 + headcount_change_ratio + dept_change_ratio), 2)
     return {
         "current_departments": cur_count,
         "proposed_departments": prop_count,
@@ -592,9 +632,11 @@ def _analyze_org_impact(current: dict, proposed: dict) -> dict:
         "headcount_change": prop_total - cur_total,
         "current_cost": cur_cost,
         "proposed_cost": prop_cost,
-        "cost_savings": cur_cost - prop_cost,
-        "efficiency_score": round(random.uniform(0.6, 0.95), 2),
-        "risk_score": round(random.uniform(0.1, 0.4), 2),
+        "cost_savings": savings,
+        "efficiency_score": efficiency_score,
+        "risk_score": risk_score,
+        "deterministic": True,
+        "basis": "derived from the submitted current and proposed structures",
     }
 
 

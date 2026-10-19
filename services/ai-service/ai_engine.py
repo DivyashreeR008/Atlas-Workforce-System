@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -7,6 +8,21 @@ from typing import Any
 from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
+
+
+def _seeded_rng(*seed_material: Any) -> random.Random:
+    """Deterministic RNG: the same inputs always produce the same stream.
+
+    Replaces unseeded module-level random usage in prediction endpoints so
+    repeated calls with the same request return identical output instead of
+    a fresh dice roll.
+    """
+    key = "|".join(str(part) for part in seed_material)
+    digest = hashlib.sha256(key.encode("utf-8")).digest()
+    return random.Random(int.from_bytes(digest[:8], "big"))
+
+
+_SIMULATION_LABEL = "heuristic simulation (deterministic, not computed from employee data)"
 
 client = None
 OPENAI_AVAILABLE = False
@@ -111,13 +127,14 @@ def _generate_dashboard(focus: str, department: str = "") -> dict:
 
 
 def _predict_attrition(employee_id: str = "", department: str = "", months: int = 6) -> dict:
-    probability = round(random.uniform(0.05, 0.45), 3)
+    rng = _seeded_rng("attrition", employee_id, department, months)
+    probability = round(rng.uniform(0.05, 0.45), 3)
     factors = [
-        {"factor": "Job Satisfaction", "weight": round(random.uniform(0.1, 0.3), 2), "trend": random.choice(["declining", "stable", "improving"])},
-        {"factor": "Compensation", "weight": round(random.uniform(0.1, 0.25), 2), "trend": random.choice(["below_market", "at_market", "above_market"])},
-        {"factor": "Work-Life Balance", "weight": round(random.uniform(0.05, 0.2), 2), "trend": random.choice(["declining", "stable", "improving"])},
-        {"factor": "Career Growth", "weight": round(random.uniform(0.1, 0.2), 2), "trend": random.choice(["limited", "adequate", "good"])},
-        {"factor": "Manager Relationship", "weight": round(random.uniform(0.05, 0.15), 2), "trend": random.choice(["poor", "neutral", "good"])},
+        {"factor": "Job Satisfaction", "weight": round(rng.uniform(0.1, 0.3), 2), "trend": rng.choice(["declining", "stable", "improving"])},
+        {"factor": "Compensation", "weight": round(rng.uniform(0.1, 0.25), 2), "trend": rng.choice(["below_market", "at_market", "above_market"])},
+        {"factor": "Work-Life Balance", "weight": round(rng.uniform(0.05, 0.2), 2), "trend": rng.choice(["declining", "stable", "improving"])},
+        {"factor": "Career Growth", "weight": round(rng.uniform(0.1, 0.2), 2), "trend": rng.choice(["limited", "adequate", "good"])},
+        {"factor": "Manager Relationship", "weight": round(rng.uniform(0.05, 0.15), 2), "trend": rng.choice(["poor", "neutral", "good"])},
     ]
     return {
         "prediction": "high_risk" if probability > 0.3 else "medium_risk" if probability > 0.15 else "low_risk",
@@ -133,6 +150,9 @@ def _predict_attrition(employee_id: str = "", department: str = "", months: int 
             "Monitor engagement metrics quarterly.",
         ],
         "confidence_interval": {"lower": max(0, probability - 0.05), "upper": min(1, probability + 0.05)},
+        "simulated": True,
+        "deterministic": True,
+        "basis": _SIMULATION_LABEL,
     }
 
 
@@ -215,20 +235,21 @@ def _salary_recommendation(employee_id: str, role: str, experience: int, perform
 
 
 def _forecast_workforce(department: str = "", horizon: int = 12, include_attrition: bool = True, include_hiring: bool = True) -> dict:
+    rng = _seeded_rng("forecast", department, horizon, include_attrition, include_hiring)
     now = datetime.now(timezone.utc)
     monthly = []
-    headcount = random.randint(50, 500)
+    headcount = rng.randint(50, 500)
     for i in range(horizon):
         month = (now.replace(day=1) + timedelta(days=32 * i)).strftime("%Y-%m")
-        attrition = random.randint(0, 5) if include_attrition else 0
-        hires = random.randint(1, 8) if include_hiring else 0
+        attrition = rng.randint(0, 5) if include_attrition else 0
+        hires = rng.randint(1, 8) if include_hiring else 0
         headcount = headcount - attrition + hires
         monthly.append({"month": month, "headcount": headcount, "hires": hires, "attrition": attrition})
     return {
         "forecasts": [
             {"metric": "Headcount", "current": monthly[0]["headcount"], "projected": monthly[-1]["headcount"], "change_pct": round((monthly[-1]["headcount"] - monthly[0]["headcount"]) / monthly[0]["headcount"] * 100, 1)},
-            {"metric": "New Hires", "current": sum(m["hires"] for m in monthly[:3]), "projected": sum(m["hires"] for m in monthly[-3:]), "change_pct": round(random.uniform(-10, 20), 1)},
-            {"metric": "Attrition", "current": sum(m["attrition"] for m in monthly[:3]), "projected": sum(m["attrition"] for m in monthly[-3:]), "change_pct": round(random.uniform(-15, 15), 1)},
+            {"metric": "New Hires", "current": sum(m["hires"] for m in monthly[:3]), "projected": sum(m["hires"] for m in monthly[-3:]), "change_pct": round(rng.uniform(-10, 20), 1)},
+            {"metric": "Attrition", "current": sum(m["attrition"] for m in monthly[:3]), "projected": sum(m["attrition"] for m in monthly[-3:]), "change_pct": round(rng.uniform(-15, 15), 1)},
         ],
         "total_headcount_projection": monthly,
         "key_insights": [
@@ -236,7 +257,10 @@ def _forecast_workforce(department: str = "", horizon: int = 12, include_attriti
             f"Projected hiring demand of {sum(m['hires'] for m in monthly)} positions.",
             f"Estimated attrition of {sum(m['attrition'] for m in monthly)} employees if trends continue.",
         ],
-        "confidence": round(random.uniform(0.75, 0.95), 2),
+        "confidence": round(rng.uniform(0.75, 0.95), 2),
+        "simulated": True,
+        "deterministic": True,
+        "basis": _SIMULATION_LABEL,
     }
 
 
@@ -473,21 +497,51 @@ def _detect_anomalies(data_source: str, metric: str = "", department: str = "", 
     }
 
 
+def _parse_shift_date_range(date_range: list[str]) -> tuple[datetime, int]:
+    """Parse the shift-optimization date range, rejecting malformed input.
+
+    Raises ValueError (mapped to 400 by the endpoint) instead of letting
+    strptime errors surface as 500s.
+    """
+    if not date_range or not date_range[0]:
+        raise ValueError("date_range must contain at least one date formatted as YYYY-MM-DD")
+    try:
+        start = datetime.strptime(date_range[0], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise ValueError(f"invalid date {date_range[0]!r}: expected YYYY-MM-DD format")
+    end = start
+    if len(date_range) > 1:
+        if not date_range[1]:
+            raise ValueError("date_range entries must be dates formatted as YYYY-MM-DD")
+        try:
+            end = datetime.strptime(date_range[1], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise ValueError(f"invalid date {date_range[1]!r}: expected YYYY-MM-DD format")
+    if end < start:
+        start, end = end, start
+    # Preserve the original default: a single date still plans 7 days forward.
+    days = (end - start).days + 1 if len(date_range) > 1 else 7
+    return start, days
+
+
 def _optimize_shifts(department: str, date_range: list[str], current_schedule: list[dict] = None, constraints: dict = None) -> dict:
-    start = datetime.strptime(date_range[0], "%Y-%m-%d").replace(tzinfo=timezone.utc) if date_range else datetime.now(timezone.utc)
-    days = abs((datetime.strptime(date_range[1], "%Y-%m-%d").replace(tzinfo=timezone.utc) - start).days) + 1 if len(date_range) > 1 else 7
+    start, days = _parse_shift_date_range(date_range)
+    rng = _seeded_rng("shifts", department, start.strftime("%Y-%m-%d"), days)
     schedule = []
     for d in range(days):
         day = (start + timedelta(days=d)).strftime("%Y-%m-%d")
         for shift in ["Morning", "Afternoon", "Night"]:
-            staff_needed = random.randint(3, 10)
-            staff_assigned = staff_needed - random.randint(0, 2)
+            staff_needed = rng.randint(3, 10)
+            staff_assigned = staff_needed - rng.randint(0, 2)
             schedule.append({"date": day, "shift": shift, "staff_required": staff_needed, "staff_assigned": staff_assigned, "gap": staff_needed - staff_assigned})
     return {
         "optimized_schedule": schedule,
         "coverage_gaps": [s for s in schedule if s["gap"] > 0][:5],
-        "cost_savings": round(random.uniform(5000, 50000), 2),
-        "efficiency_gain": round(random.uniform(5, 25), 1),
+        "cost_savings": round(rng.uniform(5000, 50000), 2),
+        "efficiency_gain": round(rng.uniform(5, 25), 1),
+        "simulated": True,
+        "deterministic": True,
+        "basis": _SIMULATION_LABEL,
     }
 
 

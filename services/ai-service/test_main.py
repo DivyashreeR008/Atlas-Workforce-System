@@ -81,6 +81,74 @@ async def test_shift_optimization_ok():
 
 
 @pytest.mark.asyncio
+async def test_shift_optimization_equal_dates_is_single_day():
+    async with _authed() as client:
+        resp = await client.post("/api/v1/ai/shift-optimization", json={
+            "department": "Engineering", "date_range": ["2026-01-01", "2026-01-01"],
+        })
+        assert resp.status_code == 200
+        dates = {entry["date"] for entry in resp.json()["optimized_schedule"]}
+        assert dates == {"2026-01-01"}
+
+
+@pytest.mark.asyncio
+async def test_shift_optimization_reversed_range_matches_forward():
+    async with _authed() as client:
+        forward = await client.post("/api/v1/ai/shift-optimization", json={
+            "department": "Engineering", "date_range": ["2026-01-01", "2026-01-03"],
+        })
+        backward = await client.post("/api/v1/ai/shift-optimization", json={
+            "department": "Engineering", "date_range": ["2026-01-03", "2026-01-01"],
+        })
+        assert forward.status_code == backward.status_code == 200
+        assert forward.json()["optimized_schedule"] == backward.json()["optimized_schedule"]
+
+
+@pytest.mark.asyncio
+async def test_shift_optimization_malformed_dates_rejected():
+    async with _authed() as client:
+        for bad in (["not-a-date"], ["2026-01-01", "tomorrow"], ["", "2026-01-01"]):
+            resp = await client.post("/api/v1/ai/shift-optimization", json={
+                "department": "Engineering", "date_range": bad,
+            })
+            assert resp.status_code == 400
+            assert "YYYY-MM-DD" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_attrition_prediction_deterministic():
+    payload = {"employee_id": "emp-42", "department": "Engineering", "timeframe_months": 6}
+    async with _authed() as client:
+        first = await client.post("/api/v1/ai/attrition-prediction", json=payload)
+        second = await client.post("/api/v1/ai/attrition-prediction", json=payload)
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert first.json()["simulated"] is True
+    assert first.json()["deterministic"] is True
+    assert first.json()["basis"]
+
+
+@pytest.mark.asyncio
+async def test_attrition_prediction_depends_on_inputs():
+    async with _authed() as client:
+        a = await client.post("/api/v1/ai/attrition-prediction", json={"employee_id": "emp-42"})
+        b = await client.post("/api/v1/ai/attrition-prediction", json={"employee_id": "emp-43"})
+    assert a.json()["probability"] != b.json()["probability"]
+
+
+@pytest.mark.asyncio
+async def test_workforce_forecasting_deterministic():
+    payload = {"department": "Engineering", "horizon_months": 6}
+    async with _authed() as client:
+        first = await client.post("/api/v1/ai/workforce-forecasting", json=payload)
+        second = await client.post("/api/v1/ai/workforce-forecasting", json=payload)
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert first.json()["simulated"] is True
+    assert first.json()["deterministic"] is True
+
+
+@pytest.mark.asyncio
 async def test_budget_forecasting_ok():
     async with _authed() as client:
         resp = await client.post("/api/v1/ai/budget-forecasting", json={

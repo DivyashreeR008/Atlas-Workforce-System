@@ -314,7 +314,10 @@ async def anomaly_detection(payload: AnomalyDetectionRequest):
 # ── Shift Optimization ──
 @app.post("/api/v1/ai/shift-optimization", response_model=ShiftOptimizationResponse, tags=["Operations"])
 async def shift_optimization(payload: ShiftOptimizationRequest):
-    return _optimize_shifts(payload.department, payload.date_range, payload.current_schedule, payload.constraints)
+    try:
+        return _optimize_shifts(payload.department, payload.date_range, payload.current_schedule, payload.constraints)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # ── Succession Planning ──
