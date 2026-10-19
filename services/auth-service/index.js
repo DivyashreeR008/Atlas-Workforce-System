@@ -792,6 +792,24 @@ async function consumeMfaChallengeJti(redis, jti) {
   }
 }
 
+// Session-revocation denylist writes are not optional: skipping them silently
+// when the store is down means a revoked session's tokens stay acceptable at
+// the gateway even after Redis recovers (the gateway reads the denylist from
+// the same store). Returns true when every key was recorded and false when the
+// store could not answer; callers must refuse the request on false.
+async function writeSessionDenylist(redis, keys) {
+  if (!redis || !redis.isOpen) return false;
+  try {
+    for (const key of keys) {
+      await redis.set(key, '1', { EX: 15 * 60 });
+    }
+    return true;
+  } catch (err) {
+    safeLog(console.error, 'Session denylist write failed', err);
+    return false;
+  }
+}
+
 // Resolve the real client IP. The gateway passes it in x-real-client-ip;
 // we never trust X-Forwarded-For because clients can spoof it.
 function getClientIp(req) {
@@ -4009,23 +4027,26 @@ app.delete('/sessions/:id', requireRole(), createUserRateLimiter('session_revoke
     if (tokenHash) {
       await pool.query('DELETE FROM refresh_tokens WHERE token_hash = $1', [tokenHash]);
       await pool.query('DELETE FROM rotated_tokens WHERE token_hash = $1', [tokenHash]);
-      // Optionally denylist any access tokens from this session via Redis (handled by gateway)
-      if (redisClient.isOpen) {
-        const accessJtiKey = `denylist:sid:${req.params.id}`;
-        await redisClient.set(accessJtiKey, '1', { EX: 15 * 60 });
+      // Denylist any access tokens from this session via Redis (checked by the
+      // gateway). Fails closed: an unrecorded revocation refuses the request
+      // with 503 instead of returning success while the store is down.
+      const recorded = await writeSessionDenylist(redisClient, [`denylist:sid:${req.params.id}`]);
+      if (!recorded) {
+        return authStoreUnavailable(res, 'session_revoke_denylist');
       }
     }
     // If the request supplied an access token, denylist its jti as well
     const authHeader = req.headers.authorization;
-    if (authHeader?.startsWith('Bearer ') && redisClient.isOpen) {
+    if (authHeader?.startsWith('Bearer ')) {
       try {
         const token = authHeader.slice(7);
         const payload = jwt.decode(token);
-        if (payload && payload.jti) {
-          await redisClient.set(`denylist:jti:${payload.jti}`, '1', { EX: 15 * 60 });
-        }
-        if (payload && payload.sid) {
-          await redisClient.set(`denylist:sid:${payload.sid}`, '1', { EX: 15 * 60 });
+        const keys = [];
+        if (payload && payload.jti) keys.push(`denylist:jti:${payload.jti}`);
+        if (payload && payload.sid) keys.push(`denylist:sid:${payload.sid}`);
+        const recorded = await writeSessionDenylist(redisClient, keys);
+        if (!recorded) {
+          return authStoreUnavailable(res, 'session_revoke_denylist');
         }
       } catch {}
     }
@@ -4062,11 +4083,18 @@ app.delete('/sessions', requireRole(), createUserRateLimiter('sessions_revoke_al
     for (const th of revokedHashes) {
       await pool.query('DELETE FROM refresh_tokens WHERE token_hash = $1', [th]);
       await pool.query('DELETE FROM rotated_tokens WHERE token_hash = $1', [th]);
-      if (redisClient.isOpen) {
-        // Find session id for this hash to denylist sid
-        const sidRes = await pool.query('SELECT id FROM sessions WHERE token_hash = $1', [th]);
-        const sid = sidRes.rows[0]?.id;
-        if (sid) await redisClient.set(`denylist:sid:${sid}`, '1', { EX: 15 * 60 });
+      if (!redisClient.isOpen) {
+        return authStoreUnavailable(res, 'session_revoke_all_denylist');
+      }
+      // Find session id for this hash to denylist sid. Fails closed: an
+      // unrecorded revocation refuses the request instead of silently
+      // leaving those tokens usable at the gateway after Redis recovers.
+      const sidRes = await pool.query('SELECT id FROM sessions WHERE token_hash = $1', [th]);
+      const sid = sidRes.rows[0]?.id;
+      const keys = sid ? [`denylist:sid:${sid}`] : [];
+      const recorded = await writeSessionDenylist(redisClient, keys);
+      if (!recorded) {
+        return authStoreUnavailable(res, 'session_revoke_all_denylist');
       }
     }
     // Also denylist the current access token's jti/sid if provided
@@ -4075,7 +4103,13 @@ app.delete('/sessions', requireRole(), createUserRateLimiter('sessions_revoke_al
       try {
         const token = authHeader.slice(7);
         const payload = jwt.decode(token);
-        if (payload && payload.jti) await redisClient.set(`denylist:jti:${payload.jti}`, '1', { EX: 15 * 60 });
+        const recorded = await writeSessionDenylist(
+          redisClient,
+          payload && payload.jti ? [`denylist:jti:${payload.jti}`] : []
+        );
+        if (!recorded) {
+          return authStoreUnavailable(res, 'session_revoke_all_denylist');
+        }
       } catch {}
     }
 
@@ -4866,6 +4900,7 @@ module.exports = {
   mintCsrfCookie,
   validateOAuthIdToken,
   authStoreUnavailable,
+  writeSessionDenylist,
   storeMfaChallengeJti,
   mfaChallengeJtiExists,
   consumeMfaChallengeJti,

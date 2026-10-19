@@ -44,7 +44,13 @@ services:
   redis:
     image: redis:7-alpine
     container_name: atlas-redis
-    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme_redis_pass}
+    # Persistence (AOF everysec + RDB checkpoints) and noeviction are
+    # deliberate: denylists, rate limits, and MFA replay state must survive a
+    # restart and must never be silently evicted to admit traffic on keys.
+    command: >-
+      redis-server --requirepass ${REDIS_PASSWORD:-changeme_redis_pass}
+      --appendonly yes --appendfsync everysec --save 300 10 --save 60 1000
+      --maxmemory-policy noeviction
     user: "1001:1001"
     ports:
       - "6379:6379"

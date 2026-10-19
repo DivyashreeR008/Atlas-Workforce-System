@@ -17,7 +17,7 @@ process.env.REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { validatePassword, hashToken, sanitizeUser, requireCsrfDoubleSubmit, authStoreUnavailable, storeMfaChallengeJti, mfaChallengeJtiExists, consumeMfaChallengeJti } = require('./index');
+const { validatePassword, hashToken, sanitizeUser, requireCsrfDoubleSubmit, authStoreUnavailable, writeSessionDenylist, storeMfaChallengeJti, mfaChallengeJtiExists, consumeMfaChallengeJti } = require('./index');
 
 // Unit tests for auth service utilities (imported from index.js, not redefined here)
 function testValidatePassword() {
@@ -274,7 +274,42 @@ async function testAuthStoreFailClosed() {
   const logoutRoute = source.slice(logoutStart, nextRouteStart === -1 ? undefined : nextRouteStart);
   assert.ok(!logoutRoute.includes('&& redisClient.isOpen'), 'logout denylist write must not be conditional on the store');
   assert.ok(!logoutRoute.includes("'Bearer ') && redisClient"), 'logout bearer branch must not be gated on client state');
-  console.log('PASS: auth-store fail-closed policy is wired into the routes');
+
+  // Session-revocation denylist writes fail closed through the shared helper.
+  const denylistOpen = fakeAuthStore();
+  assert.strictEqual(
+    await writeSessionDenylist(denylistOpen, ['denylist:sid:s1', 'denylist:jti:jt1']),
+    true,
+    'open store records the revocation keys'
+  );
+  const [sidKey, jtiKey] = denylistOpen.sets;
+  assert.strictEqual(sidKey.key, 'denylist:sid:s1', 'session sid denylist key shape');
+  assert.strictEqual(jtiKey.key, 'denylist:jti:jt1', 'access token jti denylist key shape');
+  assert.ok(sidKey.opts.EX === 15 * 60 && sidKey.opts.value === '1', 'revocation keys live for 15 minutes');
+  assert.strictEqual(
+    await writeSessionDenylist(fakeAuthStore({ isOpen: false }), ['denylist:sid:s2']),
+    false,
+    'closed store reports failure instead of skipping'
+  );
+  assert.strictEqual(
+    await silenceErrors(() => writeSessionDenylist(fakeAuthStore({ failSet: true }), ['denylist:jti:jt2'])),
+    false,
+    'store write failure reports failure instead of skipping'
+  );
+  console.log('PASS: session-revocation denylist writes fail closed');
+
+  // Wiring: the session revocation routes must go through the same fail-closed
+  // contract, with no conditional that silently skips the store.
+  assert.ok(source.includes('writeSessionDenylist(redisClient,'), 'session revocation routes must use the shared helper');
+  assert.ok(source.includes("authStoreUnavailable(res, 'session_revoke_denylist')"), 'session revocation must 503 when the store cannot record revocations');
+  assert.ok(source.includes("authStoreUnavailable(res, 'session_revoke_all_denylist')"), 'revoke-all must 503 when the store cannot record revocations');
+  for (const tag of ["app.delete('/sessions/:id'", "app.delete('/sessions',"]) {
+    const start = source.indexOf(tag);
+    assert.ok(start !== -1, `route ${tag} must exist`);
+    const route = source.slice(start, source.indexOf('\napp.', start + 1));
+    assert.ok(!route.includes('if (redisClient.isOpen)'), `${tag} must not silently skip denylist writes when the store is down`);
+  }
+  console.log('PASS: session-revocation fail-closed policy is wired into the routes');
 }
 
 testValidatePassword();
