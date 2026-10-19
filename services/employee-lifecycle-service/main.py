@@ -15,6 +15,7 @@ from atlas_observability import (
     SecurityHeadersMiddleware,
     configure_logging, get_logger, verify_internal_auth
 )
+from atlas_observability.db_pool_config import engine_kwargs
 
 from models import Base
 import crud
@@ -23,7 +24,7 @@ load_dotenv()
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://atlas_user:atlas_password@postgres:5432/atlas_db")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+engine = create_engine(DATABASE_URL, **engine_kwargs(DATABASE_URL, prefix="LIFECYCLE"))
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

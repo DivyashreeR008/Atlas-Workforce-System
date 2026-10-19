@@ -33,6 +33,9 @@ data:
   LIVE_SERVICE_URL: "http://live-service:8060"
   WORKFORCE_SERVICE_URL: "http://workforce-planning-service:8017"
   # --- datastores (hosts are the k8s Service names) ---
+  # Postgres connections go through PgBouncer (#487, k8s/pgbouncer.yaml):
+  # transaction pooling bounds the server-side connection count. The
+  # postgres Service name is reserved for the primary (admin/replication).
   KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
   RABBITMQ_HOST: "rabbitmq"
   RABBITMQ_USER: "atlas_rabbit"
@@ -40,11 +43,11 @@ data:
   POSTGRES_DB: "atlas_db"
   MONGO_USER: "admin"
   MONGO_DB: "atlas_db"
-  DB_HOST: "postgres"
+  DB_HOST: "pgbouncer"
   DB_USER: "atlas_user"
   DB_NAME: "atlas_db"
-  DB_PORT: "5432"
-  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/atlas_db"
+  DB_PORT: "6432"
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://pgbouncer:6432/atlas_db"
   SPRING_DATASOURCE_USERNAME: "atlas_user"
   SPRING_RABBITMQ_HOST: "rabbitmq"
   SPRING_RABBITMQ_PORT: "5672"

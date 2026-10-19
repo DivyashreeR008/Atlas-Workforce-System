@@ -16,6 +16,7 @@ from atlas_observability import (
     SecurityHeadersMiddleware,
     configure_logging, get_logger, verify_internal_auth
 )
+from atlas_observability.db_pool_config import engine_kwargs
 
 from crud import (
     MassAssignmentError,
@@ -82,7 +83,7 @@ INTERNAL_JWT_SECRET = os.environ.get("INTERNAL_JWT_SECRET", "")
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 MAX_PAGE_SIZE = 100
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+engine = create_engine(DATABASE_URL, **engine_kwargs(DATABASE_URL, prefix="INTEGRATION"))
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 set_db_session_factory(SessionLocal)
 

@@ -26,6 +26,46 @@ services:
       timeout: 5s
       retries: 5
 
+  # #487: PgBouncer in front of Postgres with transaction pooling. Every
+  # service connects here instead of to the primary, so the deployment's
+  # server-side connection count is bounded. max_prepared_statements keeps
+  # protocol-level prepared statements (pgx / pgjdbc / Hibernate) working
+  # in transaction mode.
+  pgbouncer:
+    image: edoburu/pgbouncer:1.24.0-p1
+    container_name: atlas-pgbouncer
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-atlas_user}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-atlas_password}
+      DB_NAME: ${POSTGRES_DB:-atlas_db}
+      AUTH_TYPE: md5
+      POOL_MODE: transaction
+      LISTEN_ADDR: "0.0.0.0"
+      LISTEN_PORT: 6432
+      MAX_CLIENT_CONN: "400"
+      DEFAULT_POOL_SIZE: "20"
+      MIN_POOL_SIZE: "5"
+      RESERVE_POOL_SIZE: "5"
+      MAX_DB_CONNECTIONS: "100"
+      MAX_PREPARED_STATEMENTS: "200"
+      CONNECT_TIMEOUT: "5"
+      QUERY_TIMEOUT: "300"
+      IDLE_TRANSACTION_TIMEOUT: "120"
+    ports:
+      - "127.0.0.1:6432:6432"
+    networks:
+      - atlas-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -d ${POSTGRES_DB:-atlas_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   mongodb:
     image: mongo:6
     container_name: atlas-mongodb
@@ -109,11 +149,13 @@ services:
     ports:
       - "8020:8020"
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@pgbouncer:6432/${POSTGRES_DB:-atlas_db}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
     networks:
       - atlas-network
     depends_on:
+      pgbouncer:
+        condition: service_healthy
       postgres:
         condition: service_healthy
 
@@ -125,7 +167,7 @@ services:
     ports:
       - "8016:8016"
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@pgbouncer:6432/${POSTGRES_DB:-atlas_db}
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-atlas_rabbit}:${RABBITMQ_PASS:-changeme_rabbit_pass}@rabbitmq:5672/
       - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET:-atlas-internal-jwt-secret-change-me}
@@ -138,6 +180,8 @@ services:
     networks:
       - atlas-network
     depends_on:
+      pgbouncer:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       kafka:
@@ -206,7 +250,7 @@ services:
       - JWT_SECRET=${JWT_SECRET:-change-me-to-a-long-random-string}
       - MFA_STEPUP_SECRET=${MFA_STEPUP_SECRET:-atlas-mfa-stepup-secret-change-me}
       - ADMIN_DEFAULT_PASSWORD=${ADMIN_DEFAULT_PASSWORD:-ChangeMe123!}
-      - POSTGRES_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - POSTGRES_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@pgbouncer:6432/${POSTGRES_DB:-atlas_db}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-changeme_redis_pass}@redis:6379
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
       - NODE_ENV=${NODE_ENV:-production}
@@ -221,6 +265,8 @@ services:
     networks:
       - atlas-network
     depends_on:
+      pgbouncer:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
@@ -249,7 +295,7 @@ services:
     ports:
       - "8002:8002"
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-atlas_db}
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://pgbouncer:6432/${POSTGRES_DB:-atlas_db}
       - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-atlas_user}
       - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-atlas_password}
       - SPRING_RABBITMQ_HOST=rabbitmq
@@ -259,6 +305,8 @@ services:
     networks:
       - atlas-network
     depends_on:
+      pgbouncer:
+        condition: service_healthy
       postgres:
         condition: service_healthy
 
@@ -270,7 +318,7 @@ services:
     ports:
       - "8003:8003"
     environment:
-      - POSTGRES_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - POSTGRES_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@pgbouncer:6432/${POSTGRES_DB:-atlas_db}
       - POSTGRES_USER=${POSTGRES_USER:-atlas_user}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-atlas_password}
       - RABBITMQ_HOST=rabbitmq
@@ -280,6 +328,8 @@ services:
     networks:
       - atlas-network
     depends_on:
+      pgbouncer:
+        condition: service_healthy
       postgres:
         condition: service_healthy
 
@@ -302,11 +352,13 @@ services:
     ports:
       - "8005:8005"
     environment:
-      - POSTGRES_URL=host=postgres user=${POSTGRES_USER:-atlas_user} password=${POSTGRES_PASSWORD:-atlas_password} dbname=${POSTGRES_DB:-atlas_db} port=5432 sslmode=disable
+      - POSTGRES_URL=host=pgbouncer user=${POSTGRES_USER:-atlas_user} password=${POSTGRES_PASSWORD:-atlas_password} dbname=${POSTGRES_DB:-atlas_db} port=6432 sslmode=disable
       - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET:-atlas-internal-jwt-secret-change-me}
     networks:
       - atlas-network
     depends_on:
+      pgbouncer:
+        condition: service_healthy
       postgres:
         condition: service_healthy
 
@@ -316,12 +368,14 @@ services:
     ports:
       - "8006:8006"
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-atlas_db}
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://pgbouncer:6432/${POSTGRES_DB:-atlas_db}
       - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-atlas_user}
       - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-atlas_password}
     networks:
       - atlas-network
     depends_on:
+      pgbouncer:
+        condition: service_healthy
       postgres:
         condition: service_healthy
 
@@ -333,12 +387,14 @@ services:
     ports:
       - "8011:8011"
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@pgbouncer:6432/${POSTGRES_DB:-atlas_db}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
       - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET:-atlas-internal-jwt-secret-change-me}
     networks:
       - atlas-network
     depends_on:
+      pgbouncer:
+        condition: service_healthy
       postgres:
         condition: service_healthy
 
@@ -350,11 +406,13 @@ services:
     ports:
       - "8012:8012"
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@pgbouncer:6432/${POSTGRES_DB:-atlas_db}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
     networks:
       - atlas-network
     depends_on:
+      pgbouncer:
+        condition: service_healthy
       postgres:
         condition: service_healthy
 
@@ -364,16 +422,18 @@ services:
     ports:
       - "8013:8013"
     environment:
-      - DB_HOST=postgres
+      - DB_HOST=pgbouncer
       - DB_USER=${POSTGRES_USER:-atlas_user}
       - DB_PASSWORD=${POSTGRES_PASSWORD:-atlas_password}
       - DB_NAME=${POSTGRES_DB:-atlas_db}
-      - DB_PORT=5432
+      - DB_PORT=6432
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
       - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET:-atlas-internal-jwt-secret-change-me}
     networks:
       - atlas-network
     depends_on:
+      pgbouncer:
+        condition: service_healthy
       postgres:
         condition: service_healthy
 
@@ -383,12 +443,14 @@ services:
     ports:
       - "8014:8014"
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-atlas_db}
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://pgbouncer:6432/${POSTGRES_DB:-atlas_db}
       - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-atlas_user}
       - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-atlas_password}
     networks:
       - atlas-network
     depends_on:
+      pgbouncer:
+        condition: service_healthy
       postgres:
         condition: service_healthy
 
@@ -400,12 +462,14 @@ services:
     ports:
       - "8050:8050"
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@pgbouncer:6432/${POSTGRES_DB:-atlas_db}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
       - INTERNAL_API_KEY=${SECURITY_INTERNAL_KEY:-atlas-security-key-change-me}
     networks:
       - atlas-network
     depends_on:
+      pgbouncer:
+        condition: service_healthy
       postgres:
         condition: service_healthy
 
@@ -462,13 +526,15 @@ services:
     ports:
       - "8017:8017"
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@postgres:5432/${POSTGRES_DB:-atlas_db}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-atlas_user}:${POSTGRES_PASSWORD:-atlas_password}@pgbouncer:6432/${POSTGRES_DB:-atlas_db}
       - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET:-atlas-internal-jwt-secret-change-me}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
       - PORT=8017
     networks:
       - atlas-network
     depends_on:
+      pgbouncer:
+        condition: service_healthy
       postgres:
         condition: service_healthy
 

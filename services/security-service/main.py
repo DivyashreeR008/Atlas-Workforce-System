@@ -15,6 +15,7 @@ from atlas_observability import (
     SecurityHeadersMiddleware,
     configure_logging, get_logger, verify_internal_auth
 )
+from atlas_observability.db_pool_config import engine_kwargs
 
 from crud import (
     MassAssignmentError,
@@ -63,7 +64,7 @@ if _missing_env:
 MAX_PAGE_SIZE = int(os.getenv("MAX_PAGE_SIZE", "100"))
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+engine = create_engine(DATABASE_URL, **engine_kwargs(DATABASE_URL, prefix="SECURITY"))
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db() -> Session:
