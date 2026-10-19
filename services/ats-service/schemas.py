@@ -672,3 +672,88 @@ ResumeListResponse = PaginatedResponse[ResumeUploadResponse]
 ReferralListResponse = PaginatedResponse[ReferralResponse]
 CampusDriveListResponse = PaginatedResponse[CampusDriveResponse]
 CampusRegistrationListResponse = PaginatedResponse[CampusRegistrationResponse]
+
+
+# --- Candidate portal (issue #502) ---
+class CandidatePortalAuthRequest(BaseModel):
+    email: str = Field(..., max_length=255)
+    tenant_id: str = Field(..., max_length=50)
+
+
+class CandidatePortalVerifyRequest(BaseModel):
+    token: str = Field(..., min_length=16, max_length=256)
+
+
+class CandidatePortalInviteRequest(BaseModel):
+    application_id: str
+
+
+class CandidatePortalSessionResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class CandidatePortalApplicationSummary(BaseModel):
+    id: str
+    job_id: str
+    job_title: Optional[str] = None
+    status: str
+    application_date: Optional[datetime] = None
+
+
+class CandidatePortalMeResponse(BaseModel):
+    candidate_id: str
+    email: str
+    first_name: str
+    last_name: str
+    applications: List[CandidatePortalApplicationSummary] = []
+
+
+class CandidatePortalDocumentResponse(BaseModel):
+    id: str
+    application_id: str
+    filename: Optional[str] = None
+    file_size: Optional[int] = None
+    content_type: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class CandidatePortalInviteResponse(BaseModel):
+    application_id: str
+    magic_link: str
+    expires_in_minutes: int
+
+
+# --- Interview slots ---
+class InterviewSlotCreate(BaseModel):
+    application_id: str
+    interview_type: str = Field(..., pattern=r"^(PHONE|VIDEO|ONSITE|TECHNICAL|HR|FINAL)$")
+    interviewer_id: Optional[str] = None
+    scheduled_at: datetime
+    duration_minutes: Optional[int] = None
+    location: Optional[str] = Field(None, max_length=300)
+    meeting_link: Optional[str] = Field(None, max_length=500)
+
+
+class InterviewSlotResponse(BaseModel):
+    id: str
+    tenant_id: str
+    application_id: str
+    interview_type: Optional[str] = None
+    interviewer_id: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
+    duration_minutes: Optional[int] = None
+    location: Optional[str] = None
+    meeting_link: Optional[str] = None
+    status: str = "OPEN"
+    interview_id: Optional[str] = None
+    reminded_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+InterviewSlotListResponse = PaginatedResponse[InterviewSlotResponse]

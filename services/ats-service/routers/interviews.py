@@ -1,10 +1,12 @@
 from typing import Optional
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from main import get_db, logger
+from models import Application as ApplicationModel, InterviewSlot as InterviewSlotModel
 import crud
 import schemas
 
@@ -80,3 +82,98 @@ def update_interview_status(
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     return interview
+
+
+# --- Interview slots (candidate self-scheduling, issue #502) ---
+
+@router.get("/interview-slots", response_model=schemas.InterviewSlotListResponse,
+            summary="List interview slots")
+def list_interview_slots(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    application_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None, regex=r"^(OPEN|CONFIRMED)$"),
+    x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
+    db: Session = Depends(get_db),
+):
+    q = db.query(InterviewSlotModel).filter(InterviewSlotModel.tenant_id == x_tenant_id)
+    if application_id:
+        q = q.filter(InterviewSlotModel.application_id == application_id)
+    if status:
+        q = q.filter(InterviewSlotModel.status == status)
+    q = q.order_by(InterviewSlotModel.scheduled_at.asc())
+    total = q.count()
+    items = crud.apply_pagination(q, page, page_size).all()
+    return crud.paginated_response([crud.serialize_uuid(s) for s in items], total, page, page_size)
+
+
+@router.post("/interview-slots", response_model=schemas.InterviewSlotResponse, status_code=201,
+             summary="Publish an interview slot")
+def publish_interview_slot(
+    data: schemas.InterviewSlotCreate,
+    x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
+    db: Session = Depends(get_db),
+):
+    application = (
+        db.query(ApplicationModel)
+        .filter(
+            ApplicationModel.id == data.application_id,
+            ApplicationModel.tenant_id == x_tenant_id,
+        )
+        .first()
+    )
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    scheduled_at = data.scheduled_at
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+    if scheduled_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Slot time must be in the future")
+    if data.interviewer_id and crud.check_interview_overlap(db, data.interviewer_id, scheduled_at, data.duration_minutes):
+        raise HTTPException(status_code=409, detail="Interviewer already has an interview scheduled at this time")
+
+    slot = InterviewSlotModel(
+        id=uuid.uuid4(),
+        tenant_id=x_tenant_id,
+        application_id=application.id,
+        interview_type=data.interview_type,
+        interviewer_id=data.interviewer_id,
+        scheduled_at=scheduled_at,
+        duration_minutes=data.duration_minutes,
+        location=data.location,
+        meeting_link=data.meeting_link,
+        status="OPEN",
+    )
+    db.add(slot)
+    db.commit()
+    db.refresh(slot)
+    return crud.serialize_uuid(slot)
+
+
+@router.post("/interview-slots/{slot_id}/remind", response_model=schemas.InterviewSlotResponse,
+             summary="Record a reminder sent for a confirmed slot")
+def remind_interview_slot(
+    slot_id: str,
+    x_tenant_id: str = Header("default", alias="X-Tenant-Id"),
+    db: Session = Depends(get_db),
+):
+    slot = (
+        db.query(InterviewSlotModel)
+        .filter(
+            InterviewSlotModel.id == slot_id,
+            InterviewSlotModel.tenant_id == x_tenant_id,
+        )
+        .first()
+    )
+    if not slot:
+        raise HTTPException(status_code=404, detail="Slot not found")
+    if slot.status != "CONFIRMED":
+        raise HTTPException(status_code=400, detail="Only confirmed slots can trigger a reminder")
+    if slot.scheduled_at and slot.scheduled_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Slot time has already passed")
+
+    slot.reminded_at = datetime.now(timezone.utc)
+    slot.updated_at = slot.reminded_at
+    db.commit()
+    return crud.serialize_uuid(slot)

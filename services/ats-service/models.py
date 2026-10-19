@@ -293,3 +293,72 @@ class ChatbotMessage(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow)
 
     session = relationship("ChatbotSession", back_populates="messages")
+
+
+class CandidatePortalToken(Base):
+    """Single-use magic-link and session tokens for the candidate portal.
+
+    Follows the auth-service passwordless pattern: only sha256 token hashes
+    are stored, LINK tokens expire quickly and are consumed on verify,
+    SESSION tokens are short-lived bearer tokens scoped to one candidate.
+    """
+
+    __tablename__ = "candidate_portal_tokens"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(50), nullable=False)
+    candidate_id = Column(UUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False)
+    kind = Column(String(10), nullable=False, default="LINK")
+    token_hash = Column(String(64), nullable=False, unique=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+    candidate = relationship("Candidate")
+
+    __table_args__ = (
+        Index("ix_candidate_portal_tokens_candidate", "candidate_id", "kind"),
+    )
+
+
+class CandidateDocument(Base):
+    __tablename__ = "candidate_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(50), nullable=False)
+    application_id = Column(UUID(as_uuid=True), ForeignKey("applications.id", ondelete="CASCADE"), nullable=False)
+    candidate_id = Column(UUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False)
+    filename = Column(String(255))
+    file_url = Column(Text)
+    file_size = Column(Integer)
+    content_type = Column(String(100))
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+class InterviewSlot(Base):
+    """An interview time slot a recruiter publishes for an application.
+
+    Candidates confirm an OPEN slot, which materialises a real Interview row
+    so the existing recruiter pipeline and timeline see the booking.
+    """
+
+    __tablename__ = "interview_slots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(50), nullable=False)
+    application_id = Column(UUID(as_uuid=True), ForeignKey("applications.id", ondelete="CASCADE"), nullable=False)
+    interview_type = Column(String(50))
+    interviewer_id = Column(String(100))
+    scheduled_at = Column(DateTime(timezone=True), nullable=False)
+    duration_minutes = Column(Integer)
+    location = Column(String(300))
+    meeting_link = Column(String(500))
+    status = Column(String(20), default="OPEN")
+    interview_id = Column(UUID(as_uuid=True), ForeignKey("interviews.id", ondelete="SET NULL"))
+    reminded_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        Index("ix_interview_slots_application_status", "application_id", "status"),
+    )

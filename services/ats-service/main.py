@@ -47,6 +47,7 @@ from routers import (
     jobs, candidates, applications, interviews, offers, analytics,
     career_portal, resume_parser, offer_letters, campus_recruitment,
     referral_management, recruitment_chatbot, recruitment_analytics,
+    candidate_portal,
 )
 
 
@@ -88,8 +89,16 @@ async def internal_auth_middleware(request: Request, call_next):
     # without an internal token (issue #188). The career endpoints derive the
     # tenant from the job posting and ignore caller-supplied tenant headers
     # (see routers/career_portal.py), so no authenticated state is needed here.
+    # The candidate-portal surface (issue #502) is likewise candidate-facing:
+    # it authenticates with single-use magic-link/session tokens validated
+    # inside routers/candidate_portal.py, and every endpoint scopes reads and
+    # writes to that token's tenant + candidate. The recruiter-only invite
+    # endpoint still requires internal auth.
     if request.url.path.startswith("/api/v1/career/"):
         return await call_next(request)
+    if request.url.path.startswith("/api/v1/candidate-portal/"):
+        if not request.url.path.startswith("/api/v1/candidate-portal/auth/invite"):
+            return await call_next(request)
 
     auth_header = request.headers.get("x-internal-auth")
     if not auth_header:
@@ -175,6 +184,7 @@ def custom_openapi():
         {"name": "offers", "description": "Offer letter management"},
         {"name": "analytics", "description": "ATS pipeline analytics"},
         {"name": "career-portal", "description": "Public career site: browse published jobs and apply (no auth required)"},
+        {"name": "candidate-portal", "description": "Candidate portal: magic-link auth, status timeline, documents, interview slots"},
         {"name": "health", "description": "Service health check"},
     ]
     app.openapi_schema = openapi_schema
@@ -190,6 +200,7 @@ app.include_router(interviews.router, prefix="/api/v1")
 app.include_router(offers.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(career_portal.router, prefix="/api/v1")
+app.include_router(candidate_portal.router, prefix="/api/v1")
 app.include_router(resume_parser.router, prefix="/api/v1")
 app.include_router(offer_letters.router, prefix="/api/v1")
 app.include_router(campus_recruitment.router, prefix="/api/v1")
