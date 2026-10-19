@@ -14,7 +14,8 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from httpx import ASGITransport, AsyncClient
 import pymongo.errors
-from main import app, lifespan
+from main import app, lifespan, directory_cache
+from main import AsyncReadCache
 
 INTERNAL_JWT_SECRET = os.environ.get("INTERNAL_JWT_SECRET", "test-secret")
 
@@ -77,6 +78,7 @@ def client():
 @pytest.fixture(autouse=True)
 def mock_mongodb():
     """Mock MongoDB collection to avoid needing a real connection during tests."""
+    directory_cache.clear()
     mock_collection = MagicMock()
     mock_collection.count_documents = AsyncMock(return_value=0)
     mock_collection.find_one = AsyncMock(return_value=None)
@@ -573,3 +575,116 @@ async def test_update_employee_can_clear_manager(mock_mongodb):
     update_doc = mock_mongodb.update_one.call_args[0][1]
     assert update_doc["$unset"] == {"manager_id": ""}
     assert "$set" not in update_doc
+
+
+# --- Shared read cache (atlas_observability.read_cache) ---
+
+
+def _emp(email, name=None, department="Engineering"):
+    return {
+        "_id": email, "name": name or email.split("@")[0],
+        "email": email, "department": department,
+        "position": "Developer", "tenant_id": "test-tenant",
+    }
+
+
+@pytest.mark.asyncio
+async def test_employee_list_served_from_cache(client, mock_mongodb):
+    """A repeated directory request within the TTL performs no new queries."""
+    employees = [_emp("a@acme.io"), _emp("b@acme.io", department="Sales")]
+    mock_mongodb.count_documents = AsyncMock(return_value=2)
+    mock_mongodb.find = MagicMock(return_value=AsyncCursorMock(list(employees)))
+
+    first = await client.get("/employees")
+    assert first.status_code == 200
+    assert first.json()["total"] == 2
+    second = await client.get("/employees")
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    assert mock_mongodb.count_documents.await_count == 1
+    assert mock_mongodb.find.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_directory_write_invalidate_then_read_reflects_write(client, mock_mongodb):
+    """Write-path invalidation: a create is visible in the very next list."""
+    seeded = [_emp("a@acme.io")]
+    current = [dict(e, _id=e["email"]) for e in seeded]
+    mock_mongodb.count_documents = AsyncMock(side_effect=lambda q: len(current))
+    mock_mongodb.find = MagicMock(return_value=AsyncCursorMock(list(current)))
+    mock_mongodb.insert_one = AsyncMock(return_value=SimpleNamespace(inserted_id="new@acme.io"))
+    mock_mongodb.find_one = AsyncMock(return_value=None)  # manager lookup skipped
+
+    first = await client.get("/employees")
+    assert [e["email"] for e in first.json()["items"]] == ["a@acme.io"]
+
+    created = await client.post("/employees", json={
+        "name": "New Hire", "email": "new@acme.io",
+        "department": "Engineering", "position": "Developer",
+    })
+    assert created.status_code == 200
+
+    current.append(_emp("new@acme.io"))
+    mock_mongodb.find = MagicMock(return_value=AsyncCursorMock(list(current)))
+
+    second = await client.get("/employees")
+    assert [e["email"] for e in second.json()["items"]] == ["a@acme.io", "new@acme.io"]
+
+
+@pytest.mark.asyncio
+async def test_read_cache_directory_delete_invalidate_then_read(client, mock_mongodb):
+    """A delete is reflected in the next directory read, never served stale."""
+    current = [_emp("a@acme.io"), _emp("b@acme.io")]
+    mock_mongodb.count_documents = AsyncMock(return_value=2)
+    mock_mongodb.find = MagicMock(return_value=AsyncCursorMock(list(current)))
+    mock_mongodb.delete_one = AsyncMock(return_value=SimpleNamespace(deleted_count=1))
+
+    first = await client.get("/employees")
+    assert [e["email"] for e in first.json()["items"]] == ["a@acme.io", "b@acme.io"]
+
+    current.pop()
+    mock_mongodb.count_documents = AsyncMock(return_value=1)
+    deleted = await client.delete("/employees/b@acme.io")
+    assert deleted.status_code == 200
+    mock_mongodb.find = MagicMock(return_value=AsyncCursorMock(list(current)))
+
+    second = await client.get("/employees")
+    assert [e["email"] for e in second.json()["items"]] == ["a@acme.io"]
+
+
+@pytest.mark.asyncio
+async def test_read_cache_single_flight_async():
+    """N concurrent misses on one key run the loader exactly once."""
+    import asyncio
+
+    cache = AsyncReadCache("employee-service", redis_url=None)
+    key = cache.make_key("directory", "tenant-1", "p1s10")
+    counter = [0]
+
+    async def loader():
+        counter[0] += 1
+        await asyncio.sleep(0.05)
+        return {"n": counter[0]}
+
+    results = await asyncio.gather(*[
+        cache.acached(key, 60, loader, endpoint="directory") for _ in range(10)
+    ])
+    assert all(r == results[0] for r in results)
+    assert counter[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_read_cache_degrades_when_redis_absent():
+    """An unreachable Redis degrades to the local store; reads still work."""
+    cache = AsyncReadCache("employee-service", redis_url="redis://127.0.0.1:1/0")
+    assert cache.backend == "local"
+    key = cache.make_key("directory", "tenant-1", "p1s10")
+    counter = [0]
+
+    async def loader():
+        counter[0] += 1
+        return {"n": counter[0]}
+
+    assert await cache.acached(key, 60, loader, endpoint="directory") == {"n": 1}
+    assert await cache.acached(key, 60, loader, endpoint="directory") == {"n": 1}
+    assert counter[0] == 1

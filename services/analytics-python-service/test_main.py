@@ -507,3 +507,139 @@ async def test_payroll_verify_rejects_garbage_period(client):
     for bad in ("not-a-period", "2026-13", "2026", "2026/05"):
         resp = await client.get(f"/api/v1/payroll/verify/{bad}", headers={"X-Tenant-Id": "test-tenant"})
         assert resp.status_code == 400
+
+
+# --- Shared read cache (atlas_observability.read_cache) ---
+
+
+@pytest.fixture(autouse=True)
+def _clean_read_cache():
+    main.read_cache.clear()
+    yield
+    main.read_cache.clear()
+
+
+def _test_read_cache(**kwargs):
+    """A ReadCache isolated from the service's module-level instance."""
+    return main.ReadCache("test-service", **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_department_analytics_served_from_cache(client, monkeypatch):
+    """A second department request within the TTL performs no upstream call."""
+    calls = []
+    employees = [
+        {"_id": "e1", "department": "Engineering"},
+        {"_id": "e2", "department": "Engineering"},
+        {"_id": "e3", "department": "Sales"},
+    ]
+
+    def fetch(tenant_id):
+        calls.append(tenant_id)
+        return list(employees)
+
+    monkeypatch.setattr("main.fetch_tenant_employees", fetch)
+    resp = await client.get("/analytics/department", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"department": "Engineering", "headcount": 2},
+        {"department": "Sales", "headcount": 1},
+    ]
+    resp = await client.get("/analytics/department", headers={"X-Tenant-Id": "test-tenant"})
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"department": "Engineering", "headcount": 2},
+        {"department": "Sales", "headcount": 1},
+    ]
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_department_employee_deletion_invalidates_cache(client, monkeypatch):
+    """Write-path invalidation: after the employee-deleted event the next
+    read reflects the new headcounts immediately."""
+    calls = []
+    employees = [
+        {"_id": "e1", "department": "Engineering"},
+        {"_id": "e2", "department": "Engineering"},
+    ]
+
+    def fetch(tenant_id):
+        calls.append(tenant_id)
+        return list(employees)
+
+    monkeypatch.setattr("main.fetch_tenant_employees", fetch)
+    first = (await client.get("/analytics/department", headers={"X-Tenant-Id": "test-tenant"})).json()
+    assert first == [{"department": "Engineering", "headcount": 2}]
+
+    # The write: the employee.py deletion path also emits employee.deleted,
+    # whose consumer calls the invalidate hook.
+    employees.remove({"_id": "e2", "department": "Engineering"})
+    main.invalidate_department_cache("test-tenant")
+
+    second = (await client.get("/analytics/department", headers={"X-Tenant-Id": "test-tenant"})).json()
+    assert second == [{"department": "Engineering", "headcount": 1}]
+    assert len(calls) == 2
+
+
+def test_read_cache_single_flight():
+    """N concurrent misses on one key produce exactly one loader call."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    cache = _test_read_cache()
+    call_count = []
+    key = cache.make_key("single-flight", "tenant-1")
+
+    def loader():
+        call_count.append(1)
+        time.sleep(0.05)
+        return {"ticket": 1}
+
+    def worker():
+        return cache.cached(key, 60, loader, endpoint="single-flight")
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        results = list(pool.map(lambda _: worker(), range(10)))
+
+    assert results[0] == {"ticket": 1}
+    assert all(r == {"ticket": 1} for r in results)
+    assert len(call_count) == 1
+
+
+def test_read_cache_write_invalidate_then_read_reflects_new_value():
+    """Invalidation between a write and the next read returns fresh data."""
+    cache = _test_read_cache()
+    key = cache.make_key("freshness", "tenant-1")
+    payloads = iter([{"version": 1}, {"version": 2}])
+
+    assert cache.cached(key, 60, lambda: next(payloads), endpoint="freshness") == {"version": 1}
+    cache.invalidate([key], endpoint="freshness")
+    assert cache.cached(key, 60, lambda: next(payloads), endpoint="freshness") == {"version": 2}
+
+
+def test_read_cache_tenant_keying_isolates_tenants():
+    cache = _test_read_cache()
+    assert cache.make_key("department", "tenant-a") != cache.make_key("department", "tenant-b")
+    assert "tenant_a" in cache.make_key("department", "tenant:a")
+
+
+def test_read_cache_ttl_expiry_and_dedegradation():
+    """An expired entry recomputes; a dead Redis degrades to the local
+    store instead of failing the read."""
+    cache = _test_read_cache(redis_url="redis://127.0.0.1:1/0")
+    assert cache.backend == "local"
+
+    counter = [0]
+    key = cache.make_key("degrade", "tenant-1")
+
+    def loader():
+        counter[0] += 1
+        return {"n": counter[0]}
+
+    assert cache.cached(key, 0.02, loader, endpoint="degrade") == {"n": 1}
+    time.sleep(0.05)
+    assert cache.cached(key, 0.02, loader, endpoint="degrade") == {"n": 2}
+    # Still live within TTL now: hit from the local mirror.
+    assert cache.cached(key, 0.02, loader, endpoint="degrade") == {"n": 2}
+    assert counter[0] == 2

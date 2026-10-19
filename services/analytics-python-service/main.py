@@ -25,6 +25,7 @@ from atlas_observability import (
     SecurityHeadersMiddleware,
     configure_logging, get_logger, mint_internal_auth, verify_internal_auth
 )
+from atlas_observability.read_cache import ReadCache
 
 INTERNAL_JWT_SECRET = os.environ.get("INTERNAL_JWT_SECRET", "")
 
@@ -33,25 +34,28 @@ app = FastAPI(title="Analytics Service API", version="2.0.0")
 configure_logging("analytics-service", level=logging.INFO)
 logger = get_logger("analytics-service")
 
+# Tenant-keyed read cache for hot, non-security-sensitive endpoints
+# (department analytics, dashboard aggregates). Backed by Redis when
+# REDIS_URL is set, otherwise an in-process mirror; auth, session and
+# security decisions are never cached.
+read_cache = ReadCache("analytics-service")
+
 payroll_cache = {}
 payroll_cache_timestamp = {}
 PAYROLL_CACHE_TTL = 300
 payroll_cache_lock = threading.Lock()
 
-department_cache = {}
-department_cache_timestamp = {}
-DEPARTMENT_CACHE_TTL = 300
-department_cache_lock = threading.Lock()
-
 
 def invalidate_department_cache(tenant_id=None):
-    with department_cache_lock:
-        if tenant_id:
-            department_cache.pop(tenant_id, None)
-            department_cache_timestamp.pop(tenant_id, None)
-        else:
-            department_cache.clear()
-            department_cache_timestamp.clear()
+    """Write-path hook: drop the department read-cache entry for a tenant.
+
+    Used by the employee-deletion consumer; the key matches the one the
+    read path computes in get_department_analytics.
+    """
+    read_cache.invalidate(
+        [read_cache.make_key("department", tenant_id or "default")],
+        endpoint="department",
+    )
 
 
 def invalidate_payroll_cache(tenant_id=None):
@@ -97,6 +101,12 @@ def _env_float(name, default, minimum=0.0):
     except ValueError as e:
         logger.warning("config.invalid_env_value", extra={"name": name, "error": str(e), "fallback": default})
         return default
+
+
+# Per-endpoint-class TTLs for the shared read cache, seconds. Department
+# headcounts tolerate a few minutes of staleness because deletions also
+# arrive as events that invalidate the entry immediately.
+DEPARTMENT_CACHE_TTL = _env_int("ANALYTICS_DEPARTMENT_CACHE_TTL", 300)
 
 
 class OverloadedError(Exception):
@@ -672,32 +682,24 @@ def fetch_payroll_by_period(tenant_id, limit=6):
     return list(reversed(df.to_dict(orient="records")))
 
 
-@app.get("/analytics/department", tags=["analytics"], summary="Department headcount breakdown")
-@heavy_endpoint("analytics.department")
-def get_department_analytics(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
-    """Returns headcount grouped by department for the given tenant."""
-    now = time.time()
-    with department_cache_lock:
-        cached = department_cache.get(x_tenant_id)
-        if cached is not None and (now - department_cache_timestamp.get(x_tenant_id, 0)) < DEPARTMENT_CACHE_TTL:
-            return cached
+def _compute_department_analytics(x_tenant_id):
+    """Build the department headcount breakdown; raises on upstream failure.
+
+    Kept separate from the endpoint so the read cache caches only
+    successful payloads - HTTP error mappings are never cached.
+    """
     try:
         items = fetch_tenant_employees(x_tenant_id)
         if not items:
-            result = []
-        else:
-            dept_counts = {}
-            for emp in items:
-                dept = emp.get("department", "Unknown")
-                dept_counts[dept] = dept_counts.get(dept, 0) + 1
-            result = [
-                {"department": dept, "headcount": count}
-                for dept, count in sorted(dept_counts.items(), key=lambda x: -x[1])
-            ]
-        with department_cache_lock:
-            department_cache[x_tenant_id] = result
-            department_cache_timestamp[x_tenant_id] = time.time()
-        return result
+            return []
+        dept_counts = {}
+        for emp in items:
+            dept = emp.get("department", "Unknown")
+            dept_counts[dept] = dept_counts.get(dept, 0) + 1
+        return [
+            {"department": dept, "headcount": count}
+            for dept, count in sorted(dept_counts.items(), key=lambda x: -x[1])
+        ]
     except HTTPException:
         raise
     except requests.Timeout as e:
@@ -712,6 +714,24 @@ def get_department_analytics(x_tenant_id: str = Header("default", alias="X-Tenan
     except Exception:
         logger.exception("analytics.department_analytics_failed", extra={"tenant_id": x_tenant_id})
         raise HTTPException(status_code=500, detail="Failed to retrieve department analytics")
+
+
+@app.get("/analytics/department", tags=["analytics"], summary="Department headcount breakdown")
+@heavy_endpoint("analytics.department")
+def get_department_analytics(x_tenant_id: str = Header("default", alias="X-Tenant-Id")):
+    """Returns headcount grouped by department for the given tenant.
+
+    Cache-aside with a tenant-scoped key: the first request computes and
+    stores the breakdown, later requests within the TTL are served from the
+    read cache, and the employee-deleted event stream invalidates the
+    entry immediately.
+    """
+    return read_cache.cached(
+        read_cache.make_key("department", x_tenant_id),
+        DEPARTMENT_CACHE_TTL,
+        lambda: _compute_department_analytics(x_tenant_id),
+        endpoint="department",
+    )
 
 
 @app.get("/analytics/payroll", tags=["analytics"], summary="Payroll trends")

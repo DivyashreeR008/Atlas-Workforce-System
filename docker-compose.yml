@@ -237,11 +237,14 @@ services:
       - MONGO_URL=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-changeme_mongo_pass}@mongodb:27017/${MONGO_DB:-atlas_db}?authSource=admin
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-atlas_rabbit}:${RABBITMQ_PASS:-changeme_rabbit_pass}@rabbitmq:5672/
       - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET:-atlas-internal-jwt-secret-change-me}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-changeme_redis_pass}@redis:6379
+      - EMPLOYEE_DIRECTORY_CACHE_TTL=${EMPLOYEE_DIRECTORY_CACHE_TTL:-30}
     networks:
       - atlas-network
     depends_on:
       - mongodb
       - rabbitmq
+      - redis
 
   payroll-service:
     build: ./services/payroll-java-service
@@ -277,11 +280,14 @@ services:
       - RABBITMQ_USER=${RABBITMQ_USER:-atlas_rabbit}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASS:-changeme_rabbit_pass}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-changeme_redis_pass}@redis:6379
+      - ANALYTICS_DEPARTMENT_CACHE_TTL=${ANALYTICS_DEPARTMENT_CACHE_TTL:-300}
     networks:
       - atlas-network
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
 
   notification-service:
     build: ./services/notification-go-service

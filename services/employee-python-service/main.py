@@ -1,5 +1,6 @@
 import json
 import logging
+import hashlib
 import uuid
 import random
 import hmac
@@ -20,6 +21,7 @@ import pika
 from fastapi.responses import JSONResponse
 
 from atlas_observability import AtlasMetricsMiddleware, SecurityHeadersMiddleware, sanitize_url, verify_internal_auth
+from atlas_observability.read_cache import AsyncReadCache
 
 # ------------------------------------------------
 # Structured Logger
@@ -81,6 +83,34 @@ def _get_rabbitmq_port():
 RABBITMQ_PORT = _get_rabbitmq_port()
 RABBITMQ_USER = os.environ.get("RABBITMQ_USER", "guest")
 RABBITMQ_PASSWORD = os.environ.get("RABBITMQ_PASSWORD", "guest")
+
+
+def _env_int(name, default, minimum=1):
+    try:
+        value = int(os.environ.get(name, str(default)))
+        if value < minimum:
+            raise ValueError(f"must be >= {minimum}")
+        return value
+    except ValueError as e:
+        log_event("warning", "config.invalid_env_value", name=name, error=str(e), fallback=default)
+        return default
+
+
+# Hot directory reads (UI list views) are served cache-aside from the
+# shared read cache, tenant-keyed and keyed per page/page_size/search
+# combination. Every write path invalidates the tenant's entries
+# immediately, so a write is reflected in the very next read. Redis is
+# used when REDIS_URL is set, otherwise an in-process mirror; auth,
+# session and permission decisions (single-record lookups, hierarchy
+# scoping) are never cached.
+DIRECTORY_CACHE_ENDPOINT = "directory"
+DIRECTORY_CACHE_TTL = _env_int("EMPLOYEE_DIRECTORY_CACHE_TTL", 30)
+directory_cache = AsyncReadCache("employee-service")
+
+
+def invalidate_directory_cache(tenant_id):
+    directory_cache.invalidate_tenant(DIRECTORY_CACHE_ENDPOINT, tenant_id)
+
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -536,16 +566,8 @@ async def health_check():
         }
 
 
-@app.get("/employees", response_model=PaginatedEmployees, tags=["employees"], summary="List all employees")
-async def get_employees(
-    request: Request,
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(10, ge=1, le=100, description="Items per page"),
-    search: Optional[str] = Query(None, description="Search by name, email, department, or position"),
-):
-    """Retrieve a paginated, searchable list of employees scoped to a tenant."""
-    tenant_id = getattr(request.state, "tenant_id", "default")
-    search = validate_search_param(search)
+async def _list_employees(tenant_id, page, page_size, search):
+    """Query the employee collection for one list-view page."""
     query = {"tenant_id": tenant_id}
     if search:
         pattern = re.compile(re.escape(search), re.IGNORECASE)
@@ -568,6 +590,32 @@ async def get_employees(
         "page_size": page_size,
         "total_pages": total_pages,
     }
+
+
+@app.get("/employees", response_model=PaginatedEmployees, tags=["employees"], summary="List all employees")
+async def get_employees(
+    request: Request,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(10, ge=1, le=100, description="Items per page"),
+    search: Optional[str] = Query(None, description="Search by name, email, department, or position"),
+):
+    """Retrieve a paginated, searchable list of employees scoped to a tenant.
+
+    Cache-aside per (tenant, page, page_size, search): a repeated view within
+    the TTL is served from the read cache, and every write to the tenant
+    invalidates the tenant's entries, so a change is visible on the next read.
+    """
+    tenant_id = getattr(request.state, "tenant_id", "default")
+    search = validate_search_param(search)
+    discriminator = f"p{page}s{page_size}q" + hashlib.sha256(
+        (search or "").encode("utf-8")
+    ).hexdigest()[:12]
+    return await directory_cache.acached(
+        directory_cache.make_key(DIRECTORY_CACHE_ENDPOINT, tenant_id, discriminator),
+        DIRECTORY_CACHE_TTL,
+        lambda: _list_employees(tenant_id, page, page_size, search),
+        endpoint=DIRECTORY_CACHE_ENDPOINT,
+    )
 
 
 @app.get("/employees/me", response_model=EmployeeSchema, tags=["employees"], summary="Get my employee profile")
@@ -611,6 +659,7 @@ async def update_my_employee(
     )
     updated = await employees_collection.find_one({"email": email, "tenant_id": tenant_id})
     log_event("info", "employee.self_updated", tenant_id=tenant_id, fields=sorted(update_data.keys()))
+    invalidate_directory_cache(tenant_id)
     return serialize_employee(updated)
 
 
@@ -693,6 +742,7 @@ async def create_employee(
     try:
         result = await employees_collection.insert_one(employee_dict)
         employee_dict["_id"] = str(result.inserted_id)
+        invalidate_directory_cache(tenant_id)
         return employee_dict
     except pymongo.errors.DuplicateKeyError:
         log_event("warning", "employee.duplicate_email", email=employee.email, tenant_id=tenant_id)
@@ -750,6 +800,7 @@ async def update_employee(
     )
 
     updated = await employees_collection.find_one({"email": update_data.get("email", email), "tenant_id": tenant_id})
+    invalidate_directory_cache(tenant_id)
     return serialize_employee(updated)
 
 
@@ -765,6 +816,7 @@ async def delete_employee(
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Employee not found")
     await publish_delete_event(email, tenant_id)
+    invalidate_directory_cache(tenant_id)
     return {"message": "Employee deleted successfully"}
 
 
