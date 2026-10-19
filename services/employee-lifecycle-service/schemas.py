@@ -573,3 +573,25 @@ class CareerRoadmapResponse(BaseModel):
     progress_percentage: float; is_active: bool; notes: Optional[str]
     created_at: datetime; updated_at: datetime
     class Config: from_attributes = True
+
+
+# -- Lifecycle execution engine --
+
+class PlaybookCreate(BaseModel):
+    name: str
+    kind: str  # ONBOARDING / OFFBOARDING
+    steps: list[Any]
+    is_active: bool = True
+
+
+class LifecycleRunStart(BaseModel):
+    employee_id: str
+    event_type: str  # HIRE / EXIT
+    event_key: Optional[str] = None
+    playbook_id: Optional[str] = None
+    trigger_payload: Optional[dict] = None
+
+
+class TaskAcknowledgement(BaseModel):
+    by: str
+    note: Optional[str] = None

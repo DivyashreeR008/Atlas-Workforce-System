@@ -36,6 +36,7 @@ def get_db():
 
 
 from routers import onboarding, offboarding, probation, career, mobility, promotions, timeline, documents, profile, achievements, roadmaps
+from routers import executions
 
 
 @asynccontextmanager
@@ -166,6 +167,7 @@ app.include_router(documents.router, prefix="/api/v1")
 app.include_router(profile.router, prefix="/api/v1")
 app.include_router(achievements.router, prefix="/api/v1")
 app.include_router(roadmaps.router, prefix="/api/v1")
+app.include_router(executions.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/lifecycle/dashboard", tags=["Dashboard"])

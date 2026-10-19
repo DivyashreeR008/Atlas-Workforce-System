@@ -378,3 +378,76 @@ class CareerRoadmap(Base):
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     career_path = relationship("CareerPath")
     __table_args__ = (Index("idx_roadmap_employee", "employee_id"), Index("idx_roadmap_tenant", "tenant_id"))
+
+
+# ── Lifecycle execution engine ───────────────────────────────────────
+# New tables use SQLite-compatible column types (String(36) identifiers,
+# JSON with a JSONB variant on PostgreSQL) so the pytest harness can run
+# against in-memory SQLite the same way the rest of the suite does.
+
+from sqlalchemy import JSON
+
+PlayableJson = JSON().with_variant(JSONB(), "postgresql")
+
+
+class PlaybookDefinition(Base):
+    """Ordered runbook steps: owners, SLAs, dependencies and whether each
+    step ends in an access revocation that a system must acknowledge."""
+    __tablename__ = "lifecycle_playbook_definitions"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(50), nullable=False)
+    name = Column(String(200), nullable=False)
+    kind = Column(String(20), nullable=False)  # ONBOARDING / OFFBOARDING
+    steps = Column(PlayableJson, nullable=False, default=list)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    __table_args__ = (Index("idx_playbook_tenant_kind", "tenant_id", "kind"),)
+
+
+class LifecycleRun(Base):
+    """One execution of a playbook, triggered by an employee event. The
+    (tenant, employee, event_type, event_key) identity makes re-delivered
+    events idempotent: a replay returns the existing run, never duplicates."""
+    __tablename__ = "lifecycle_runs"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(50), nullable=False)
+    employee_id = Column(String(100), nullable=False)
+    event_type = Column(String(20), nullable=False)  # HIRE / EXIT
+    event_key = Column(String(200), nullable=False, default=lambda: str(uuid.uuid4()))
+    playbook_id = Column(String(36), nullable=False)
+    status = Column(String(20), nullable=False, default="IN_PROGRESS")  # IN_PROGRESS / COMPLETED / ESCALATED
+    trigger_payload = Column(PlayableJson, default=dict)
+    started_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    completed_at = Column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "employee_id", "event_type", "event_key", name="uq_run_event"),
+        Index("idx_run_employee", "employee_id"),
+        Index("idx_run_tenant_status", "tenant_id", "status"),
+    )
+
+
+class LifecycleRunTask(Base):
+    """One step instance of a run. A revocation step (requires_ack) keeps the
+    run open until the owning system acknowledges, or the SLA breach fires
+    the escalation path."""
+    __tablename__ = "lifecycle_run_tasks"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    run_id = Column(String(36), ForeignKey("lifecycle_runs.id"), nullable=False)
+    tenant_id = Column(String(50), nullable=False)
+    employee_id = Column(String(100), nullable=False)
+    step_order = Column(Integer, nullable=False, default=0)
+    name = Column(String(200), nullable=False)
+    owner_role = Column(String(100), nullable=False, default="hr")
+    status = Column(String(20), nullable=False, default="PENDING")  # PENDING / BLOCKED / ACKNOWLEDGED
+    requires_ack = Column(Boolean, nullable=False, default=False)
+    destructive = Column(Boolean, nullable=False, default=False)
+    sla_days = Column(Integer, nullable=False, default=0)
+    sla_due = Column(DateTime(timezone=True))
+    dependencies = Column(PlayableJson, nullable=False, default=list)
+    approvals = Column(PlayableJson, nullable=False, default=list)
+    acknowledged_at = Column(DateTime(timezone=True))
+    escalated = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    __table_args__ = (Index("idx_run_task_run", "run_id"), Index("idx_run_task_tenant", "tenant_id"))
