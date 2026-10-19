@@ -20,10 +20,13 @@ public class LeaveService {
 
     private final LeaveRepository repository;
     private final RabbitTemplate rabbitTemplate;
+    private final CalendarSyncService calendarSyncService;
 
-    public LeaveService(LeaveRepository repository, RabbitTemplate rabbitTemplate) {
+    public LeaveService(LeaveRepository repository, RabbitTemplate rabbitTemplate,
+                        CalendarSyncService calendarSyncService) {
         this.repository = repository;
         this.rabbitTemplate = rabbitTemplate;
+        this.calendarSyncService = calendarSyncService;
     }
 
     public Page<LeaveRecord> getAllLeaveRequests(String tenantId, Pageable pageable) {
@@ -195,6 +198,14 @@ public class LeaveService {
             } catch (Exception e) {
                 System.err.println("Failed to publish leave notification " + eventName + ": " + e.getMessage());
             }
+        }
+
+        // One-way calendar sync on the terminal transitions. Guarded like the
+        // broker sends: a calendar failure must never roll back the leave.
+        try {
+            calendarSyncService.onLeaveStatusChange(saved);
+        } catch (Exception e) {
+            System.err.println("Failed to sync leave " + saved.getId() + " to calendar: " + e.getMessage());
         }
 
         return saved;
